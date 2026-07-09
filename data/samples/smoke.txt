@@ -1,0 +1,5 @@
+Martial arts history smoke fixture.
+
+Across many societies, martial arts grew from local needs: self-defense, military training, ritual performance, sport, and community identity. Wrestling traditions appear in ancient Greece and India, boxing developed formal rules in Britain, judo was organized by Jigoro Kano in Tokyo, karate moved from Okinawa into mainland Japan through teachers such as Gichin Funakoshi, and Brazilian jiu-jitsu developed through the adaptation of judo and ground-fighting methods in Brazil.
+
+This original public sample text gives FlakeGraph a small document with named places, teachers, concepts, and relationships for deterministic local smoke tests.

@@ -1,0 +1,75 @@
+{
+  "name": "repeated_relation",
+  "description": "GraphRAG spike regression: repeated grounded relation observations across chunks are merged into one canonical edge with evidence from both chunks.",
+  "input": {
+    "filename": "golden.txt",
+    "text": "Alice Smith works at Acme Corp. Alice Smith works at Acme Corp.\n"
+  },
+  "settings": {
+    "chunk_token_size": 6,
+    "chunk_token_overlap": 0
+  },
+  "expected": {
+    "run_id": "run_c128889c62863ab406d657cc7356e4f0",
+    "ordered_chunk_hash": "6ec2421bff6fc6b9093ddf20f6f3f4495dc8564446e2f8aeb2144d13ef09f7d4",
+    "counts": {
+      "chunks_created": 2,
+      "blocks_created": 1,
+      "assets_created": 0,
+      "entities_extracted": 4,
+      "entities_after_filter": 4,
+      "relations_extracted": 2,
+      "relations_after_filter": 2,
+      "nodes_created": 2,
+      "edges_created": 1,
+      "evidence_created": 6,
+      "communities_created": 1
+    },
+    "nodes": {
+      "Acme Corp": {
+        "primary_type": "ORGANIZATION",
+        "source_chunk_count": 2,
+        "entity_source_mention_count": 2
+      },
+      "Alice Smith": {
+        "primary_type": "PERSON",
+        "source_chunk_count": 2,
+        "entity_source_mention_count": 2
+      }
+    },
+    "edge": {
+      "source": "Alice Smith",
+      "target": "Acme Corp",
+      "relation_type": "mentions",
+      "weight": 2.0,
+      "source_chunk_count": 2
+    },
+    "evidence": {
+      "total": 6,
+      "node": 4,
+      "edge": 2,
+      "quote": "Alice Smith works at Acme Corp."
+    },
+    "merge_decision_actions": {
+      "aggregated": 1,
+      "created": 1,
+      "merged": 2
+    },
+    "merge_decision_reasons": {
+      "canonical_edge_created": 1,
+      "entity_observations_merged": 2,
+      "relation_evidence_aggregated": 1
+    },
+    "dedupe": {
+      "entity_reduction": 2,
+      "relation_reduction": 1
+    },
+    "community": {
+      "member_names": [
+        "Acme Corp",
+        "Alice Smith"
+      ],
+      "finding_count": 1
+    }
+  }
+}

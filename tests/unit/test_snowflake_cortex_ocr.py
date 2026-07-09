@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from pathlib import Path
+
+import pytest
+
+from kg_processor.adapters.ocr.snowflake_cortex import SnowflakeCortexOcrProvider
+from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
+from kg_processor.domain.documents import InputFile
+from kg_processor.ports.ocr import OcrOptions
+
+
+class FakeCursor:
+    def __init__(self, row: Sequence[object]) -> None:
+        self.row = row
+        self.executed: list[tuple[str, Sequence[object] | None]] = []
+        self.closed = False
+
+    def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
+        self.executed.append((sql, params))
+        return None
+
+    def fetchone(self) -> Sequence[object] | None:
+        return self.row
+
+    def fetchall(self) -> list[object]:
+        return []
+
+    def close(self) -> object:
+        self.closed = True
+        return None
+
+
+class FakeConnection:
+    def __init__(self, row: Sequence[object]) -> None:
+        self.cursor_instance = FakeCursor(row)
+        self.closed = False
+
+    def cursor(self) -> FakeCursor:
+        return self.cursor_instance
+
+    def commit(self) -> object:
+        return None
+
+    def rollback(self) -> object:
+        return None
+
+    def close(self) -> object:
+        self.closed = True
+        return None
+
+
+def test_snowflake_cortex_ocr_parses_stage_file_with_options_and_assets() -> None:
+    connection = FakeConnection(
+        [
+            {
+                "value": {
+                    "pages": [
+                        {"index": 0, "content": "# Page 1\nAlice"},
+                        {"index": 1, "content": "# Page 2\nAcme"},
+                    ],
+                    "images": [
+                        {
+                            "image_id": "img-1",
+                            "page_index": 0,
+                            "image_base64": "abc123",
+                            "bbox": [1, 2, 3, 4],
+                        }
+                    ],
+                },
+                "metadata": {"document_size": 100},
+            }
+        ]
+    )
+
+    def factory(**_kwargs: object) -> FakeConnection:
+        return connection
+
+    provider = SnowflakeCortexOcrProvider(_config(), connector_factory=factory)
+
+    document = provider.parse(
+        _input_file("@DB.SCHEMA.DOC_STAGE/docs/a.pdf"),
+        OcrOptions(
+            page_range="0-2",
+            snowflake_parse_mode="LAYOUT",
+            snowflake_extract_images=True,
+        ),
+    )
+
+    sql, params = connection.cursor_instance.executed[0]
+    assert sql == "SELECT AI_PARSE_DOCUMENT(TO_FILE(?, ?), PARSE_JSON(?)::OBJECT, TRUE)"
+    assert params is not None
+    assert params[0] == "@DB.SCHEMA.DOC_STAGE"
+    assert params[1] == "docs/a.pdf"
+    parse_options = json.loads(str(params[2]))
+    assert parse_options == {
+        "extract_images": True,
+        "mode": "LAYOUT",
+        "page_filter": [{"start": 0, "end": 3}],
+        "page_split": True,
+    }
+    assert [page.page_number for page in document.pages] == [1, 2]
+    assert document.pages[0].markdown == "# Page 1\nAlice"
+    assert document.assets[0].id == "img-1"
+    assert document.assets[0].page_number == 1
+    assert document.assets[0].metadata["image_base64_present"] is True
+    assert "image_base64" not in document.assets[0].metadata
+    assert document.provider_metadata["provider"] == "snowflake_cortex"
+
+
+def test_snowflake_cortex_ocr_raises_returned_error() -> None:
+    connection = FakeConnection([{"error": {"message": "cannot parse"}}])
+
+    def factory(**_kwargs: object) -> FakeConnection:
+        return connection
+
+    provider = SnowflakeCortexOcrProvider(_config(), connector_factory=factory)
+
+    with pytest.raises(RuntimeError, match="AI_PARSE_DOCUMENT failed"):
+        provider.parse(_input_file("@DOC_STAGE/docs/a.pdf"), OcrOptions())
+
+
+def _input_file(source_uri: str) -> InputFile:
+    return InputFile(
+        id="file_1",
+        path=Path("a.pdf"),
+        source_uri=source_uri,
+        checksum="checksum",
+        mime_type="application/pdf",
+        size_bytes=10,
+    )
+
+
+def _config() -> SnowflakeConnectionConfig:
+    return SnowflakeConnectionConfig(
+        account="account",
+        host=None,
+        user="user",
+        password="password",
+        authenticator=None,
+        private_key_path=None,
+        database="DB",
+        schema_name="SCHEMA",
+        role="ROLE",
+        warehouse="WH",
+    )

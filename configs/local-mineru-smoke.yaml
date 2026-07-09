@@ -1,0 +1,31 @@
+runtime:
+  runtime: local
+job:
+  job_id: local-mineru-smoke
+  graph_id: local-mineru-smoke-graph
+files:
+  source: local
+  input_path: data/samples/martial-arts-overview.pdf
+ocr:
+  provider: mineru_internal
+  mineru_command: mineru
+  mineru_method: txt
+  mineru_backend: pipeline
+  mineru_effort: medium
+  page_range: "0"
+  model_cache_dir: /home/kgprocessor/.cache/mineru
+llm:
+  provider: fake
+  model: fake-graph-extractor
+embedding:
+  provider: hash
+  model: hash-embedding
+  dimension: 64
+graph:
+  chunk_token_size: 300
+  chunk_token_overlap: 50
+  max_chunks_per_llm_call: 2
+  gleaning_max_passes: 0
+writer:
+  provider: local_artifacts
+  output_path: out/local-mineru-smoke

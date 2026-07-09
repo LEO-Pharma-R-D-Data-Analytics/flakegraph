@@ -1,0 +1,1025 @@
+"""End-to-end orchestration for one configured knowledge-graph job.
+
+The pipeline deliberately wires only ports and application services. Providers
+can change through configuration, but the order of normalization, chunking,
+extraction, filtering, merge, embeddings, community reports, quality gates, and
+writer persistence remains one provider-independent implementation.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from time import perf_counter
+from typing import Any, Literal
+
+from kg_processor.application.cache_keys import build_extraction_cache_key, build_ocr_cache_key
+from kg_processor.application.chunking import chunk_document, compute_ordered_chunk_hash
+from kg_processor.application.community_detection import detect_communities
+from kg_processor.application.document_normalization import build_document_artifacts
+from kg_processor.application.graph_descriptions import synthesize_entity_descriptions
+from kg_processor.application.graph_embeddings import (
+    embed_chunks,
+    embed_communities,
+    embed_edges,
+    embed_nodes,
+)
+from kg_processor.application.graph_extraction import (
+    ExtractionBatchCheckpoint,
+    extract_graph_from_chunks,
+)
+from kg_processor.application.graph_filter import (
+    EntityFilterResult,
+    RelationFilterResult,
+    filter_entities_with_decisions,
+    filter_relations_with_decisions,
+)
+from kg_processor.application.graph_merge import GraphAssemblyResult, assemble_graph_with_decisions
+from kg_processor.application.graph_quality import (
+    GraphQualityError,
+    GraphQualityResult,
+    evaluate_graph_quality,
+)
+from kg_processor.application.progress import (
+    ProgressEvent,
+    ProgressSink,
+    elapsed_ms,
+    error_metadata,
+)
+from kg_processor.application.run_report import (
+    RunProviders,
+    RunReportRequest,
+    build_run_report_artifacts,
+)
+from kg_processor.config.settings import Settings
+from kg_processor.domain.documents import InputFile, ParsedDocument
+from kg_processor.domain.graph import (
+    Chunk,
+    Community,
+    CommunityFinding,
+    ExtractedEntity,
+    ExtractedRelation,
+    ExtractionResult,
+    GraphEdge,
+    GraphNode,
+    GraphWriteBatch,
+)
+from kg_processor.domain.jobs import JobFileClaim, JobFileResult
+from kg_processor.ports.cache import ExtractionCacheKey, PipelineCache
+from kg_processor.ports.embeddings import EmbeddingProvider, EmbedOptions
+from kg_processor.ports.file_source import FileSource
+from kg_processor.ports.graph_writer import GraphWriter
+from kg_processor.ports.llm import LlmProvider
+from kg_processor.ports.ocr import OcrOptions, OcrProvider
+
+
+class KgProcessorPipeline:
+    """Coordinates file discovery, OCR, extraction, graph assembly, and writing."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        file_source: FileSource,
+        ocr: OcrProvider,
+        llm: LlmProvider,
+        embeddings: EmbeddingProvider,
+        writer: GraphWriter,
+        cache: PipelineCache | None = None,
+        claimed_files: list[JobFileClaim] | None = None,
+        progress_sink: ProgressSink | None = None,
+    ) -> None:
+        self.settings = settings
+        self.file_source = file_source
+        self.ocr = ocr
+        self.llm = llm
+        self.embeddings = embeddings
+        self.writer = writer
+        self.cache = cache
+        self.claimed_files = claimed_files or []
+        self.progress_sink = progress_sink
+
+    def run(self) -> GraphWriteBatch:
+        """Execute one configured pipeline run and return the writer batch."""
+
+        # The trace starts before OCR so failed or empty file-claim selections
+        # are explainable in the same artifact stream as LLM/filter/merge events.
+        _available_files, files, file_source_trace = self._list_files_with_progress()
+        if self.claimed_files and not files:
+            claimed = ", ".join(claim.file_id for claim in self.claimed_files)
+            raise ValueError(
+                "No files from the configured file source matched claimed KG_JOB_FILE rows: "
+                f"{claimed}"
+            )
+        trace: list[dict[str, Any]] = [file_source_trace]
+        prepared = self._parse_and_chunk_files(files)
+        documents = prepared.documents
+        chunks = prepared.chunks
+        document_rows = prepared.document_rows
+        page_rows = prepared.page_rows
+        block_rows = prepared.block_rows
+        asset_rows = prepared.asset_rows
+        ocr_cache_hits = prepared.ocr_cache_hits
+        trace.extend(prepared.trace)
+        trace.append(
+            {
+                "stage": "chunking",
+                "chunks": len(chunks),
+                "ordered_chunk_hash": compute_ordered_chunk_hash(chunks),
+            }
+        )
+        self._emit_progress("chunking", "completed", counts={"chunks": len(chunks)})
+
+        embed_options = EmbedOptions(
+            model=self.settings.embedding.model,
+            dimension=self.settings.embedding.dimension,
+            batch_size=self.settings.embedding.batch_size,
+        )
+        self._embed_chunks_with_progress(chunks, embed_options)
+        trace.append(
+            {
+                "stage": "chunk_embeddings",
+                "provider": self.settings.embedding.provider,
+                "model": self.settings.embedding.model,
+                "dimension": self.settings.embedding.dimension,
+                "chunks": len(chunks),
+            }
+        )
+
+        extraction, extraction_cache_id, extraction_cache_hit = self._extract_graph_with_progress(
+            chunks
+        )
+        trace.append(
+            {
+                "stage": "graph_extraction",
+                "cache_id": extraction_cache_id,
+                "cache_hit": extraction_cache_hit,
+                "provider": self.settings.llm.provider,
+                "model": self.settings.llm.model,
+                "entities": len(extraction.entities),
+                "relations": len(extraction.relations),
+                "metadata": extraction.provider_metadata,
+            }
+        )
+        filtered = self._filter_extraction(extraction, chunks, trace)
+        assembly, descriptions_merged = self._assemble_and_describe_graph(
+            chunks,
+            filtered.entities,
+            filtered.relations,
+            trace,
+        )
+        nodes = assembly.nodes
+        edges = assembly.edges
+        self._embed_graph_with_progress(nodes, edges, embed_options)
+        trace.append(
+            {
+                "stage": "graph_embeddings",
+                "nodes": len(nodes),
+                "edges": len(edges),
+            }
+        )
+        communities, findings = self._detect_and_embed_communities(
+            nodes,
+            edges,
+            embed_options,
+            trace,
+        )
+        batch, quality_result = self._build_write_batch(
+            files_seen=len(files),
+            documents_processed=len(documents),
+            document_rows=document_rows,
+            page_rows=page_rows,
+            block_rows=block_rows,
+            asset_rows=asset_rows,
+            chunks=chunks,
+            extraction=extraction,
+            entities=filtered.entities,
+            relations=filtered.relations,
+            entity_filter=filtered.entity_filter,
+            relation_filter=filtered.relation_filter,
+            assembly=assembly,
+            descriptions_merged=descriptions_merged,
+            communities=communities,
+            findings=findings,
+            trace=trace,
+            ocr_cache_hits=ocr_cache_hits,
+            extraction_cache_hit=extraction_cache_hit,
+        )
+        if self.settings.graph.fail_on_quality_error and not quality_result.ok:
+            raise GraphQualityError(quality_result)
+        self._write_with_progress(batch)
+        return batch
+
+    def _list_files_with_progress(
+        self,
+    ) -> tuple[list[InputFile], list[InputFile], dict[str, Any]]:
+        file_source_started = perf_counter()
+        self._emit_progress("file_source", "started")
+        available_files = self.file_source.list_files()
+        files = self._select_claimed_files(available_files)
+        trace_event = {
+            "stage": "file_source",
+            "files_available": len(available_files),
+            "files_seen": len(files),
+            "claimed_files": len(self.claimed_files),
+        }
+        self._emit_progress(
+            "file_source",
+            "completed",
+            counts={
+                "files_available": len(available_files),
+                "files_seen": len(files),
+                "claimed_files": len(self.claimed_files),
+            },
+            elapsed_ms=elapsed_ms(file_source_started, perf_counter()),
+        )
+        return available_files, files, trace_event
+
+    def _embed_chunks_with_progress(
+        self,
+        chunks: list[Chunk],
+        embed_options: EmbedOptions,
+    ) -> None:
+        # Chunk embeddings happen before extraction so chunk vectors are
+        # available even when later graph quality checks are inspected.
+        started = perf_counter()
+        self._emit_progress("chunk_embeddings", "started", counts={"chunks": len(chunks)})
+        embed_chunks(chunks, self.embeddings, embed_options)
+        self._emit_progress(
+            "chunk_embeddings",
+            "completed",
+            counts={"chunks": len(chunks)},
+            metadata={
+                "provider": self.settings.embedding.provider,
+                "model": self.settings.embedding.model,
+                "dimension": self.settings.embedding.dimension,
+            },
+            elapsed_ms=elapsed_ms(started, perf_counter()),
+        )
+
+    def _extract_graph_with_progress(
+        self,
+        chunks: list[Chunk],
+    ) -> tuple[ExtractionResult, str, bool]:
+        started = perf_counter()
+        self._emit_progress(
+            "graph_extraction",
+            "started",
+            counts={"chunks": len(chunks)},
+            metadata={"provider": self.settings.llm.provider, "model": self.settings.llm.model},
+        )
+        extraction, cache_id, cache_hit = self._extract_graph(chunks)
+        self._emit_progress(
+            "graph_extraction",
+            "completed",
+            counts={
+                "entities": len(extraction.entities),
+                "relations": len(extraction.relations),
+            },
+            metadata={
+                "provider": self.settings.llm.provider,
+                "model": self.settings.llm.model,
+                "cache_hit": cache_hit,
+                "cache_id": cache_id,
+            },
+            elapsed_ms=elapsed_ms(started, perf_counter()),
+        )
+        return extraction, cache_id, cache_hit
+
+    def _embed_graph_with_progress(
+        self,
+        nodes: list[GraphNode],
+        edges: list[GraphEdge],
+        embed_options: EmbedOptions,
+    ) -> None:
+        started = perf_counter()
+        self._emit_progress(
+            "graph_embeddings",
+            "started",
+            counts={"nodes": len(nodes), "edges": len(edges)},
+        )
+        embed_nodes(nodes, self.embeddings, embed_options)
+        embed_edges(edges, self.embeddings, embed_options)
+        self._emit_progress(
+            "graph_embeddings",
+            "completed",
+            counts={"nodes": len(nodes), "edges": len(edges)},
+            elapsed_ms=elapsed_ms(started, perf_counter()),
+        )
+
+    def _write_with_progress(self, batch: GraphWriteBatch) -> None:
+        started = perf_counter()
+        counts = _write_counts(batch)
+        metadata = {"provider": self.settings.writer.provider, "scope": batch.write_scope}
+        self._emit_progress("write", "started", counts=counts, metadata=metadata)
+        try:
+            self.writer.write(batch)
+        except Exception as exc:
+            self._emit_progress(
+                "write",
+                "failed",
+                counts=counts,
+                metadata={**metadata, **error_metadata(exc)},
+                elapsed_ms=elapsed_ms(started, perf_counter()),
+            )
+            raise
+        self._emit_progress(
+            "write",
+            "completed",
+            counts=counts,
+            metadata=metadata,
+            elapsed_ms=elapsed_ms(started, perf_counter()),
+        )
+
+    def job_file_results(self, batch: GraphWriteBatch) -> list[JobFileResult]:
+        """Build KG_JOB_FILE completion payloads for a file-queue run."""
+
+        return build_job_file_results(
+            batch,
+            self.settings.ocr.provider,
+            self.settings.llm.provider,
+            self.settings.embedding.model,
+            self.settings.embedding.dimension,
+        )
+
+    def _select_claimed_files(self, files: list[InputFile]) -> list[InputFile]:
+        if not self.claimed_files:
+            return files
+        # File-queue workers may see a large stage or blob prefix but should
+        # only process the rows they leased. The claim identity is copied onto
+        # the InputFile so writer scopes and KG_JOB_FILE completion use the
+        # Snowflake queue row as the source of truth.
+        selected: list[InputFile] = []
+        for file in files:
+            claim = _matching_claim(file, self.claimed_files)
+            if claim is None:
+                continue
+            selected.append(_file_with_claim_identity(file, claim))
+        return selected
+
+    def _parse_and_chunk_files(self, files: list[InputFile]) -> _PreparedFiles:
+        documents: list[ParsedDocument] = []
+        chunks: list[Chunk] = []
+        document_rows: list[dict[str, Any]] = []
+        page_rows: list[dict[str, Any]] = []
+        block_rows: list[dict[str, Any]] = []
+        asset_rows: list[dict[str, Any]] = []
+        trace: list[dict[str, Any]] = []
+        ocr_cache_hits = 0
+
+        for file in files:
+            ocr_options = self._ocr_options()
+            ocr_started = perf_counter()
+            self._emit_progress(
+                "ocr",
+                "started",
+                file_id=file.id,
+                metadata={
+                    "provider": self.settings.ocr.provider,
+                    "source_uri": file.source_uri,
+                    "mime_type": file.mime_type,
+                },
+            )
+            try:
+                parsed, ocr_cache_id, cache_hit = self._parse_file(file, ocr_options)
+            except Exception as exc:
+                self._emit_progress(
+                    "ocr",
+                    "failed",
+                    file_id=file.id,
+                    metadata={
+                        "provider": self.settings.ocr.provider,
+                        "source_uri": file.source_uri,
+                        **error_metadata(exc),
+                    },
+                    elapsed_ms=elapsed_ms(ocr_started, perf_counter()),
+                )
+                raise
+            if cache_hit:
+                ocr_cache_hits += 1
+            documents.append(parsed)
+            artifacts = build_document_artifacts(
+                self.settings.job.graph_id,
+                file,
+                parsed,
+                ocr_cache_id,
+                cache_hit,
+            )
+            trace.append(artifacts.trace_event)
+            document_rows.append(artifacts.document)
+            page_rows.extend(artifacts.pages)
+            block_rows.extend(artifacts.blocks)
+            asset_rows.extend(artifacts.assets)
+            chunks.extend(
+                chunk_document(
+                    parsed,
+                    self.settings.job.graph_id,
+                    self.settings.graph.chunk_token_size,
+                    self.settings.graph.chunk_token_overlap,
+                )
+            )
+            self._emit_progress(
+                "ocr",
+                "completed",
+                file_id=file.id,
+                counts={
+                    "pages": len(parsed.pages),
+                    "blocks": sum(len(page.blocks) for page in parsed.pages),
+                    "assets": len(parsed.assets),
+                },
+                metadata={
+                    "provider": self.settings.ocr.provider,
+                    "cache_hit": cache_hit,
+                    "cache_id": ocr_cache_id,
+                },
+                elapsed_ms=elapsed_ms(ocr_started, perf_counter()),
+            )
+
+        return _PreparedFiles(
+            documents=documents,
+            chunks=chunks,
+            document_rows=document_rows,
+            page_rows=page_rows,
+            block_rows=block_rows,
+            asset_rows=asset_rows,
+            ocr_cache_hits=ocr_cache_hits,
+            trace=trace,
+        )
+
+    def _filter_extraction(
+        self,
+        extraction: ExtractionResult,
+        chunks: list[Chunk],
+        trace: list[dict[str, Any]],
+    ) -> _FilteredExtraction:
+        chunks_by_id = {chunk.id: chunk for chunk in chunks}
+        entity_filter = filter_entities_with_decisions(
+            extraction.entities,
+            chunks_by_id,
+            min_confidence=self.settings.graph.min_entity_confidence,
+            min_name_length=self.settings.graph.min_entity_name_length,
+            blocklist=self.settings.graph.entity_blocklist,
+        )
+        relation_filter = filter_relations_with_decisions(
+            extraction.relations,
+            entity_filter.kept,
+            chunks_by_id,
+            min_confidence=self.settings.graph.min_relation_confidence,
+            require_endpoint_grounding=self.settings.graph.require_relation_endpoint_grounding,
+        )
+        trace.append(
+            {
+                "stage": "filtering",
+                "entities_before": len(extraction.entities),
+                "entities_after": len(entity_filter.kept),
+                "relations_before": len(extraction.relations),
+                "relations_after": len(relation_filter.kept),
+                "dropped_entities_by_reason": entity_filter.dropped_reason_counts(),
+                "dropped_relations_by_reason": relation_filter.dropped_reason_counts(),
+            }
+        )
+        self._emit_progress(
+            "filtering",
+            "completed",
+            counts={
+                "entities_before": len(extraction.entities),
+                "entities_after": len(entity_filter.kept),
+                "relations_before": len(extraction.relations),
+                "relations_after": len(relation_filter.kept),
+            },
+        )
+        trace.extend(
+            decision.to_trace_event()
+            for decision in entity_filter.decisions
+            if decision.action == "dropped"
+        )
+        trace.extend(
+            decision.to_trace_event()
+            for decision in relation_filter.decisions
+            if decision.action == "dropped"
+        )
+        return _FilteredExtraction(
+            entities=entity_filter.kept,
+            relations=relation_filter.kept,
+            entity_filter=entity_filter,
+            relation_filter=relation_filter,
+        )
+
+    def _assemble_and_describe_graph(
+        self,
+        chunks: list[Chunk],
+        entities: list[ExtractedEntity],
+        relations: list[ExtractedRelation],
+        trace: list[dict[str, Any]],
+    ) -> tuple[GraphAssemblyResult, int]:
+        merge_started = perf_counter()
+        self._emit_progress(
+            "merge",
+            "started",
+            counts={"entities": len(entities), "relations": len(relations)},
+        )
+        assembly = assemble_graph_with_decisions(
+            self.settings.job.graph_id,
+            chunks,
+            entities,
+            relations,
+            self.settings.graph.relation_weight_max,
+        )
+        description_result = synthesize_entity_descriptions(
+            assembly.nodes,
+            assembly.entity_sources,
+            entities,
+            assembly.evidence,
+            self.llm,
+            self.settings.graph.description_merge_min_observations,
+            self.settings.graph.description_merge_max_descriptions,
+            self.settings.graph.description_merge_max_evidence,
+        )
+        trace.append(
+            {
+                "stage": "merge",
+                "nodes": len(assembly.nodes),
+                "edges": len(assembly.edges),
+                "evidence": len(assembly.evidence),
+                "entity_sources": len(assembly.entity_sources),
+                "descriptions_merged": description_result.merged_count,
+                "decision_actions": assembly.decision_action_counts(),
+                "decision_reasons": assembly.decision_reason_counts(),
+            }
+        )
+        self._emit_progress(
+            "merge",
+            "completed",
+            counts={
+                "nodes": len(assembly.nodes),
+                "edges": len(assembly.edges),
+                "evidence": len(assembly.evidence),
+                "entity_sources": len(assembly.entity_sources),
+                "descriptions_merged": description_result.merged_count,
+            },
+            elapsed_ms=elapsed_ms(merge_started, perf_counter()),
+        )
+        trace.extend(decision.to_trace_event() for decision in assembly.decisions)
+        trace.extend(description_result.trace_events)
+        return assembly, description_result.merged_count
+
+    def _detect_and_embed_communities(
+        self,
+        nodes: list[GraphNode],
+        edges: list[GraphEdge],
+        embed_options: EmbedOptions,
+        trace: list[dict[str, Any]],
+    ) -> tuple[list[Community], list[CommunityFinding]]:
+        community_started = perf_counter()
+        self._emit_progress(
+            "community_detection",
+            "started",
+            counts={"nodes": len(nodes), "edges": len(edges)},
+        )
+        community_result = detect_communities(
+            self.settings.job.graph_id,
+            nodes,
+            edges,
+            self.llm,
+            self.settings.graph.min_community_size,
+        )
+        communities = community_result.communities
+        findings = community_result.findings
+        embed_communities(communities, self.embeddings, embed_options)
+        self._emit_progress(
+            "community_detection",
+            "completed",
+            counts={"communities": len(communities), "findings": len(findings)},
+            elapsed_ms=elapsed_ms(community_started, perf_counter()),
+        )
+        trace.append(
+            {
+                "stage": "community_detection",
+                "communities": len(communities),
+                "findings": len(findings),
+            }
+        )
+        trace.extend(community_result.trace_events)
+        return communities, findings
+
+    def _build_write_batch(
+        self,
+        *,
+        files_seen: int,
+        documents_processed: int,
+        document_rows: list[dict[str, Any]],
+        page_rows: list[dict[str, Any]],
+        block_rows: list[dict[str, Any]],
+        asset_rows: list[dict[str, Any]],
+        chunks: list[Chunk],
+        extraction: ExtractionResult,
+        entities: list[ExtractedEntity],
+        relations: list[ExtractedRelation],
+        entity_filter: EntityFilterResult,
+        relation_filter: RelationFilterResult,
+        assembly: GraphAssemblyResult,
+        descriptions_merged: int,
+        communities: list[Community],
+        findings: list[CommunityFinding],
+        trace: list[dict[str, Any]],
+        ocr_cache_hits: int,
+        extraction_cache_hit: bool,
+    ) -> tuple[GraphWriteBatch, GraphQualityResult]:
+        # Quality is evaluated before writer persistence so fail-before-write and
+        # diagnostic mode both use the same checks and serialized details.
+        quality_result = evaluate_graph_quality(
+            assembly.nodes,
+            assembly.edges,
+            assembly.evidence,
+            self.settings.embedding.dimension,
+        )
+        trace.append(
+            {
+                "stage": "quality",
+                "ok": quality_result.ok,
+                "failed_checks": [
+                    {
+                        "name": check.name,
+                        "count": check.count,
+                        "details": check.details,
+                    }
+                    for check in quality_result.checks
+                    if not check.ok
+                ],
+            }
+        )
+        self._emit_progress(
+            "quality",
+            "completed",
+            counts={"failed_checks": sum(1 for check in quality_result.checks if not check.ok)},
+            metadata={"ok": quality_result.ok},
+        )
+        file_ids = sorted(
+            {
+                str(row.get("file_id", ""))
+                for row in document_rows
+                if str(row.get("file_id", "")).strip()
+            }
+        )
+        write_scope: Literal["graph_snapshot", "file_batch"] = (
+            "file_batch" if self.claimed_files else "graph_snapshot"
+        )
+        # Full local runs replace a graph snapshot; leased Snowflake queue
+        # workers only reindex the claimed files so parallel batches do not
+        # erase each other's output.
+        report_artifacts = build_run_report_artifacts(
+            RunReportRequest(
+                job_id=self.settings.job.job_id,
+                graph_id=self.settings.job.graph_id,
+                write_scope=write_scope,
+                file_ids=file_ids,
+                files_seen=files_seen,
+                documents_processed=documents_processed,
+                block_rows=block_rows,
+                asset_rows=asset_rows,
+                chunks=chunks,
+                extraction=extraction,
+                entities=entities,
+                relations=relations,
+                entity_filter=entity_filter,
+                relation_filter=relation_filter,
+                assembly=assembly,
+                descriptions_merged=descriptions_merged,
+                communities=communities,
+                findings=findings,
+                ocr_cache_hits=ocr_cache_hits,
+                extraction_cache_hit=extraction_cache_hit,
+                providers=RunProviders(
+                    ocr=self.settings.ocr.provider,
+                    llm=self.settings.llm.provider,
+                    embedding=self.settings.embedding.provider,
+                    writer=self.settings.writer.provider,
+                    cache=self.settings.cache.provider,
+                ),
+                embedding_dimension=self.settings.embedding.dimension,
+                graph_settings=self.settings.graph,
+                quality_result=quality_result,
+            )
+        )
+        return (
+            GraphWriteBatch(
+                graph_id=self.settings.job.graph_id,
+                write_scope=write_scope,
+                reindex_file_ids=file_ids,
+                documents=document_rows,
+                pages=page_rows,
+                blocks=block_rows,
+                assets=asset_rows,
+                chunks=chunks,
+                nodes=assembly.nodes,
+                edges=assembly.edges,
+                evidence=assembly.evidence,
+                entity_sources=assembly.entity_sources,
+                communities=communities,
+                community_findings=findings,
+                run_report=report_artifacts.run_report,
+                extraction_trace=trace,
+                graph_metrics=report_artifacts.graph_metrics,
+            ),
+            quality_result,
+        )
+
+    def _parse_file(
+        self,
+        file: InputFile,
+        ocr_options: OcrOptions,
+    ) -> tuple[ParsedDocument, str, bool]:
+        cache_key = build_ocr_cache_key(file, self.settings.ocr.provider, ocr_options)
+        cached = self.cache.get_ocr_document(cache_key) if self.cache is not None else None
+        if cached is not None:
+            return cached, cache_key.id, True
+        parsed = self.ocr.parse(file, ocr_options)
+        if self.cache is not None:
+            self.cache.put_ocr_document(cache_key, parsed)
+        return parsed, cache_key.id, False
+
+    def _extract_graph(self, chunks: list[Chunk]) -> tuple[ExtractionResult, str, bool]:
+        cache_key = build_extraction_cache_key(
+            self.settings.job.graph_id,
+            chunks,
+            self.settings.llm.provider,
+            self.settings.llm.model,
+            self.settings.graph,
+            self.settings.llm.timeout_seconds,
+        )
+        cached = self.cache.get_extraction_result(cache_key) if self.cache is not None else None
+        if cached is not None:
+            return cached, cache_key.id, True
+        extraction = extract_graph_from_chunks(
+            chunks,
+            self.llm,
+            self.settings.graph,
+            self.settings.llm.model,
+            self.settings.llm.timeout_seconds,
+            batch_checkpoint_get=self._get_extraction_batch_checkpoint
+            if self.cache is not None
+            else None,
+            batch_checkpoint_put=self._put_extraction_batch_checkpoint
+            if self.cache is not None
+            else None,
+        )
+        if self.cache is not None:
+            self.cache.put_extraction_result(cache_key, extraction)
+        return extraction, cache_key.id, False
+
+    def _extraction_cache_key(self, chunks: list[Chunk]) -> ExtractionCacheKey:
+        return build_extraction_cache_key(
+            self.settings.job.graph_id,
+            chunks,
+            self.settings.llm.provider,
+            self.settings.llm.model,
+            self.settings.graph,
+            self.settings.llm.timeout_seconds,
+        )
+
+    def _get_extraction_batch_checkpoint(
+        self,
+        chunks: list[Chunk],
+    ) -> ExtractionBatchCheckpoint:
+        cache_key = self._extraction_cache_key(chunks)
+        cached = self.cache.get_extraction_result(cache_key) if self.cache is not None else None
+        return ExtractionBatchCheckpoint(cache_id=cache_key.id, result=cached)
+
+    def _put_extraction_batch_checkpoint(
+        self,
+        chunks: list[Chunk],
+        extraction: ExtractionResult,
+    ) -> str:
+        cache_key = self._extraction_cache_key(chunks)
+        if self.cache is not None:
+            self.cache.put_extraction_result(cache_key, extraction)
+        return cache_key.id
+
+    def _ocr_options(self) -> OcrOptions:
+        return OcrOptions(
+            language=self.settings.ocr.language,
+            page_range=self.settings.ocr.page_range,
+            timeout_seconds=self.settings.ocr.timeout_seconds,
+            model_cache_dir=str(self.settings.ocr.model_cache_dir)
+            if self.settings.ocr.model_cache_dir
+            else None,
+            method=self.settings.ocr.mineru_method,
+            backend=self.settings.ocr.mineru_backend,
+            effort=self.settings.ocr.mineru_effort,
+            api_url=self.settings.ocr.mineru_api_url,
+            api_key=self.settings.ocr.mineru_api_key,
+            server_url=self.settings.ocr.mineru_server_url,
+            start_page_id=self.settings.ocr.mineru_start_page_id,
+            end_page_id=self.settings.ocr.mineru_end_page_id,
+            formula=self.settings.ocr.mineru_formula,
+            table=self.settings.ocr.mineru_table,
+            image_analysis=self.settings.ocr.mineru_image_analysis,
+            client_side_output_generation=(self.settings.ocr.mineru_client_side_output_generation),
+            tesseract_command=self.settings.ocr.tesseract_command,
+            tesseract_pdf_renderer_command=self.settings.ocr.tesseract_pdf_renderer_command,
+            tesseract_dpi=self.settings.ocr.tesseract_dpi,
+            snowflake_parse_mode=self.settings.ocr.snowflake_parse_mode,
+            snowflake_extract_images=self.settings.ocr.snowflake_extract_images,
+            snowflake_page_split=self.settings.ocr.snowflake_page_split,
+        )
+
+    def _emit_progress(
+        self,
+        stage: str,
+        status: str,
+        *,
+        file_id: str | None = None,
+        message: str | None = None,
+        counts: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        elapsed_ms: int | None = None,
+    ) -> None:
+        if self.progress_sink is None:
+            return
+        self.progress_sink.emit(
+            ProgressEvent(
+                job_id=self.settings.job.job_id,
+                graph_id=self.settings.job.graph_id,
+                stage=stage,
+                status=status,
+                file_id=file_id,
+                message=message,
+                counts=counts or {},
+                metadata=metadata or {},
+                elapsed_ms=elapsed_ms,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class _PreparedFiles:
+    """Parsed documents and document rows produced before graph extraction."""
+
+    documents: list[ParsedDocument]
+    chunks: list[Chunk]
+    document_rows: list[dict[str, Any]]
+    page_rows: list[dict[str, Any]]
+    block_rows: list[dict[str, Any]]
+    asset_rows: list[dict[str, Any]]
+    ocr_cache_hits: int
+    trace: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _FilteredExtraction:
+    """Filtered extraction observations plus their filter decision records."""
+
+    entities: list[ExtractedEntity]
+    relations: list[ExtractedRelation]
+    entity_filter: EntityFilterResult
+    relation_filter: RelationFilterResult
+
+
+def build_job_file_results(
+    batch: GraphWriteBatch,
+    ocr_provider: str,
+    llm_provider: str,
+    embedding_model: str,
+    embedding_dimension: int,
+) -> list[JobFileResult]:
+    """Summarize rows written per file for Snowflake file-queue completion."""
+
+    chunk_ids_by_file: dict[str, set[str]] = {}
+    for chunk in batch.chunks:
+        chunk_ids_by_file.setdefault(chunk.file_id, set()).add(chunk.id)
+    file_ids = sorted(
+        {
+            str(row.get("file_id", ""))
+            for row in batch.documents
+            if str(row.get("file_id", "")).strip()
+        }
+    )
+    results: list[JobFileResult] = []
+    for file_id in file_ids:
+        file_chunk_ids = chunk_ids_by_file.get(file_id, set())
+        node_rows = sum(
+            1 for node in batch.nodes if file_chunk_ids.intersection(node.source_chunk_ids)
+        )
+        edge_rows = sum(1 for edge in batch.edges if edge.source_file_id == file_id)
+        # KG_JOB_FILE is the app-facing progress surface, so keep a compact
+        # per-file row breakdown there instead of forcing reviewers to derive
+        # it from all graph tables after the fact.
+        row_counts = {
+            "documents": sum(1 for row in batch.documents if row.get("file_id") == file_id),
+            "pages": sum(1 for row in batch.pages if row.get("file_id") == file_id),
+            "blocks": sum(1 for row in batch.blocks if row.get("file_id") == file_id),
+            "assets": sum(1 for row in batch.assets if row.get("file_id") == file_id),
+            "chunks": sum(1 for chunk in batch.chunks if chunk.file_id == file_id),
+            "nodes": node_rows,
+            "edges": edge_rows,
+            "evidence": sum(1 for item in batch.evidence if item.file_id == file_id),
+            "entity_sources": sum(
+                1 for item in batch.entity_sources if item.file_id == file_id
+            ),
+        }
+        rows_written = sum(row_counts.values())
+        quality = batch.graph_metrics.get("quality", {})
+        results.append(
+            JobFileResult(
+                file_id=file_id,
+                rows_written=rows_written,
+                row_counts=row_counts,
+                stage="written",
+                ocr_provider=ocr_provider,
+                llm_provider=llm_provider,
+                embedding_model=embedding_model,
+                embedding_dimension=embedding_dimension,
+                audit={
+                    "graph_id": batch.graph_id,
+                    "write_scope": batch.write_scope,
+                    "quality_ok": quality.get("ok") if isinstance(quality, dict) else None,
+                },
+            )
+        )
+    return results
+
+
+def _write_counts(batch: GraphWriteBatch) -> dict[str, int]:
+    return {
+        "documents": len(batch.documents),
+        "pages": len(batch.pages),
+        "blocks": len(batch.blocks),
+        "assets": len(batch.assets),
+        "chunks": len(batch.chunks),
+        "nodes": len(batch.nodes),
+        "edges": len(batch.edges),
+        "evidence": len(batch.evidence),
+        "entity_sources": len(batch.entity_sources),
+        "communities": len(batch.communities),
+        "community_findings": len(batch.community_findings),
+        "trace_events": len(batch.extraction_trace),
+    }
+
+
+def _matching_claim(file: InputFile, claims: list[JobFileClaim]) -> JobFileClaim | None:
+    file_keys = _file_match_keys(file)
+    for claim in claims:
+        claim_keys = _claim_match_keys(claim)
+        if file_keys.intersection(claim_keys):
+            return claim
+        if claim.source_uri and _source_paths_match(file, claim.source_uri):
+            return claim
+    return None
+
+
+def _file_with_claim_identity(file: InputFile, claim: JobFileClaim) -> InputFile:
+    update: dict[str, object] = {"id": claim.file_id}
+    if claim.checksum:
+        update["checksum"] = claim.checksum
+    if claim.source_uri and _is_absolute_source_uri(claim.source_uri):
+        update["source_uri"] = claim.source_uri
+    return file.model_copy(update=update)
+
+
+def _file_match_keys(file: InputFile) -> set[str]:
+    return {
+        key
+        for key in {
+            file.id,
+            file.source_uri,
+            file.path.as_posix(),
+            file.path.name,
+            _relative_source_path(file.source_uri),
+        }
+        if key
+    }
+
+
+def _claim_match_keys(claim: JobFileClaim) -> set[str]:
+    return {
+        key
+        for key in {
+            claim.file_id,
+            claim.source_uri,
+            _relative_source_path(claim.source_uri or ""),
+        }
+        if key
+    }
+
+
+def _source_paths_match(file: InputFile, source_uri: str) -> bool:
+    normalized_source = source_uri.strip().strip("/")
+    if not normalized_source:
+        return False
+    return file.source_uri.rstrip("/").endswith(
+        "/" + normalized_source
+    ) or normalized_source.endswith("/" + file.path.as_posix().strip("/"))
+
+
+def _relative_source_path(source_uri: str) -> str:
+    stripped = source_uri.strip()
+    if not stripped:
+        return ""
+    if stripped.startswith("@") and "/" in stripped:
+        return stripped.split("/", 1)[1].strip("/")
+    if "://" in stripped:
+        return stripped.split("://", 1)[1].split("/", 1)[-1].strip("/")
+    return stripped.strip("/")
+
+
+def _is_absolute_source_uri(source_uri: str) -> bool:
+    return source_uri.startswith(("@", "file://", "http://", "https://", "azblob://"))

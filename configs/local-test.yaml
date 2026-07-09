@@ -1,0 +1,27 @@
+runtime:
+  runtime: local
+job:
+  job_id: local-test
+  graph_id: local-test-graph
+files:
+  source: local
+  input_path: data/samples
+ocr:
+  provider: builtin_text
+llm:
+  provider: fake
+  model: fake-graph-extractor
+embedding:
+  provider: hash
+  model: hash-embedding
+  dimension: 64
+graph:
+  chunk_token_size: 300
+  chunk_token_overlap: 50
+  max_chunks_per_llm_call: 2
+  max_entities_per_batch: 500
+  max_relations_per_batch: 500
+  gleaning_max_passes: 0
+writer:
+  provider: local_artifacts
+  output_path: out/local-test

@@ -1,0 +1,25 @@
+runtime:
+  runtime: local
+job:
+  job_id: local-tesseract-smoke
+  graph_id: local-tesseract-smoke
+files:
+  source: local
+  input_path: data/samples/martial-arts-overview.pdf
+ocr:
+  provider: tesseract_internal
+  language: eng
+  page_range: "1"
+  tesseract_dpi: 200
+llm:
+  provider: fake
+  model: fake-graph-extractor
+embedding:
+  provider: hash
+  dimension: 16
+writer:
+  provider: local_artifacts
+  output_path: out/local-tesseract-smoke
+cache:
+  provider: local
+  path: out/cache/local-tesseract-smoke

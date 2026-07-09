@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+from kg_processor.application.graph_filter import EntityFilterResult, RelationFilterResult
+from kg_processor.application.graph_merge import assemble_graph_with_decisions
+from kg_processor.application.graph_quality import evaluate_graph_quality
+from kg_processor.application.run_report import (
+    RunProviders,
+    RunReportRequest,
+    build_run_report_artifacts,
+)
+from kg_processor.config.settings import GraphSettings
+from kg_processor.domain.graph import (
+    Chunk,
+    Community,
+    ExtractedEntity,
+    ExtractedRelation,
+    ExtractionResult,
+)
+
+
+def test_build_run_report_artifacts_counts_providers_cache_and_quality() -> None:
+    chunk = Chunk(
+        id="chunk_1",
+        graph_id="graph",
+        file_id="file_1",
+        document_id="file_1",
+        page_number=1,
+        chunk_index=0,
+        content="Alice works at Acme.",
+        start_offset=0,
+        end_offset=20,
+        token_count=4,
+        content_hash="hash",
+        embedding=[0.1, 0.2],
+    )
+    alice = ExtractedEntity(
+        name="Alice",
+        type="PERSON",
+        description="Person",
+        source_chunk_id=chunk.id,
+        quote="Alice",
+    )
+    acme = ExtractedEntity(
+        name="Acme",
+        type="ORGANIZATION",
+        description="Company",
+        source_chunk_id=chunk.id,
+        quote="Acme",
+    )
+    relation = ExtractedRelation(
+        source_name="Alice",
+        target_name="Acme",
+        relation_type="works at",
+        description="Alice works at Acme.",
+        source_chunk_id=chunk.id,
+        quote="Alice works at Acme.",
+    )
+    extraction = ExtractionResult(
+        entities=[alice, acme],
+        relations=[relation],
+        provider_metadata={
+            "chunk_count": 2,
+            "batch_count": 2,
+            "batches": [
+                {
+                    "passes": [
+                        {
+                            "repair_attempts": 1,
+                            "validation_repair_attempts": 0,
+                            "evidence_offsets_normalized": 2,
+                            "dropped_entities": 0,
+                            "dropped_relations": 0,
+                            "dropped_observations_by_reason": {},
+                        }
+                    ]
+                },
+                {
+                    "passes": [
+                        {
+                            "repair_attempts": 0,
+                            "validation_repair_attempts": 1,
+                            "evidence_offsets_normalized": 3,
+                            "dropped_entities": 1,
+                            "dropped_relations": 2,
+                            "dropped_observations_by_reason": {"ungrounded_quote": 3},
+                        }
+                    ]
+                },
+            ],
+        },
+    )
+    assembly = assemble_graph_with_decisions(
+        "graph",
+        [chunk],
+        extraction.entities,
+        extraction.relations,
+        relation_weight_max=10.0,
+    )
+    for node in assembly.nodes:
+        node.embedding = [0.1, 0.2]
+    for edge in assembly.edges:
+        edge.embedding = [0.3, 0.4]
+    community = Community(
+        id="community_1",
+        graph_id="graph",
+        stable_key="node_a|node_b",
+        level=0,
+        title="Work",
+        summary="Alice and Acme",
+        rating=5.0,
+        member_node_ids=[node.id for node in assembly.nodes],
+    )
+    quality = evaluate_graph_quality(
+        assembly.nodes,
+        assembly.edges,
+        assembly.evidence,
+        expected_embedding_dimension=2,
+    )
+
+    artifacts = build_run_report_artifacts(
+        RunReportRequest(
+            job_id="job",
+            graph_id="graph",
+            write_scope="graph_snapshot",
+            file_ids=["file_1"],
+            files_seen=1,
+            documents_processed=1,
+            block_rows=[{"id": "block_1"}],
+            asset_rows=[{"id": "asset_1"}],
+            chunks=[chunk],
+            extraction=extraction,
+            entities=extraction.entities,
+            relations=extraction.relations,
+            entity_filter=EntityFilterResult(kept=extraction.entities, decisions=[]),
+            relation_filter=RelationFilterResult(kept=extraction.relations, decisions=[]),
+            assembly=assembly,
+            descriptions_merged=1,
+            communities=[community],
+            findings=[],
+            ocr_cache_hits=1,
+            extraction_cache_hit=True,
+            providers=RunProviders(
+                ocr="builtin_text",
+                llm="fake",
+                embedding="hash",
+                writer="local_artifacts",
+                cache="local",
+            ),
+            embedding_dimension=2,
+            graph_settings=GraphSettings(),
+            quality_result=quality,
+        )
+    )
+
+    assert artifacts.run_report["run_id"].startswith("run_")
+    assert artifacts.run_report["chunks_created"] == 1
+    assert artifacts.run_report["blocks_created"] == 1
+    assert artifacts.run_report["assets_created"] == 1
+    assert artifacts.run_report["nodes_created"] == 2
+    assert artifacts.run_report["edges_created"] == 1
+    assert artifacts.graph_metrics["providers"] == {
+        "ocr": "builtin_text",
+        "llm": "fake",
+        "embedding": "hash",
+        "writer": "local_artifacts",
+        "cache": "local",
+    }
+    assert artifacts.graph_metrics["cache"] == {
+        "ocr_hits": 1,
+        "ocr_misses": 0,
+        "extraction_hit": True,
+    }
+    assert artifacts.graph_metrics["extraction"] == {
+        "chunk_count": 2,
+        "batch_count": 2,
+        "pass_count": 2,
+        "llm_repair_attempts": 1,
+        "validation_repair_attempts": 1,
+        "evidence_offsets_normalized": 5,
+        "dropped_entities": 1,
+        "dropped_relations": 2,
+        "dropped_observations_by_reason": {"ungrounded_quote": 3},
+    }
+    assert artifacts.graph_metrics["quality"]["ok"] is True
