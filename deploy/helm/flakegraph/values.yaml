@@ -1,0 +1,391 @@
+# FlakeGraph worker image. Pin a digest in production so every architecture runs
+# the exact image that passed validation.
+image:
+  # Replace with the registry location where your release pipeline publishes
+  # the image built from this repository; FlakeGraph does not assume a vendor
+  # registry contains an official image.
+  repository: your-registry.example/flakegraph
+  tag: "latest"
+  digest: ""
+  # Always re-resolve mutable release tags. Pinning digest above still guarantees
+  # byte-identical workers while allowing registries and node caches to cooperate.
+  pullPolicy: Always
+  pullSecrets: []
+
+# A public, non-secret FlakeGraph YAML document is mounted at this path. Set
+# existingConfigMap to use a separately managed object, or provide content here.
+# For a file on disk, pass `--set-file config.content=path/to/config.yaml` to
+# Helm; values files do not resolve another YAML document by filename.
+config:
+  existingConfigMap: ""
+  key: config.yaml
+  content: |
+    runtime:
+      runtime: kubernetes
+    job:
+      graph_id: flakegraph
+    files:
+      source: local
+      input_path: /data/input
+    ocr:
+      provider: builtin_text
+    llm:
+      provider: openai_compatible
+      endpoint: ${KG_LLM_ENDPOINT}
+      model: ${KG_LLM_MODEL}
+      api_key: ${KG_LLM_API_KEY}
+    embedding:
+      provider: openai_compatible
+      endpoint: ${KG_EMBED_ENDPOINT}
+      model: ${KG_EMBED_MODEL}
+      api_key: ${KG_EMBED_API_KEY}
+    writer:
+      provider: local_artifacts
+      output_path: /data/output
+    cache:
+      provider: none
+
+# Optional ontology content is mounted independently from the processing config.
+# This keeps one config portable between a submitter checkout and container paths.
+# Pass `--set-file ontology.content=path/to/ontology.yaml`, or reference a ConfigMap
+# that already contains `ontology.key`.
+ontology:
+  existingConfigMap: ""
+  key: ontology.yaml
+  content: ""
+
+# The database secret must expose a PostgreSQL URI under the selected key. A
+# CloudNativePG application secret uses `uri`, which is the default below.
+database:
+  secretName: flakegraph-postgres-app
+  secretKey: uri
+  # A Helm hook applies FlakeGraph's idempotent coordination schema before the
+  # release is considered ready. This avoids relying on an autoscaled worker to
+  # create the PostgreSQL view that KEDA itself needs to discover worker demand.
+  bootstrap:
+    enabled: true
+    activeDeadlineSeconds: 900
+    backoffLimit: 8
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+  cloudNativePG:
+    enabled: false
+    clusterName: flakegraph-postgres
+    instances: 3
+    # Covers the documented 20-node worker ceilings, KEDA polling, Spark drivers,
+    # and operator access without running against PostgreSQL's 100-session default.
+    maxConnections: 300
+    database: flakegraph
+    owner: flakegraph
+    storage:
+      # A 250,000-document corpus can produce several million durable tasks and
+      # artifact references before retention. Leave room for indexes, retries,
+      # autovacuum, and one overlapping graph version; smaller installations may
+      # override this when CloudNativePG is explicitly enabled.
+      size: 100Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    nodeSelector: {}
+    tolerations: []
+
+# Provider credentials belong in one operator-managed Secret. Provider endpoints,
+# models, and other non-secret behavior remain in FlakeGraph configuration so an
+# unrelated Secret key cannot silently replace a reviewed processing profile.
+# Map each permitted key explicitly; never put credential values in Helm values.
+providerSecret:
+  name: flakegraph-providers
+  optional: false
+  env:
+    - name: KG_LLM_API_KEY
+      key: KG_LLM_API_KEY
+      optional: true
+    - name: KG_EMBED_API_KEY
+      key: KG_EMBED_API_KEY
+      optional: true
+    - name: KG_SNOWFLAKE_PASSWORD
+      key: KG_SNOWFLAKE_PASSWORD
+      optional: true
+    - name: KG_SNOWFLAKE_OAUTH_TOKEN
+      key: KG_SNOWFLAKE_OAUTH_TOKEN
+      optional: true
+
+# Shared object storage is the distributed data plane. PostgreSQL retains task
+# metadata and checksums; workers and Spark executors transfer payloads directly.
+artifactStorage:
+  uri: ""
+  endpointUrl: ""
+  existingSecret: ""
+  accessKeyKey: access-key-id
+  secretKeyKey: secret-access-key
+  region: us-east-1
+
+# Spark finalization is opt-in unless artifact storage is configured by an
+# environment-specific values file. The image is built with Dockerfile.spark.
+spark:
+  enabled: false
+  image:
+    repository: your-registry.example/flakegraph-spark
+    tag: "latest"
+    digest: ""
+    pullPolicy: Always
+  master: k8s://https://kubernetes.default.svc
+  executorInstances: 4
+  executorCores: 4
+  executorMemory: 8g
+  # Covers Python workers, local embedding models, and native libraries outside
+  # the JVM heap. The default deliberately matches the heap because Spark's
+  # conventional 10% overhead is insufficient for Python ML inference.
+  executorMemoryOverhead: 8g
+  nodeSelector: {}
+  topologyKey: kubernetes.io/hostname
+  executorPodSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 185
+    runAsGroup: 185
+    seccompProfile:
+      type: RuntimeDefault
+  executorContainerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+  serviceAccount:
+    # The empty chart-managed name resolves to <release>-flakegraph-spark.
+    # Set create=false with a name to bind an account managed outside this chart.
+    create: true
+    name: ""
+  # Deprecated exact-name alias retained for existing external values files.
+  serviceAccountName: ""
+
+# Optional local model serving. When enabled, the chart runs one pinned vLLM
+# server per replica and wires LLM traffic to its OpenAI-compatible Service.
+# Embeddings remain independently configurable because a generative vLLM model
+# is not an embedding model. One persistent model cache and GPU belong to each
+# replica so node-local workers can saturate every inference server.
+modelServing:
+  enabled: false
+  runtime: vllm
+  replicas: 1
+  image:
+    repository: nvcr.io/nvidia/vllm
+    tag: "26.05.post1-py3"
+    digest: sha256:94e21552f644e0c1627464ba89d2f7a4ce7442e196f72afa0bb5d7fba23cbb03
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  model:
+    name: nvidia/Qwen3.6-35B-A3B-NVFP4
+    # Pin the Hugging Face commit so model weights, tokenizer, and bundled chat
+    # template cannot change underneath an otherwise identical deployment.
+    revision: 491c2f1ea524c639598bf8fa787a93fed5a6fbce
+  # Public models work without a token. Configure an existing Secret to raise
+  # Hub rate limits or access an operator-approved gated/private replacement.
+  huggingFaceTokenSecret:
+    name: ""
+    key: HF_TOKEN
+    optional: true
+  server:
+    tensorParallelSize: 1
+    # GB10 unified memory is shared by CUDA, Spark, storage, and Kubernetes.
+    # Reserving half for vLLM leaves enough headroom for one co-located Spark
+    # executor during finalization while preserving four short-context sequences.
+    gpuMemoryUtilization: 0.50
+    maxModelLen: 262144
+    maxNumBatchedTokens: 32768
+    maxNumSeqs: 4
+    kvCacheDtype: fp8
+    attentionBackend: flashinfer
+    moeBackend: marlin
+    speculativeTokens: 3
+  service:
+    port: 8000
+    internalTrafficPolicy: Cluster
+  persistence:
+    enabled: true
+    size: 40Gi
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+  runtimeClassName: nvidia
+  startupTimeoutSeconds: 3600
+  terminationGracePeriodSeconds: 120
+  nodeSelector: {}
+  tolerations: []
+  topologyKey: kubernetes.io/hostname
+  resources:
+    requests:
+      cpu: "2"
+      memory: 32Gi
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "8"
+      memory: 110Gi
+      nvidia.com/gpu: "1"
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+
+# Preparation, extraction, and final graph resolution have different resource
+# profiles, so each role keeps an independently scalable worker pool.
+workers:
+  prepare:
+    enabled: true
+    replicas: 1
+    autoscaling:
+      minReplicas: 0
+      maxReplicas: 8
+      targetTasksPerReplica: 1
+    stages: [prepare_document]
+    localModelServing: false
+    resources:
+      requests:
+        cpu: "1"
+        memory: 4Gi
+      limits:
+        cpu: "4"
+        memory: 16Gi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  extract:
+    enabled: true
+    replicas: 1
+    autoscaling:
+      minReplicas: 0
+      maxReplicas: 32
+      targetTasksPerReplica: 1
+    stages:
+      - extract_document_context
+      - extract_entity_window
+      - compact_entity_inventory
+      - extract_relation_window
+      - compact_document
+    localModelServing: false
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        cpu: "8"
+        memory: 32Gi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  finalize:
+    enabled: true
+    replicas: 1
+    autoscaling:
+      minReplicas: 0
+      maxReplicas: 1
+      targetTasksPerReplica: 1
+    stages: [finalize_graph]
+    localModelServing: false
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        cpu: "8"
+        memory: 32Gi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+
+# KEDA counts dependency-ready or actively leased tasks only up to each pool's
+# maximum useful demand. The bounded query avoids repeatedly scanning millions
+# of queued rows while still scaling each Deployment to its configured maximum.
+# Drained pools reach zero, releasing node capacity before Spark executors start.
+autoscaling:
+  enabled: true
+  pollingIntervalSeconds: 5
+  cooldownPeriodSeconds: 30
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+    behavior: currentReplicasIfHigher
+  scaleUp:
+    stabilizationWindowSeconds: 0
+    podsPerPeriod: 16
+    periodSeconds: 15
+  scaleDown:
+    stabilizationWindowSeconds: 30
+    percentPerPeriod: 100
+    periodSeconds: 15
+
+# The chart-created priorities preserve model servers, let Spark preempt an idle
+# worker during autoscaler convergence, and keep ordinary workers below both.
+scheduling:
+  priorityClasses:
+    enabled: true
+    workerValue: 800000
+    sparkValue: 900000
+    modelValue: 1000000
+
+distributed:
+  # Workers renew long-running work every minute. A five-minute lease bounds
+  # hard-node-loss recovery without imposing a maximum OCR or Spark duration.
+  leaseSeconds: 300
+  pollIntervalSeconds: 1
+  retryDelaySeconds: 15
+
+# Input/output claims are optional because Azure Blob, Snowflake, and PostgreSQL
+# artifact flows do not need shared filesystems. Local input must be readable by
+# the submitter; workers receive source bytes through the artifact store.
+storage:
+  input:
+    existingClaim: ""
+    readOnly: true
+  output:
+    existingClaim: ""
+  cache:
+    existingClaim: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# Scale-down may select a pod that is still finishing an OCR request. Give the
+# signal-aware worker longer than the default one-hour OCR timeout to drain.
+terminationGracePeriodSeconds: 3900
+revisionHistoryLimit: 3
+priorityClassName: ""
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []

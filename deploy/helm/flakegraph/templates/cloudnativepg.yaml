@@ -1,0 +1,37 @@
+{{- if .Values.database.cloudNativePG.enabled }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.database.cloudNativePG.clusterName }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.database.cloudNativePG.instances }}
+  primaryUpdateStrategy: unsupervised
+  enableSuperuserAccess: false
+  postgresql:
+    parameters:
+      max_connections: {{ .Values.database.cloudNativePG.maxConnections | quote }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.database.cloudNativePG.database }}
+      owner: {{ .Values.database.cloudNativePG.owner }}
+  storage:
+    size: {{ .Values.database.cloudNativePG.storage.size }}
+    {{- with .Values.database.cloudNativePG.storage.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  resources:
+    {{- toYaml .Values.database.cloudNativePG.resources | nindent 4 }}
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    {{- with .Values.database.cloudNativePG.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.database.cloudNativePG.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- end }}

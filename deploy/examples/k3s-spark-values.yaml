@@ -1,0 +1,105 @@
+# Generic example for a k3s fleet whose GPU-capable nodes share this label.
+# Copy this file to deploy/private/ before adding site-specific registries,
+# storage classes, endpoint names, or secret references.
+image:
+  repository: registry.example.com/flakegraph
+  tag: "0.1.0"
+
+database:
+  secretName: flakegraph-postgres-app
+  cloudNativePG:
+    enabled: true
+    clusterName: flakegraph-postgres
+    instances: 3
+    storage:
+      # Suitable starting point for corpus-scale runs. Measure the first run and
+      # expand the volume before free space falls below the documented headroom.
+      size: 100Gi
+
+providerSecret:
+  name: flakegraph-providers
+  optional: true
+  # Only credential keys cross the Secret boundary. Provider endpoints and
+  # model names remain visible and reviewable in the mounted FlakeGraph config.
+  env:
+    - name: KG_LLM_API_KEY
+      key: KG_LLM_API_KEY
+      optional: true
+    - name: KG_EMBED_API_KEY
+      key: KG_EMBED_API_KEY
+      optional: true
+
+# Use a managed S3-compatible service in production, or a separately operated
+# in-cluster object store. PostgreSQL stores metadata; payload bytes and Parquet
+# graph tables move directly through this endpoint.
+artifactStorage:
+  uri: s3://flakegraph-artifacts
+  endpointUrl: https://object-storage.example.com
+  existingSecret: flakegraph-artifacts
+
+spark:
+  enabled: true
+  image:
+    repository: registry.example.com/flakegraph-spark
+    tag: "0.1.0"
+  executorInstances: 4
+  executorCores: 4
+  executorMemory: 8g
+  executorMemoryOverhead: 8g
+  nodeSelector:
+    flakegraph.io/node-class: nvidia-spark
+
+# Run one pinned vLLM replica on each GPU node. FlakeGraph workers are wired
+# to the chart-managed Service automatically; no external router is required.
+modelServing:
+  enabled: true
+  replicas: 4
+  nodeSelector:
+    flakegraph.io/node-class: nvidia-spark
+
+workers:
+  prepare:
+    # MinerU preparation is CPU-bound in the standard worker image. Four
+    # four-core workers per GB10 keep its 20 CPU cores busy while leaving room
+    # for the colocated vLLM server. Tune this ratio for other node shapes.
+    replicas: 16
+    autoscaling:
+      maxReplicas: 16
+    nodeSelector:
+      flakegraph.io/node-class: nvidia-spark
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        matchLabelKeys:
+          - pod-template-hash
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: worker-prepare
+  extract:
+    # Each worker runs two logical windows concurrently. Two workers therefore
+    # consume the four sequence slots exposed by one local vLLM replica.
+    replicas: 8
+    autoscaling:
+      maxReplicas: 8
+    localModelServing: true
+    nodeSelector:
+      flakegraph.io/node-class: nvidia-spark
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        # During a rolling update, spread each ReplicaSet independently. Without
+        # this key, deleting the old revision after scheduling the new one can
+        # leave the final steady-state pool unevenly distributed.
+        matchLabelKeys:
+          - pod-template-hash
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: worker-extract
+  finalize:
+    replicas: 1
+    autoscaling:
+      maxReplicas: 1
+    nodeSelector:
+      flakegraph.io/node-class: cpu-control

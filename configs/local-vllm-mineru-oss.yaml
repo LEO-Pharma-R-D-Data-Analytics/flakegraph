@@ -1,0 +1,43 @@
+runtime:
+  runtime: local
+job:
+  job_id: local-vllm-mineru-oss
+  graph_id: local-vllm-mineru-oss-graph
+files:
+  source: local
+  input_path: data/martial_arts/files
+  include_globs:
+    - "**/*.pdf"
+    - "**/*.docx"
+    - "**/*.pptx"
+    - "**/*.xlsx"
+    - "**/*.png"
+    - "**/*.jpg"
+    - "**/*.jpeg"
+    - "**/*.tif"
+    - "**/*.tiff"
+    - "**/*.bmp"
+    - "**/*.webp"
+ocr:
+  provider: mineru_internal
+  mineru_command: mineru
+  mineru_method: auto
+  mineru_backend: pipeline
+  mineru_effort: medium
+  model_cache_dir: out/cache/mineru
+llm:
+  provider: vllm_local
+  endpoint: http://localhost:8000/v1
+  model: nvidia/Qwen3.6-35B-A3B-NVFP4
+embedding:
+  provider: sentence_transformers
+  model: sentence-transformers/all-MiniLM-L6-v2
+  dimension: 384
+  batch_size: 32
+  device: ${KG_EMBED_DEVICE}
+writer:
+  provider: local_artifacts
+  output_path: out/local-vllm-mineru-oss
+cache:
+  provider: local
+  path: out/cache/local-vllm-mineru-oss

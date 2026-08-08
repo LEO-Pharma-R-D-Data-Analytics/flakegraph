@@ -1,0 +1,42 @@
+runtime:
+  runtime: local
+job:
+  job_id: local-ollama-qwen36
+  graph_id: martial-arts-history-v1
+files:
+  source: local
+  input_path: data/martial_arts/files
+  include_globs:
+    - "*.pdf"
+    - "*.docx"
+    - "*.pptx"
+    - "*.xlsx"
+    - "*.html"
+    - "*.htm"
+    - "*.txt"
+    - "*.md"
+    - "*.markdown"
+ocr:
+  # These public fixtures contain embedded text. Select a MinerU or external OCR
+  # profile for scanned or layout-heavy documents.
+  provider: builtin_text
+llm:
+  # The native adapter disables model thinking so the token budget is reserved
+  # for schema-constrained graph output.
+  # KG_LLM_MODEL can override this tag without changing the profile.
+  provider: ollama
+  endpoint: http://localhost:11434
+  model: qwen3.6:35b-a3b-q4_K_M
+embedding:
+  provider: sentence_transformers
+  model: sentence-transformers/all-MiniLM-L6-v2
+  dimension: 384
+  batch_size: 32
+ontology:
+  profile_path: data/martial_arts/ontology.yaml
+writer:
+  provider: local_artifacts
+  output_path: out/local-ollama-qwen36
+cache:
+  provider: local
+  path: out/cache/local-ollama-qwen36

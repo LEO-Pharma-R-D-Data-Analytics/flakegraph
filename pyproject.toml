@@ -1,0 +1,128 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flakegraph"
+version = "0.1.0"
+description = "Build evidence-grounded knowledge graphs on Snowflake with modular OCR, LLM, embedding, and writer providers."
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "Apache-2.0" }
+authors = [{ name = "FlakeGraph contributors" }]
+dependencies = [
+  "azure-identity>=1.25",
+  "azure-storage-blob>=12.20",
+  "boto3>=1.43.36",
+  "defusedxml>=0.7.1",
+  "httpx>=0.28.0",
+  "igraph>=0.11",
+  "leidenalg>=0.10",
+  "networkx>=3.4",
+  "numpy>=2.1",
+  "pandas>=2.2",
+  "plotly>=6.8",
+  "psycopg[binary,pool]>=3.3",
+  "pyarrow>=18.0",
+  "pydantic>=2.10",
+  "pypdf>=6.15",
+  "pypdfium2>=5.10.1",
+  "python-docx>=1.1",
+  "pyyaml>=6.0",
+  "rich>=15.0",
+  "snowflake-connector-python>=3.13,!=4.7.0",
+  "typer>=0.15",
+]
+
+[project.optional-dependencies]
+dev = [
+  "boto3-stubs[s3]>=1.43.36",
+  "mypy>=1.14",
+  "pandas-stubs>=2.2",
+  "pytest>=8.3",
+  "pytest-cov>=6.0",
+  "ruff>=0.8",
+  "streamlit==1.52.2",
+  "types-networkx>=3.4",
+  "types-PyYAML>=6.0",
+]
+local-embeddings = [
+  "sentence-transformers>=3.3",
+  "torch>=2.6,<3",
+  "transformers>=5.6.2,<5.7",
+]
+extract-gliner = [
+  "gliner>=0.2",
+  "transformers>=5.6.2,<5.7",
+]
+distributed-spark = [
+  "graphframes-py==0.12.1",
+  "pyspark==4.1.2",
+]
+app = [
+  "azure-identity==1.25.3",
+  "scipy==1.18.0",
+  "streamlit==1.52.2",
+]
+# Browser-SSO credential caching needs a keyring backend. Kept optional so the
+# container image, which authenticates with an SPCS-mounted OAuth token, does
+# not carry a desktop credential store it can never use.
+sso-cache = [
+  "snowflake-connector-python[secure-local-storage]>=3.13,!=4.7.0",
+]
+
+[tool.uv.sources]
+# Linux PyPI Torch wheels include CUDA dependency packages. The production
+# container is CPU-first unless a future GPU profile is added explicitly, so
+# Linux resolution is pinned to PyTorch's CPU wheel index while macOS developer
+# environments can keep using the standard PyPI wheels.
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[project.scripts]
+flakegraph = "kg_processor.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kg_processor"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.per-file-target-version]
+"app/**/*.py" = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
+ignore = ["PLR0913"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["PLR2004"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+packages = ["kg_processor"]
+mypy_path = ["src", "app"]
+
+[[tool.mypy.overrides]]
+# Spark remains optional and GraphFrames does not publish a PEP 561 marker.
+# Runtime imports stay lazy and the FlakeGraph-facing annotations remain strict.
+module = ["pyspark.*", "graphframes.*", "plotly.*", "snowflake.snowpark.*"]
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "types-defusedxml>=0.7.0",
+]

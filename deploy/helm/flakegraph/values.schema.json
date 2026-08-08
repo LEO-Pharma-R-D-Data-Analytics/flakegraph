@@ -1,0 +1,424 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "config", "ontology", "database", "providerSecret", "artifactStorage", "spark", "modelServing", "workers", "autoscaling", "scheduling", "distributed"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "digest", "pullPolicy", "pullSecrets"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^(|sha256:[a-f0-9]{64})$"},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]},
+        "pullSecrets": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingConfigMap", "key", "content"],
+      "properties": {
+        "existingConfigMap": {"type": "string"},
+        "key": {"type": "string", "minLength": 1},
+        "content": {"type": "string", "minLength": 1}
+      }
+    },
+    "ontology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingConfigMap", "key", "content"],
+      "properties": {
+        "existingConfigMap": {"type": "string"},
+        "key": {"type": "string", "minLength": 1},
+        "content": {"type": "string"}
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["secretName", "secretKey", "bootstrap", "cloudNativePG"],
+      "properties": {
+        "secretName": {"type": "string", "minLength": 1},
+        "secretKey": {"type": "string", "minLength": 1},
+        "bootstrap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "activeDeadlineSeconds", "backoffLimit", "resources"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "activeDeadlineSeconds": {"type": "integer", "minimum": 60},
+            "backoffLimit": {"type": "integer", "minimum": 0},
+            "resources": {"type": "object"}
+          }
+        },
+        "cloudNativePG": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "clusterName", "instances", "maxConnections", "database", "owner", "storage", "resources", "nodeSelector", "tolerations"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "clusterName": {"type": "string", "minLength": 1},
+            "instances": {"type": "integer", "minimum": 1},
+            "maxConnections": {"type": "integer", "minimum": 50},
+            "database": {"type": "string", "minLength": 1},
+            "owner": {"type": "string", "minLength": 1},
+            "storage": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["size", "storageClass"],
+              "properties": {
+                "size": {"type": "string", "minLength": 1},
+                "storageClass": {"type": "string"}
+              }
+            },
+            "resources": {"type": "object"},
+            "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+            "tolerations": {"type": "array", "items": {"type": "object"}}
+          }
+        }
+      }
+    },
+    "providerSecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "optional", "env"],
+      "properties": {
+        "name": {"type": "string"},
+        "optional": {"type": "boolean"},
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "key", "optional"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$"},
+              "key": {"type": "string", "minLength": 1},
+              "optional": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "artifactStorage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "endpointUrl", "existingSecret", "accessKeyKey", "secretKeyKey", "region"],
+      "properties": {
+        "uri": {"type": "string", "pattern": "^(|s3://.+|file:///.+)$"},
+        "endpointUrl": {"type": "string"},
+        "existingSecret": {"type": "string"},
+        "accessKeyKey": {"type": "string", "minLength": 1},
+        "secretKeyKey": {"type": "string", "minLength": 1},
+        "region": {"type": "string", "minLength": 1}
+      }
+    },
+    "spark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "image", "master", "executorInstances", "executorCores", "executorMemory", "executorMemoryOverhead", "nodeSelector", "topologyKey", "executorPodSecurityContext", "executorContainerSecurityContext", "serviceAccount", "serviceAccountName"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag", "digest", "pullPolicy"],
+          "properties": {
+            "repository": {"type": "string", "minLength": 1},
+            "tag": {"type": "string", "minLength": 1},
+            "digest": {"type": "string", "pattern": "^(|sha256:[a-f0-9]{64})$"},
+            "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+          }
+        },
+        "master": {"type": "string", "minLength": 1},
+        "executorInstances": {"type": "integer", "minimum": 1},
+        "executorCores": {"type": "integer", "minimum": 1},
+        "executorMemory": {"type": "string", "minLength": 1},
+        "executorMemoryOverhead": {"type": "string", "minLength": 1},
+        "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+        "topologyKey": {"type": "string", "minLength": 1},
+        "executorPodSecurityContext": {"type": "object"},
+        "executorContainerSecurityContext": {"type": "object"},
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["create", "name"],
+          "properties": {
+            "create": {"type": "boolean"},
+            "name": {"type": "string"}
+          }
+        },
+        "serviceAccountName": {"type": "string"}
+      }
+    },
+    "modelServing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "runtime",
+        "replicas",
+        "image",
+        "model",
+        "huggingFaceTokenSecret",
+        "server",
+        "service",
+        "persistence",
+        "runtimeClassName",
+        "startupTimeoutSeconds",
+        "terminationGracePeriodSeconds",
+        "nodeSelector",
+        "tolerations",
+        "topologyKey",
+        "resources",
+        "podSecurityContext",
+        "containerSecurityContext"
+      ],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "runtime": {"enum": ["vllm"]},
+        "replicas": {"type": "integer", "minimum": 1},
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag", "digest", "pullPolicy", "pullSecrets"],
+          "properties": {
+            "repository": {"type": "string", "minLength": 1},
+            "tag": {"type": "string", "minLength": 1},
+            "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+            "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]},
+            "pullSecrets": {"type": "array", "items": {"type": "object"}}
+          }
+        },
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "revision"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+          }
+        },
+        "huggingFaceTokenSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "key", "optional"],
+          "properties": {
+            "name": {"type": "string"},
+            "key": {"type": "string", "minLength": 1},
+            "optional": {"type": "boolean"}
+          }
+        },
+        "server": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tensorParallelSize", "gpuMemoryUtilization", "maxModelLen", "maxNumBatchedTokens", "maxNumSeqs", "kvCacheDtype", "attentionBackend", "moeBackend", "speculativeTokens"],
+          "properties": {
+            "tensorParallelSize": {"type": "integer", "minimum": 1},
+            "gpuMemoryUtilization": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "maxModelLen": {"type": "integer", "minimum": 1024},
+            "maxNumBatchedTokens": {"type": "integer", "minimum": 1},
+            "maxNumSeqs": {"type": "integer", "minimum": 1},
+            "kvCacheDtype": {"type": "string", "minLength": 1},
+            "attentionBackend": {"type": "string", "minLength": 1},
+            "moeBackend": {"type": "string", "minLength": 1},
+            "speculativeTokens": {"type": "integer", "minimum": 1}
+          }
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["port", "internalTrafficPolicy"],
+          "properties": {
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "internalTrafficPolicy": {"enum": ["Cluster", "Local"]}
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "size", "storageClass", "accessModes"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "size": {"type": "string", "minLength": 1},
+            "storageClass": {"type": "string"},
+            "accessModes": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"enum": ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"]}
+            }
+          }
+        },
+        "runtimeClassName": {"type": "string", "minLength": 1},
+        "startupTimeoutSeconds": {"type": "integer", "minimum": 60},
+        "terminationGracePeriodSeconds": {"type": "integer", "minimum": 1},
+        "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+        "tolerations": {"type": "array", "items": {"type": "object"}},
+        "topologyKey": {"type": "string", "minLength": 1},
+        "resources": {"type": "object"},
+        "podSecurityContext": {"type": "object"},
+        "containerSecurityContext": {"type": "object"}
+      }
+    },
+    "workers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prepare", "extract", "finalize"],
+      "properties": {
+        "prepare": {"$ref": "#/$defs/worker"},
+        "extract": {"$ref": "#/$defs/worker"},
+        "finalize": {"$ref": "#/$defs/worker"}
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "pollingIntervalSeconds", "cooldownPeriodSeconds", "fallback", "scaleUp", "scaleDown"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "pollingIntervalSeconds": {"type": "integer", "minimum": 1},
+        "cooldownPeriodSeconds": {"type": "integer", "minimum": 0},
+        "fallback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["failureThreshold", "replicas", "behavior"],
+          "properties": {
+            "failureThreshold": {"type": "integer", "minimum": 1},
+            "replicas": {"type": "integer", "minimum": 1},
+            "behavior": {"enum": ["static", "currentReplicas", "currentReplicasIfHigher"]}
+          }
+        },
+        "scaleUp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stabilizationWindowSeconds", "podsPerPeriod", "periodSeconds"],
+          "properties": {
+            "stabilizationWindowSeconds": {"type": "integer", "minimum": 0},
+            "podsPerPeriod": {"type": "integer", "minimum": 1},
+            "periodSeconds": {"type": "integer", "minimum": 1, "maximum": 1800}
+          }
+        },
+        "scaleDown": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stabilizationWindowSeconds", "percentPerPeriod", "periodSeconds"],
+          "properties": {
+            "stabilizationWindowSeconds": {"type": "integer", "minimum": 0},
+            "percentPerPeriod": {"type": "integer", "minimum": 1, "maximum": 100},
+            "periodSeconds": {"type": "integer", "minimum": 1, "maximum": 1800}
+          }
+        }
+      }
+    },
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["priorityClasses"],
+      "properties": {
+        "priorityClasses": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "workerValue", "sparkValue", "modelValue"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "workerValue": {"type": "integer", "minimum": 1, "maximum": 999999999},
+            "sparkValue": {"type": "integer", "minimum": 1, "maximum": 999999999},
+            "modelValue": {"type": "integer", "minimum": 1, "maximum": 999999999}
+          }
+        }
+      }
+    },
+    "distributed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["leaseSeconds", "pollIntervalSeconds", "retryDelaySeconds"],
+      "properties": {
+        "leaseSeconds": {"type": "integer", "minimum": 1},
+        "pollIntervalSeconds": {"type": "number", "minimum": 0},
+        "retryDelaySeconds": {"type": "number", "minimum": 0}
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output", "cache"],
+      "properties": {
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["existingClaim", "readOnly"],
+          "properties": {
+            "existingClaim": {"type": "string"},
+            "readOnly": {"type": "boolean"}
+          }
+        },
+        "output": {"$ref": "#/$defs/claim"},
+        "cache": {"$ref": "#/$defs/claim"}
+      }
+    },
+    "serviceAccount": {"type": "object"},
+    "podAnnotations": {"type": "object"},
+    "podLabels": {"type": "object"},
+    "podSecurityContext": {"type": "object"},
+    "containerSecurityContext": {"type": "object"},
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 1},
+    "revisionHistoryLimit": {"type": "integer", "minimum": 0},
+    "priorityClassName": {"type": "string"},
+    "extraEnv": {"type": "array", "items": {"type": "object"}},
+    "extraVolumes": {"type": "array", "items": {"type": "object"}},
+    "extraVolumeMounts": {"type": "array", "items": {"type": "object"}}
+  },
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingClaim"],
+      "properties": {"existingClaim": {"type": "string"}}
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "replicas", "autoscaling", "stages", "localModelServing", "resources", "nodeSelector", "tolerations", "affinity", "topologySpreadConstraints"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "replicas": {"type": "integer", "minimum": 0},
+        "autoscaling": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minReplicas", "maxReplicas", "targetTasksPerReplica"],
+          "properties": {
+            "minReplicas": {"type": "integer", "minimum": 0},
+            "maxReplicas": {"type": "integer", "minimum": 1},
+            "targetTasksPerReplica": {"type": "integer", "minimum": 1}
+          }
+        },
+        "stages": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "prepare_document",
+              "extract_document_context",
+              "extract_entity_window",
+              "compact_entity_inventory",
+              "extract_relation_window",
+              "compact_document",
+              "finalize_graph"
+            ]
+          }
+        },
+        "localModelServing": {"type": "boolean"},
+        "resources": {"type": "object"},
+        "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+        "tolerations": {"type": "array", "items": {"type": "object"}},
+        "affinity": {"type": "object"},
+        "topologySpreadConstraints": {"type": "array", "items": {"type": "object"}}
+      }
+    }
+  }
+}

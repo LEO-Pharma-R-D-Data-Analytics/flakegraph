@@ -1,0 +1,19 @@
+name: flakegraph-app
+channels:
+  - snowflake
+dependencies:
+  # The interpreter is not a package here. Snowflake already pins python==3.11.*
+  # in the runtime's default package set, and resolves this file against the
+  # Snowflake Anaconda channel, where no `python` package exists — listing it
+  # fails the whole environment with "Packages not found: python==3.11".
+  - streamlit=1.52.2
+  - snowflake-snowpark-python
+  - pandas=2.*
+  - plotly=6.*
+  - networkx=3.*
+  - pyyaml=6.*
+  # NetworkX solves the explorer's hierarchy layout, and its community layout
+  # above five hundred entities, through SciPy. Without it both fall back to a
+  # ring that carries no structure, so it is a requirement of the graph page
+  # rather than an optional accelerator. Matches the `app` extra in pyproject.
+  - scipy=1.*

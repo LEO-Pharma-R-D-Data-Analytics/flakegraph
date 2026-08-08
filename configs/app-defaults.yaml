@@ -1,0 +1,92 @@
+# Generic processing profile used by the Streamlit control plane and Kubernetes
+# workers. The app replaces runtime, source, run identity, provider selections,
+# writer, and cache settings with the values selected in the ingestion form.
+runtime:
+  runtime: kubernetes
+files:
+  # The app replaces this with the selected upload, path, stage, blob prefix, or
+  # bucket. A neutral root keeps direct profile loading independent of samples.
+  source: local
+  input_path: data
+  include_globs:
+    - "**/*"
+ocr:
+  # Preserve coherent embedded text and invoke MinerU only for scans or malformed
+  # text layers. This gives mixed corpora robust OCR without paying its cost for
+  # every document.
+  provider: fallback
+  fallback_primary_provider: builtin_text
+  fallback_secondary_provider: mineru_internal
+  fallback_min_characters_per_page: 80
+  fallback_max_sparse_page_ratio: 0.2
+  fallback_max_unbroken_text_ratio: 0.5
+  fallback_max_fragmented_text_ratio: 0.15
+  mineru_method: ocr
+  mineru_backend: pipeline
+  timeout_seconds: 3600
+llm:
+  # These loopback defaults work for a local server. Kubernetes replaces them
+  # with its chart-managed Service endpoint and immutable model identity.
+  provider: vllm_local
+  endpoint: http://localhost:8000/v1
+  model: nvidia/Qwen3.6-35B-A3B-NVFP4
+embedding:
+  # Keep graph vectors independent from the generative model server so either
+  # provider can be replaced without coupling their model inventories.
+  provider: sentence_transformers
+  model: sentence-transformers/all-MiniLM-L6-v2
+  dimension: 384
+  batch_size: 32
+ontology:
+  # Domain datasets can select a stricter ontology, while ordinary app runs use
+  # this evidence-grounded vocabulary without inheriting benchmark assumptions.
+  profile_path: configs/ontologies/general.yaml
+extractors:
+  entity_provider: llm
+  relation_provider: llm
+  verifier_provider: llm
+writer:
+  provider: local_artifacts
+  output_path: out/app
+cache:
+  # Distributed workers must not depend on node-local cache affinity. The app
+  # changes this to a local or Snowflake cache for those respective runtimes.
+  provider: none
+consumption:
+  # Snowflake bills Cortex in AI credits, and one credit's dollar value is a
+  # property of the account's contract rather than of the model, so every model
+  # below prices itself from this one number.
+  #
+  # A working estimate, not LEO's contracted rate: it is close to Snowflake's
+  # list price for a Standard account and is here so cost reads as a number
+  # rather than a blank. Replace it with the figure from the contract before any
+  # of these totals is quoted as what a graph actually cost.
+  usd_per_credit: 2.0
+  # AI credits per one million tokens, from Snowflake's Credit Consumption
+  # Table (Table 6(c), Cortex Inference), and per page from the AI Features
+  # Table. Recorded as credits rather than pre-multiplied dollars so correcting
+  # the rate above reprices every model at once.
+  rates:
+    snowflake_cortex:mistral-large2:
+      prompt_credits_per_million: 1.20
+      completion_credits_per_million: 3.60
+    snowflake_cortex:mistral-large:
+      prompt_credits_per_million: 1.20
+      completion_credits_per_million: 3.60
+    snowflake_cortex:llama3.1-70b:
+      prompt_credits_per_million: 0.36
+      completion_credits_per_million: 0.36
+    snowflake_cortex:llama3.1-8b:
+      prompt_credits_per_million: 0.11
+      completion_credits_per_million: 0.11
+    snowflake_cortex:snowflake-arctic-embed-l-v2.0:
+      prompt_credits_per_million: 0.05
+    snowflake_cortex:snowflake-arctic-embed-m-v1.5:
+      prompt_credits_per_million: 0.05
+    snowflake_cortex:e5-base-v2:
+      prompt_credits_per_million: 0.03
+    # AI_PARSE_DOCUMENT is charged per page, and the OCR and Layout modes differ.
+    # The document adapter reports pages under the provider name, so this entry
+    # prices parsing at the Layout rate the pipeline requests.
+    snowflake_cortex:snowflake_cortex:
+      credits_per_page: 0.00366

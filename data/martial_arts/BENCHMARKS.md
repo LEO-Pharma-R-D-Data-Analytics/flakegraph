@@ -1,0 +1,119 @@
+# Martial Arts Benchmark
+
+This benchmark processes all ten documents with built-in text extraction,
+all-MiniLM-L6-v2 embeddings, disabled cross-run caches, two-pass entity and
+relation extraction, and Spark GraphFrames finalization. Qwen is served through
+NVIDIA vLLM; GPT-5.6 Sol uses Azure OpenAI. Every result aggregates three complete
+queue-backed repetitions.
+
+## Results
+
+| Result | Environment | Mean Wall Time | Documents/Minute | Entity F1 | Triple F1 | Accepted Runs |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| [`mah-v1-qwen36-35b-a3b-nvfp4-vllm-k8s-1x-gb10-20260715`](results/qwen36-35b-a3b-nvfp4-vllm-kubernetes-1x-gb10-20260715.json) | Kubernetes, 1x GB10 | 18m 3.917s | 0.558 | 0.9909 | 0.9263 | 1/3 |
+| [`mah-v1-qwen36-35b-a3b-nvfp4-vllm-k8s-4x-gb10-20260715`](results/qwen36-35b-a3b-nvfp4-vllm-kubernetes-4x-gb10-20260715.json) | Kubernetes, 4x GB10 | 7m 56.188s | 1.266 | 0.9693 | 0.9065 | 0/3 |
+| [`mah-v1-gpt56-sol-azure-openai-k8s-4x-gb10-20260715`](results/gpt56-sol-azure-openai-kubernetes-4x-gb10-20260715.json) | Kubernetes, 4x GB10, Azure OpenAI | 4m 0.173s | 2.562 | 0.9955 | 0.9592 | 0/3 |
+
+Four-node Qwen is **2.28x faster than one-node Qwen** end to end. GPT-5.6 Sol
+is **1.98x faster than four-node Qwen** on the same processing fleet. All nine
+runs completed successfully; one Qwen 1x task retried after a malformed model
+response. The strict per-run acceptance gate includes structural thresholds, so
+mean F1 alone does not determine whether a run is accepted.
+
+## Protocol
+
+| Setting | Qwen 1x GB10 | Qwen 4x GB10 | GPT-5.6 Sol |
+| --- | ---: | ---: | ---: |
+| Model replicas | 1 | 4 | Managed |
+| Execution | Kubernetes | Kubernetes | Kubernetes |
+| Peak preparation workers | 10 | 10 | 10 |
+| Maximum extraction workers | 3 | 12 | 12 |
+| Spark executors | 1 | 4 | 4 |
+| Spark executor cores | 4 | 4 | 4 |
+| vLLM GPU memory utilization | 0.50 | 0.50 | N/A |
+| Preparation tasks | 10 | 10 | 10 |
+| Document-context tasks | 10 | 10 | 10 |
+| Entity-window tasks | 12 | 12 | 12 |
+| Relation-window tasks | 12 | 12 | 12 |
+| Compaction tasks | 20 | 20 | 20 |
+| Finalization tasks | 1 | 1 | 1 |
+| Failed task attempts | 1 | 0 | 0 |
+| Repetitions | 3 | 3 | 3 |
+
+The Qwen profiles form the controlled fleet-scaling comparison. Four-node Qwen
+and GPT use the same corpus, OCR, embeddings, ontology, prompt revision, graph
+settings, worker limit, Spark topology, deterministic seed, and graph identity;
+only the LLM and serving platform differ.
+
+## Timing
+
+| Environment | Run 1 | Run 2 | Run 3 | Mean | Range |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Kubernetes, 1x GB10 | 958.972s | 1191.309s | 1101.471s | 1083.917s | 958.972-1191.309s |
+| Kubernetes, 4x GB10 | 445.583s | 521.058s | 461.924s | 476.188s | 445.583-521.058s |
+| GPT-5.6 Sol, Azure OpenAI | 280.312s | 191.684s | 248.523s | 240.173s | 191.684-280.312s |
+
+| Stage | Qwen 1x GB10 | Qwen 4x GB10 | GPT-5.6 Sol | Qwen 4x Speedup | Four-Node Efficiency |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Submission through preparation | 1.020s | 10.756s | 10.814s | 0.09x | 2.4% |
+| Context, entity, relation, and compaction tasks | 946.478s | 369.220s | 129.392s | 2.56x | 64.1% |
+| Spark graph finalization and enrichment | 136.419s | 96.212s | 99.966s | 1.42x | 35.5% |
+| End to end | 1083.917s | 476.188s | 240.173s | 2.28x | 56.9% |
+
+Preparation and extraction tasks are dynamically claimed from PostgreSQL, so
+workers take the next eligible document or window instead of receiving static
+partitions. Fleet scaling reduces the model-backed extraction stage most. The
+remaining gap from linear scaling comes from cold autoscaling, unequal window
+durations, a finite 24-window extraction workload, and graph-wide Spark joins,
+shuffles, resolution, community detection, descriptions, reports, and publication
+barriers. This ten-document corpus measures quality and end-to-end integration;
+larger corpora are required to characterize steady-state fleet throughput.
+
+## Quality
+
+Values are means across three repetitions. Entity precision uses the selected
+reference entity set, while relation precision uses the subgraph induced by
+matched reference entities. Additional grounded output is reported as unscored.
+
+| Metric | Qwen 1x GB10 | Qwen 4x GB10 | GPT-5.6 Sol |
+| --- | ---: | ---: | ---: |
+| Entity precision | 1.0000 | 1.0000 | 1.0000 |
+| Entity recall | 0.9820 | 0.9414 | 0.9910 |
+| Entity F1 | 0.9909 | 0.9693 | 0.9955 |
+| Triple precision | 0.9539 | 0.9347 | 0.9817 |
+| Triple recall | 0.9011 | 0.8828 | 0.9378 |
+| Triple F1 | 0.9263 | 0.9065 | 0.9592 |
+| Evidence support | 0.8974 | 0.8791 | 0.9194 |
+| Information retention | 0.9416 | 0.9121 | 0.9644 |
+| Components | 1.6667 | 2.0000 | 3.0000 |
+| Isolate ratio | 0.0045 | 0.0093 | 0.0272 |
+| Two-hop recoverability | 0.9121 | 0.8974 | 0.9524 |
+
+## Stability
+
+| Environment | Mean Node Jaccard | Minimum Node Jaccard | Mean Triple Jaccard | Minimum Triple Jaccard |
+| --- | ---: | ---: | ---: | ---: |
+| Kubernetes, 1x GB10 | 0.6006 | 0.5731 | 0.5372 | 0.5129 |
+| Kubernetes, 4x GB10 | 0.5261 | 0.5204 | 0.4824 | 0.4541 |
+| GPT-5.6 Sol, Azure OpenAI | 0.7794 | 0.7479 | 0.6556 | 0.5938 |
+
+The deterministic seed governs graph algorithms, but model generation remains
+stochastic. Different fleet widths also change request ordering and batching, so
+quality and graph signatures are compared across repetitions instead of assumed
+to be identical.
+
+## Output Size
+
+| Environment | Documents | Chunks | Entities | Relations | Evidence Records | Communities |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Kubernetes, 1x GB10 | 10 | 32 | 341.000 | 174.000 | 680.667 | 18.667 |
+| Kubernetes, 4x GB10 | 10 | 32 | 352.000 | 164.333 | 682.000 | 24.333 |
+| GPT-5.6 Sol, Azure OpenAI | 10 | 32 | 312.667 | 178.000 | 650.000 | 20.667 |
+
+## Reproduction
+
+Deploy the pinned fleet profile, wait for all requested model replicas to become
+ready, and submit the complete manifest three times with caches disabled. Fleet
+deployment, monitoring, export, and retry commands are documented in
+[`docs/kubernetes-fleet.md`](../../docs/kubernetes-fleet.md). Compact public
+measurements are stored in [`results/`](results/).

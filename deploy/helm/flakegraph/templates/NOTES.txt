@@ -1,0 +1,30 @@
+FlakeGraph worker pools are configured for release {{ .Release.Name }}.
+{{- if .Values.database.bootstrap.enabled }}
+The database bootstrap hook completed before Helm marked this release ready.
+KEDA can now read the dependency-aware worker-demand view.
+{{- else }}
+Database bootstrap was disabled. Ensure the FlakeGraph coordination schema exists
+before submitting work or enabling queue-driven autoscaling.
+{{- end }}
+
+Submit from a trusted client that can reach the same PostgreSQL service:
+  flakegraph distributed submit --config /path/to/config.yaml
+
+Inspect progress:
+  flakegraph distributed status --run-id <run-id> --config /path/to/config.yaml
+
+{{- if .Values.modelServing.enabled }}
+
+Local vLLM model serving is enabled. Check model replicas and the served model:
+  kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "flakegraph.modelServingName" . }} --timeout=60m
+  kubectl -n {{ .Release.Namespace }} get --raw /api/v1/namespaces/{{ .Release.Namespace }}/services/http:{{ include "flakegraph.modelServingName" . }}:{{ .Values.modelServing.service.port }}/proxy/v1/models
+
+Ordinary workers use {{ include "flakegraph.modelServingEndpoint" . }}. Pools with
+localModelServing enabled use {{ include "flakegraph.localModelServingEndpoint" . }}
+and receive required affinity to nodes with this release's model-serving pods.
+{{- else }}
+
+Local model serving is disabled. Configure external provider endpoints and models
+in the mounted FlakeGraph config, map credentials through providerSecret.env, or
+enable modelServing in a private values file.
+{{- end }}
