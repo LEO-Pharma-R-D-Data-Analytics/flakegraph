@@ -8,6 +8,11 @@ FROM python:3.14.6-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c532
 ARG UV_VERSION=0.11.28
 ARG KG_LOCAL_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG KG_LOCAL_EMBEDDING_REVISION=1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+# Baking the weights in is the right default: an executor that downloads them on
+# first use turns a network problem into a finalization failure hours into a run.
+# Sites whose egress filtering blocks the Hugging Face CDN cannot build that
+# image at all, so they set this false and mount the model instead.
+ARG KG_PRELOAD_LOCAL_EMBEDDING=true
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -40,8 +45,10 @@ COPY pyproject.toml uv.lock /app/
 RUN uv sync --locked --no-dev --no-editable --no-install-project \
     --extra local-embeddings \
     && uv pip install --python /opt/venv/bin/python --no-deps graphframes-py==0.12.1 \
-    && /opt/venv/bin/python -c \
-      "from sentence_transformers import SentenceTransformer; SentenceTransformer('$KG_LOCAL_EMBEDDING_MODEL', revision='$KG_LOCAL_EMBEDDING_REVISION')" \
+    && if [ "$KG_PRELOAD_LOCAL_EMBEDDING" = "true" ]; then \
+        /opt/venv/bin/python -c \
+          "from sentence_transformers import SentenceTransformer; SentenceTransformer('$KG_LOCAL_EMBEDDING_MODEL', revision='$KG_LOCAL_EMBEDDING_REVISION')"; \
+    fi \
     && chown -R spark:spark /home/spark/.cache
 
 # Resolve JVM dependencies once at build time. Executors use the baked jars and
