@@ -22,7 +22,7 @@ from urllib.parse import urlparse, urlunparse
 import yaml
 from flakegraph_app.backends.local import LocalBackend, _last_json_object, _storage_kind
 from flakegraph_app.cluster_catalog import ClusterTarget, read_catalog
-from flakegraph_app.configuration import write_run_config
+from flakegraph_app.configuration import run_ontology_profile, write_run_config
 from flakegraph_app.graph_store import load_local_graph
 from flakegraph_app.models import (
     DISTRIBUTED_STAGE_ORDER,
@@ -1368,9 +1368,16 @@ def _fleet_preflight(
         )
         deployed_profile = _load_deployed_profile(config_map)
         profile_errors = _profile_mismatches(request, deployed_profile)
+        # The ontology is part of the digest a worker claims by, so a run whose
+        # ontology differs from the fleet's is never claimed by anything. It does
+        # not fail: it sits queued forever with nothing on the page to say why,
+        # which is the one outcome preflight exists to prevent.
+        profile_errors.extend(
+            _ontology_mismatches(request, deployed_profile, namespace, target, deployments)
+        )
         errors.extend(profile_errors)
         if not profile_errors:
-            checks.append("Selected OCR, LLM, and embedding profile matches fleet workers")
+            checks.append("Selected OCR, LLM, embedding, and ontology match fleet workers")
 
     if request.llm.provider == "vllm_local" and _loopback_endpoint(request.llm.endpoint):
         stateful_sets = _kubectl_json(
@@ -1955,12 +1962,12 @@ def _controller_environment_names(resource: Mapping[str, Any]) -> set[str]:
     return {str(item.get("name")) for item in containers[0].get("env", []) if item.get("name")}
 
 
-def _mounted_config_map(resource: Mapping[str, Any]) -> str | None:
-    """Return the ConfigMap mounted as the worker's FlakeGraph configuration."""
+def _mounted_config_map(resource: Mapping[str, Any], volume_name: str = "config") -> str | None:
+    """Return the ConfigMap a worker mounts under one volume name."""
 
     volumes = resource.get("spec", {}).get("template", {}).get("spec", {}).get("volumes", [])
     for volume in volumes:
-        if volume.get("name") != "config":
+        if volume.get("name") != volume_name:
             continue
         name = volume.get("configMap", {}).get("name")
         return str(name) if name else None
@@ -2005,6 +2012,62 @@ def _profile_mismatches(
         for label, selected, actual in comparisons
         if selected and actual and not _environment_placeholder(actual) and selected != actual
     ]
+
+
+def _ontology_mismatches(
+    request: IngestionRequest,
+    deployed: Mapping[str, Any],
+    namespace: str,
+    target: ClusterTarget,
+    deployments: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Report an ontology the fleet workers could not agree with.
+
+    A submitted run carries its ontology inline so it describes itself wherever it
+    executes, while workers mount theirs as a file. Comparing the two therefore
+    means reading the mounted ConfigMap rather than the worker's config alone.
+    """
+
+    selected = run_ontology_profile(request)
+    mounted_name = next(
+        (name for item in deployments if (name := _mounted_config_map(item, "ontology"))),
+        None,
+    )
+    deployed_reference = deployed.get("ontology")
+    has_deployed = bool(mounted_name) or (
+        isinstance(deployed_reference, Mapping)
+        and any(deployed_reference.get(key) for key in ("profile", "profile_path"))
+    )
+
+    if selected and not has_deployed:
+        return [
+            "Selected ontology is not deployed to the fleet: workers mount no ontology, "
+            "so no worker can claim this run. Install the chart with "
+            "--set-file ontology.content=<profile.yaml>."
+        ]
+    if has_deployed and not selected:
+        return [
+            "Fleet workers mount an ontology but this run selects none, "
+            "so no worker can claim this run."
+        ]
+    if not selected or not mounted_name:
+        return []
+
+    ontology_map = _kubectl_json(
+        target=target,
+        arguments=["get", "configmap", mounted_name, "-n", namespace, "-o", "json"],
+    )
+    data = ontology_map.get("data", {})
+    text = next((value for value in data.values() if isinstance(value, str)), "")
+    loaded = yaml.safe_load(text) or {} if text.strip() else {}
+    if not isinstance(loaded, Mapping):
+        return [f"Fleet ontology ConfigMap {mounted_name} does not contain a mapping"]
+    if dict(loaded) != dict(selected):
+        return [
+            f"Selected ontology differs from the one fleet workers mount ({mounted_name}), "
+            "so no worker can claim this run."
+        ]
+    return []
 
 
 def _profile_value(profile: Mapping[str, Any], section: str, key: str) -> str | None:

@@ -7,7 +7,7 @@ import dataclasses
 import json
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1142,6 +1142,87 @@ def test_kubernetes_fleet_preflight_accepts_keda_workers_and_ready_local_models(
     assert result["ok"] is True
     assert not result["errors"]
     assert "Chart-managed vLLM model servers are ready: 1/1" in result["checks"]
+
+
+def _ontology_request(tmp_path: Path, profile: Mapping[str, object]) -> IngestionRequest:
+    """Build a fleet request whose base profile references an ontology file."""
+
+    # The reference must be relative and resolve beside the profile: absolute
+    # paths are refused so a profile cannot name an arbitrary readable file.
+    (tmp_path / "ontology.yaml").write_text(yaml.safe_dump(profile), encoding="utf-8")
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        yaml.safe_dump({"ontology": {"profile_path": "ontology.yaml"}}), encoding="utf-8"
+    )
+    request = _fleet_request(tmp_path)
+    return IngestionRequest(**{**request.__dict__, "base_config_path": base})
+
+
+def test_kubernetes_fleet_preflight_rejects_a_run_whose_ontology_no_worker_mounts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An unmatched ontology leaves a run queued forever rather than failing it.
+
+    The worker claim digest covers the ontology, so a run carrying one that the
+    fleet does not mount is never claimed by anything. Nothing errors and nothing
+    appears on the run page, which is precisely why preflight has to catch it.
+    """
+
+    request = _ontology_request(tmp_path, {"name": "general", "mode": "hybrid"})
+    monkeypatch.setattr(
+        "flakegraph_app.backends.kubernetes._kubectl_json",
+        _fleet_kubectl_fixture(profile_ocr="fallback", model_servers=1),
+    )
+
+    result = _fleet_preflight(request, "flakegraph", ClusterTarget())
+
+    assert result["ok"] is False
+    errors = result["errors"]
+    assert isinstance(errors, list)
+    assert any("ontology is not deployed" in str(item) for item in errors)
+
+
+def test_kubernetes_fleet_preflight_rejects_an_ontology_that_differs_from_the_fleet(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Matching by name is not enough; changed ontology bytes change the graph."""
+
+    request = _ontology_request(tmp_path, {"name": "general", "mode": "hybrid"})
+    monkeypatch.setattr(
+        "flakegraph_app.backends.kubernetes._kubectl_json",
+        _fleet_kubectl_fixture(
+            profile_ocr="fallback",
+            model_servers=1,
+            ontology={"name": "general", "mode": "strict"},
+        ),
+    )
+
+    result = _fleet_preflight(request, "flakegraph", ClusterTarget())
+
+    assert result["ok"] is False
+    errors = result["errors"]
+    assert isinstance(errors, list)
+    assert any("differs from the one fleet workers mount" in str(item) for item in errors)
+
+
+def test_kubernetes_fleet_preflight_accepts_a_matching_ontology(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The run the operator actually wants must still pass."""
+
+    profile: dict[str, object] = {"name": "general", "mode": "hybrid"}
+    request = _ontology_request(tmp_path, profile)
+    monkeypatch.setattr(
+        "flakegraph_app.backends.kubernetes._kubectl_json",
+        _fleet_kubectl_fixture(profile_ocr="fallback", model_servers=1, ontology=profile),
+    )
+
+    result = _fleet_preflight(request, "flakegraph", ClusterTarget())
+
+    assert result["ok"] is True, result["errors"]
 
 
 def test_kubernetes_fleet_preflight_rejects_missing_worker_service_account(
@@ -2354,6 +2435,7 @@ def _fleet_kubectl_fixture(
     model_servers: int,
     output_credential: str | None = None,
     service_account_available: bool = True,
+    ontology: Mapping[str, object] | None = None,
 ) -> object:
     """Return a deterministic kubectl adapter for fleet-preflight unit tests."""
 
@@ -2386,7 +2468,17 @@ def _fleet_kubectl_fixture(
                                 {
                                     "name": "config",
                                     "configMap": {"name": "flakegraph-runtime"},
-                                }
+                                },
+                                *(
+                                    [
+                                        {
+                                            "name": "ontology",
+                                            "configMap": {"name": "flakegraph-ontology"},
+                                        }
+                                    ]
+                                    if ontology
+                                    else []
+                                ),
                             ],
                         }
                     },
@@ -2417,6 +2509,8 @@ def _fleet_kubectl_fixture(
             response: object = {"items": deployments}
         elif resource == "scaledobjects.keda.sh":
             response = {"items": scaled_objects}
+        elif resource == "configmap" and arguments[2] == "flakegraph-ontology":
+            response = {"data": {"ontology.yaml": yaml.safe_dump(ontology or {})}}
         elif resource == "configmap":
             response = {
                 "data": {

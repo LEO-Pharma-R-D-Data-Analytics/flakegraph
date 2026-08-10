@@ -180,6 +180,23 @@ def build_run_config(request: IngestionRequest) -> dict[str, Any]:
     return config
 
 
+def run_ontology_profile(request: IngestionRequest) -> dict[str, Any] | None:
+    """Return the ontology a run will carry, resolved the way submission resolves it.
+
+    Preflight needs the same answer the submitted config will contain, and the
+    ontology reaches that config by being read from the base profile's path and
+    inlined. Re-deriving it here rather than re-reading the file keeps the two
+    from disagreeing about which profile a run actually uses.
+    """
+
+    config = build_run_config(request)
+    ontology = config.get("ontology")
+    if not isinstance(ontology, Mapping):
+        return None
+    profile = ontology.get("profile")
+    return dict(profile) if isinstance(profile, Mapping) else None
+
+
 def provider_parallelism_settings(parallelism: int) -> dict[str, int]:
     """Apply one concurrency budget to every stage that calls a model."""
 
