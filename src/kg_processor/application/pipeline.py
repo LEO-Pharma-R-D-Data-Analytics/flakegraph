@@ -1313,7 +1313,7 @@ class KgProcessorPipeline:
             stage="ocr",
             operation="parse_document",
             provider=self.settings.ocr.provider,
-            model=self.settings.ocr.provider,
+            model=self.settings.ocr.consumption_model(),
             pages=len(parsed.pages),
             file_id=file.id,
         )

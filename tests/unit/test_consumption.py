@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -9,6 +10,7 @@ import pytest
 
 from kg_processor.application.consumption import ConsumptionCollector
 from kg_processor.application.metered_llm import MeteredLlmProvider
+from kg_processor.config.settings import OcrSettings, Settings
 from kg_processor.domain.consumption import (
     ConsumptionEvent,
     Locality,
@@ -276,3 +278,66 @@ def test_a_failure_that_was_never_billed_records_nothing() -> None:
         provider.complete_structured(cast(Any, SimpleNamespace(task_name="ocr", model=None)))
 
     assert list(collector.events) == []
+
+
+def _shipped_card() -> RateCard:
+    return Settings.load(Path("configs/app-defaults.yaml")).consumption.rate_card()
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "mistral-large2",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "openai-gpt-5.6-sol",
+        "llama3.3-70b",
+        "snowflake-arctic-embed-m-v1.5",
+        "snowflake-arctic-embed-l-v2.0",
+    ],
+)
+def test_the_shipped_card_prices_the_models_this_deployment_can_select(model: str) -> None:
+    """Every model reachable from the UI must resolve to a rate.
+
+    The Cortex model is free text in the app, so a gap here does not fail — it
+    reports a real call as costing nothing, which is the failure this whole
+    module exists to prevent.
+    """
+
+    assert _shipped_card().rate_for("snowflake_cortex", model) is not None
+
+
+def test_document_parsing_is_priced_per_mode() -> None:
+    """AI_PARSE_DOCUMENT bills Layout at over five times the OCR rate.
+
+    One rate for both modes would misreport whichever mode was not chosen, so
+    the modes are priced separately and the pipeline records which one ran.
+    """
+
+    card = _shipped_card()
+    layout = card.rate_for("snowflake_cortex", "snowflake_cortex-layout")
+    ocr = card.rate_for("snowflake_cortex", "snowflake_cortex-ocr")
+    assert layout is not None and ocr is not None
+    assert layout.credits_per_page > ocr.credits_per_page * 5
+
+
+def test_the_ocr_settings_carry_the_parse_mode_into_billing() -> None:
+    """The mode has to reach the rate card, or pricing it separately is moot."""
+
+    assert OcrSettings(provider="snowflake_cortex").consumption_model() == "snowflake_cortex-ocr"
+    assert (
+        OcrSettings(provider="snowflake_cortex", snowflake_parse_mode="LAYOUT").consumption_model()
+        == "snowflake_cortex-layout"
+    )
+    assert OcrSettings(provider="tesseract_internal").consumption_model() == "tesseract_internal"
+
+
+def test_local_runs_price_against_a_stated_hosted_alternative() -> None:
+    """Avoided cost is only meaningful next to the alternative it avoided."""
+
+    card = _shipped_card()
+    assert card.local_reference
+    totals = summarize([_event(provider="vllm_local", locality=Locality.LOCAL)], card)
+    assert totals.billed_usd == 0.0
+    assert totals.avoided_usd > 0.0
+    assert totals.unpriced_calls == 0
