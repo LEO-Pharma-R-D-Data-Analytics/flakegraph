@@ -483,6 +483,47 @@ three-minute LLM request timeout prevents one stalled call from indefinitely
 serializing a stage; raise `llm.timeout_seconds` only for a measured provider that
 needs a longer decode window. Small corpora may still be dominated by model
 startup, the final extraction straggler, Spark startup, and atomic publication.
+
+Executors must be able to load the embedding model without reaching the network,
+and the failure when they cannot is unusually hard to read: the stage does not
+error, it stops advancing. Finalization constructs the encoder once per
+partition, so a model resolution that raises inside a Spark task is retried by
+the task, and a job that is failing every attempt looks exactly like a job that
+is working slowly.
+
+The most reliable arrangement is to mount the model as a plain directory and
+name it by path, which involves no model-hub code at all:
+
+```yaml
+embedding:
+  provider: sentence_transformers
+  model: /mnt/models/all-MiniLM-L6-v2   # a path, not a hub identifier
+
+extraEnv:
+  # Any accidental hub lookup then fails at once instead of retrying.
+  - {name: HF_HUB_OFFLINE, value: "1"}
+  - {name: TRANSFORMERS_OFFLINE, value: "1"}
+extraVolumes:
+  - {name: models, persistentVolumeClaim: {claimName: flakegraph-models}}
+extraVolumeMounts:
+  - {name: models, mountPath: /mnt/models, readOnly: true}
+```
+
+Produce that directory with `SentenceTransformer(name).save(path)`. Copying a
+populated hub cache between machines is less dependable than it looks: a cache
+written by one `huggingface_hub` version can satisfy `snapshot_download(...,
+local_files_only=True)` and still not satisfy the loader that reads it.
+
+The embedding model is part of the compatibility contract, so this path must be
+identical in the deployed configuration and in every submitted run, or no worker
+claims the run.
+
+`extraVolumes`, `extraVolumeMounts`, and `extraEnv` reach worker pods and Spark
+executors alike, because executors run the same application code. Use a
+`ReadWriteMany` volume rather than a `hostPath` on any fleet larger than one
+node — a `hostPath` silently resolves to an empty directory on every node that
+was not the one staged.
+
 Executors strongly prefer distinct topology domains but may co-locate if a node
 is unavailable, preventing a temporary capacity reduction from leaving the
 entire finalization job unschedulable.
