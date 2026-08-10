@@ -175,6 +175,41 @@ kubectl label node <gpu-node> flakegraph.io/node-class=nvidia-spark
 kubectl label node <cpu-node> flakegraph.io/node-class=cpu-control
 ```
 
+### Scripted Bring-Up For NVIDIA DGX Spark Nodes
+
+`deploy/spark/` automates the topology above for GB10 hardware, and is worth
+reading even if the fleet runs on something else, because two of the problems it
+solves are properties of corporate networks rather than of this hardware.
+
+| Script | Runs as | Does |
+| --- | --- | --- |
+| `stage-artifacts.sh` | operator workstation | Fetches k3s, verifies its published SHA-256, copies it to the node |
+| `bootstrap-node.sh` | root, on the node | Container runtime, NVIDIA runtime, k3s, node labels |
+| `install-cluster.sh` | operator, on the node | Device plugin, KEDA, CloudNativePG, object storage |
+
+`bootstrap-node.sh --role server` starts embedded etcd rather than the k3s
+default, because a default single-node server uses SQLite and can never gain a
+second control-plane node — a decision that cannot be revisited later without
+rebuilding the cluster. Further nodes take `--role agent`. It is idempotent, so
+re-running it verifies a node rather than disturbing it.
+
+Two traps it exists to handle:
+
+**A CIS-hardened image may blacklist `overlay`.** Containers cannot run without
+it; both Docker's `overlay2` driver and the containerd k3s embeds mount it for
+every layer. Worse, a blacklist written as `install overlay /bin/true` makes
+`modprobe overlay` **exit successfully while loading nothing**. Verify with
+`grep -w overlay /proc/filesystems`, never with `modprobe`'s exit status.
+
+**A TLS-inspecting network needs its root CA on every node.** Where a proxy
+re-signs certificates, a host without those roots fails every download in a way
+that reads as a firewall block — transfers stop at zero bytes and return a
+redirect to the proxy's own page. Install the roots before concluding that a host
+is blocked. Containers carry their own trust stores and need the certificate
+copied in separately, and Python is affected worse than most: `curl` verifies
+against the system store while `httpx` and `requests` verify against `certifi`,
+so the same URL succeeds under one and fails under the other.
+
 ## Build Images
 
 A mixed fleet needs both `linux/amd64` and `linux/arm64` manifests:

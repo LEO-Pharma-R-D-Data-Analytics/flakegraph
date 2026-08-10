@@ -415,12 +415,18 @@ def test_model_serving_documentation_is_consolidated_into_the_fleet_guide() -> N
     fleet_guide = Path("docs/kubernetes-fleet.md").read_text(encoding="utf-8")
     top_level_docs = sorted(path.name for path in Path("docs").glob("*.md"))
 
-    assert top_level_docs == [
-        "algorithm.md",
-        "architecture.md",
-        "kubernetes-fleet.md",
-        "snowflake-setup.md",
+    # The risk this guards is model operations drifting into a second guide that
+    # then disagrees with this one, not the docs directory gaining a file. Pin
+    # the guide's presence and forbid a parallel host/model guide by name; a
+    # document on another subject is free to exist.
+    assert "kubernetes-fleet.md" in top_level_docs
+    forbidden = [
+        name
+        for name in top_level_docs
+        if name != "kubernetes-fleet.md"
+        and any(word in name for word in ("model", "serving", "vllm", "host", "gpu"))
     ]
+    assert not forbidden, f"model-serving documentation must stay in the fleet guide: {forbidden}"
     assert "## Local Model Serving" in fleet_guide
     assert "KEDA 2.20.1" in fleet_guide
     assert "kind: ScaledObject" in _AUTOSCALING_TEMPLATE.read_text(encoding="utf-8")

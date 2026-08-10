@@ -173,6 +173,7 @@ The martial-arts dataset includes a gold graph and published measurements. See
 - [Streamlit application](app/README.md)
 - [Architecture](docs/architecture.md)
 - [Configuration profiles](configs/README.md)
+- [What a graph consumed, and what it cost](docs/consumption.md)
 - [Kubernetes fleet deployment](docs/kubernetes-fleet.md)
 - [Snowflake setup](docs/snowflake-setup.md)
 - [Benchmark datasets](data/README.md)
