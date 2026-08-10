@@ -24,6 +24,7 @@ role=""
 server_url=""
 join_token=""
 node_class="${FLAKEGRAPH_NODE_CLASS:-nvidia-spark}"
+operator_sudo=0
 backup_root="${FLAKEGRAPH_BACKUP_ROOT:-/etc/flakegraph/backups}"
 k3s_channel="${FLAKEGRAPH_K3S_CHANNEL:-stable}"
 
@@ -33,6 +34,7 @@ while [[ $# -gt 0 ]]; do
     --server) server_url="${2:-}"; shift 2 ;;
     --token) join_token="${2:-}"; shift 2 ;;
     --node-class) node_class="${2:-}"; shift 2 ;;
+    --operator-sudo) operator_sudo=1; shift ;;
     -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -84,36 +86,46 @@ step "Overlay filesystem exception"
 # would turn a 12 GB CUDA image into tens of gigabytes per container, and
 # fuse-overlayfs moves the same code into userspace without removing it.
 #
-# The original file is kept, with its directives commented rather than deleted,
-# so an auditor reading this node sees the control and the reason it was lifted
-# in the same place.
-overlay_conf=/etc/modprobe.d/cis_overlay.conf
-if [[ -f "$overlay_conf" ]] && grep -qE '^\s*(install\s+overlay|blacklist\s+overlay)' "$overlay_conf"; then
-  cp -a "$overlay_conf" "$backup_root/cis_overlay.conf.$(date +%Y%m%d%H%M%S)"
-  {
-    echo "# Modified by FlakeGraph bootstrap-node.sh."
-    echo "#"
-    echo "# The CIS directives below are retained for reference and deliberately"
-    echo "# inert. This host is a container node: overlay is required by Docker's"
-    echo "# overlay2 graphdriver and by the containerd that k3s embeds, and no"
-    echo "# container can start while the module is blocked. Restore the file from"
-    echo "# $backup_root to put the control back."
-    echo "#"
-    sed 's/^\(\s*\(install\|blacklist\)\s\+overlay\b\)/# \1/' "$overlay_conf"
-  } > "$overlay_conf.new"
-  mv "$overlay_conf.new" "$overlay_conf"
-  chmod 644 "$overlay_conf"
-  ok "lifted the overlay blacklist (original backed up under $backup_root)"
-else
+# The directives are commented rather than deleted, and each untouched original
+# is copied to the backup directory first, so the change is reversible with a
+# single cp. The rationale is recorded in the fleet documentation rather than in
+# these files.
+#
+# Every file in modprobe.d is scanned, not just the obviously named one. This
+# image carries the directive twice — once in cis_overlay.conf and again in
+# cis-blacklist.conf, which is mode 0640 and so invisible to an unprivileged
+# survey. The second copy uses "install overlay /bin/true", which makes modprobe
+# exit successfully while loading nothing: lifting only the first blacklist
+# leaves a node that reports success and still cannot start a container.
+stamp="$(date +%Y%m%d%H%M%S)"
+lifted=0
+for conf in /etc/modprobe.d/*.conf; do
+  [[ -f "$conf" ]] || continue
+  grep -qE '^[[:space:]]*(install|blacklist)[[:space:]]+overlay\b' "$conf" || continue
+  cp -a "$conf" "$backup_root/$(basename "$conf").$stamp"
+  sed -i -E 's/^([[:space:]]*(install|blacklist)[[:space:]]+overlay\b)/# \1/' "$conf"
+  ok "lifted the overlay blacklist in $conf"
+  lifted=$((lifted + 1))
+done
+if [[ "$lifted" -eq 0 ]]; then
   ok "overlay blacklist already lifted"
+else
+  ok "originals backed up under $backup_root"
 fi
 
 # Persist the module across reboots. Docker starts before anything would mount
 # an overlay filesystem on demand, so relying on autoload leaves the daemon
 # failing on every boot even once the blacklist is gone.
 echo "overlay" > /etc/modules-load.d/flakegraph-overlay.conf
-modprobe overlay
-grep -q '^nodev\?\s*overlay$' /proc/filesystems || grep -q overlay /proc/filesystems
+modprobe overlay || true
+# modprobe's exit status cannot be trusted here: an "install ... /bin/true"
+# directive left anywhere in modprobe.d makes it report success without loading
+# anything. The filesystem appearing in /proc is the only proof that matters.
+if ! grep -qw overlay /proc/filesystems; then
+  echo "overlay did not register as a filesystem after modprobe." >&2
+  echo "check for remaining directives: grep -r overlay /etc/modprobe.d/" >&2
+  exit 1
+fi
 ok "overlay module loaded and set to load at boot"
 
 # ---------------------------------------------------------------------------
@@ -149,6 +161,31 @@ if command -v nvidia-ctk >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# Opt-in, and off by default, because it genuinely lowers the node's security
+# posture: anyone who reaches this account reaches root without a second factor.
+# It is offered because fleet work is a long tail of privileged steps — joining
+# nodes, restarting k3s, rotating images — and typing a password into each one
+# from a remote session is the reason people leave passwords in scripts instead.
+# Remove /etc/sudoers.d/flakegraph-operator to revert.
+if [[ "$operator_sudo" -eq 1 ]]; then
+  step "Operator sudo"
+  operator="${SUDO_USER:-root}"
+  sudoers=/etc/sudoers.d/flakegraph-operator
+  printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$operator" > "$sudoers.new"
+  chmod 0440 "$sudoers.new"
+  # An invalid sudoers file locks everyone out of sudo, so it is validated
+  # before it is put in place, never after.
+  if visudo -cf "$sudoers.new" >/dev/null; then
+    mv "$sudoers.new" "$sudoers"
+    ok "$operator may now use sudo without a password (remove $sudoers to revert)"
+  else
+    rm -f "$sudoers.new"
+    echo "generated sudoers file failed validation; left unchanged" >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 step "Kubernetes (k3s)"
 
 if systemctl is-active --quiet k3s || systemctl is-active --quiet k3s-agent; then
@@ -157,6 +194,22 @@ else
   primary_ip="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)"
   export INSTALL_K3S_CHANNEL="$k3s_channel"
 
+  # The corporate network resolves github.com but blocks the host its release
+  # assets redirect to, so the installer's own download always fails here. A
+  # binary staged next to this script is used instead; stage_dir/k3s and
+  # stage_dir/install.sh are what deploy/spark/stage-artifacts.sh produces.
+  stage_dir="${FLAKEGRAPH_STAGE_DIR:-$(dirname "$(readlink -f "$0")")}"
+  installer="https://get.k3s.io"
+  if [[ -f "$stage_dir/k3s" ]]; then
+    install -m 0755 "$stage_dir/k3s" /usr/local/bin/k3s
+    export INSTALL_K3S_SKIP_DOWNLOAD=true
+    [[ -f "$stage_dir/install.sh" ]] && installer="$stage_dir/install.sh"
+    ok "using the staged k3s binary ($("/usr/local/bin/k3s" --version | head -1))"
+  fi
+  # A staged installer is a local path; the fallback is a URL. cat handles the
+  # first and curl the second, and both feed the same shell.
+  fetch() { [[ "$installer" == http* ]] && curl -sfL "$installer" || cat "$installer"; }
+
   if [[ "$role" == "server" ]]; then
     # --cluster-init starts embedded etcd. A default k3s server uses SQLite and
     # can never gain a second control-plane node, which would mean rebuilding
@@ -164,20 +217,17 @@ else
     #
     # The node's own address is added as a TLS SAN so an operator's kubectl can
     # reach the API over the corporate network rather than only from localhost.
-    INSTALL_K3S_EXEC="server --cluster-init \
-      --tls-san ${primary_ip} \
-      --tls-san $(hostname -f 2>/dev/null || hostname) \
-      --write-kubeconfig-mode 0644 \
-      --node-label flakegraph.io/node-class=${node_class} \
-      --node-label nvidia.com/gpu.present=true" \
-      curl -sfL https://get.k3s.io | sh -
+    # INSTALL_K3S_EXEC is written verbatim into the systemd unit, and the
+    # installer drops the value if it spans lines — the first attempt here used
+    # backslash continuations and produced a server with none of its flags. Keep
+    # it on one line.
+    INSTALL_K3S_EXEC="server --cluster-init --tls-san ${primary_ip} --tls-san $(hostname -f 2>/dev/null || hostname) --write-kubeconfig-mode 0644" \
+      fetch | sh -
     ok "k3s server started with embedded etcd"
   else
-    INSTALL_K3S_EXEC="agent \
-      --node-label flakegraph.io/node-class=${node_class} \
-      --node-label nvidia.com/gpu.present=true" \
+    INSTALL_K3S_EXEC="agent --node-label flakegraph.io/node-class=${node_class} --node-label nvidia.com/gpu.present=true" \
       K3S_URL="$server_url" K3S_TOKEN="$join_token" \
-      curl -sfL https://get.k3s.io | sh -
+      fetch | sh -
     ok "k3s agent joined $server_url"
   fi
 fi
@@ -191,6 +241,18 @@ if [[ "$role" == "server" ]]; then
   else
     ok "warning: k3s containerd has no nvidia runtime; GPU pods will not work"
   fi
+
+  # Label the server through the API rather than at install time. --node-label
+  # only takes effect when a node first registers, so it cannot correct a node
+  # that is already in the cluster; this path is idempotent and also re-applies
+  # labels an operator has since removed.
+  for _ in $(seq 1 30); do
+    /usr/local/bin/k3s kubectl get node "$(hostname)" >/dev/null 2>&1 && break
+    sleep 2
+  done
+  /usr/local/bin/k3s kubectl label node "$(hostname)" --overwrite \
+    "flakegraph.io/node-class=${node_class}" nvidia.com/gpu.present=true >/dev/null
+  ok "labelled the node flakegraph.io/node-class=${node_class}"
 
   # Hand the operator a kubeconfig they own. k3s writes one readable copy under
   # /etc, but tools that rewrite contexts need a file they can modify.
