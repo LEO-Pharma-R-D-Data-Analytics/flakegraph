@@ -70,8 +70,26 @@ data:
                 labelSelector:
                   matchLabels:
                     spark-role: executor
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: spark-kubernetes-executor
           securityContext:
             {{- toYaml .Values.spark.executorContainerSecurityContext | nindent 12 }}
+          # Executors run the same application code as the workers and perform
+          # graph enrichment, so anything the workers were given to read — most
+          # often a model cache an air-gapped or filtered site must mount rather
+          # than download — has to reach them too. Without this an operator can
+          # mount a model for every pool and still watch finalization hang at the
+          # end of a long run, reaching for a network it cannot use.
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 {{- end }}
