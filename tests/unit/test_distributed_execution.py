@@ -22,6 +22,7 @@ from kg_processor.application.distributed_worker import (
     DistributedWorker,
     _prepared_projection_for_extracted_artifact,
 )
+from kg_processor.application.pipeline import _reject_fully_discarded_window
 from kg_processor.config.settings import Settings
 from kg_processor.domain.distributed import (
     ArtifactKind,
@@ -1631,4 +1632,51 @@ def _chunk(chunk_id: str, file_id: str) -> Chunk:
         end_offset=13,
         token_count=2,
         content_hash=sha256_hex("public source"),
+    )
+
+
+def test_a_window_with_nothing_to_extract_is_not_an_error() -> None:
+    """A title slide or page of furniture genuinely contains no entities."""
+
+    _reject_fully_discarded_window(
+        [{"stage": "entity_extraction", "input_records": 0, "accepted_records": 0}],
+        ["file_1"],
+    )
+
+
+def test_a_window_whose_every_record_was_discarded_fails_loudly() -> None:
+    """Silence here is how a corpus loses a whole document.
+
+    The model returned records and validation rejected all of them. Downstream
+    that is indistinguishable from an empty window, so the run reports success
+    while the document contributes nothing to the graph.
+    """
+
+    with pytest.raises(ValueError, match="discarded every record"):
+        _reject_fully_discarded_window(
+            [
+                {
+                    "stage": "entity_extraction",
+                    "input_records": 3,
+                    "accepted_records": 0,
+                    "record_actions": {"ungrounded_quote": 3, "untrusted_alias": 11},
+                }
+            ],
+            ["file_601352166d0d26e0ee2ac50bc2a82bc2"],
+        )
+
+
+def test_a_window_that_kept_some_records_is_accepted() -> None:
+    """Partial rejection is normal validation, not a failed window."""
+
+    _reject_fully_discarded_window(
+        [
+            {
+                "stage": "entity_extraction",
+                "input_records": 9,
+                "accepted_records": 7,
+                "record_actions": {"ungrounded_quote": 2},
+            }
+        ],
+        ["file_1"],
     )

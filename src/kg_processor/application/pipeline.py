@@ -8,7 +8,7 @@ writer persistence remains one provider-independent implementation.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -409,6 +409,7 @@ class KgProcessorPipeline:
             entity_extractor=self.entity_extractor,
             document_context_entities=prepared.document_context_entities,
         )
+        _reject_fully_discarded_window(observations.trace, prepared.file_ids)
         return EntityWindowShard(
             file_ids=prepared.file_ids,
             chunk_ids=[chunk.id for chunk in prepared.chunks],
@@ -1842,3 +1843,42 @@ def _relative_source_path(source_uri: str) -> str:
 
 def _is_absolute_source_uri(source_uri: str) -> bool:
     return source_uri.startswith(("@", "file://", "http://", "https://", "azblob://"))
+
+
+def _reject_fully_discarded_window(
+    trace: Sequence[Mapping[str, Any]],
+    file_ids: Sequence[str],
+) -> None:
+    """Fail a window whose every extracted record was discarded by validation.
+
+    A window that yields no entities is ordinary — a title slide or a page of
+    furniture genuinely contains none, and the model correctly returns nothing.
+    A window where the model returned records and validation rejected *all* of
+    them is not ordinary: the work happened, was paid for, and was thrown away.
+
+    The two are indistinguishable downstream, because both arrive as an empty
+    entity list and a successful task. That is how a ten-document corpus lost one
+    document in full while every stage reported success and no attempt was
+    retried: 3 records extracted, 3 rejected as ungrounded quotes, nothing said.
+
+    Raising here makes the failure retryable under the queue's existing attempt
+    budget, and makes a persistent failure loud instead of silent.
+    """
+
+    considered = 0
+    accepted = 0
+    actions: dict[str, int] = {}
+    for entry in trace:
+        if entry.get("stage") != "entity_extraction":
+            continue
+        considered += int(entry.get("input_records") or 0)
+        accepted += int(entry.get("accepted_records") or 0)
+        for action, count in (entry.get("record_actions") or {}).items():
+            actions[str(action)] = actions.get(str(action), 0) + int(count)
+    if considered == 0 or accepted > 0:
+        return
+    reasons = ", ".join(f"{name}={count}" for name, count in sorted(actions.items()))
+    raise ValueError(
+        f"entity extraction discarded every record for {list(file_ids)}: "
+        f"{considered} extracted, none accepted ({reasons or 'no reasons recorded'})"
+    )
