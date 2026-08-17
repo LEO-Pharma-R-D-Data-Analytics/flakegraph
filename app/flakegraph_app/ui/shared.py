@@ -168,6 +168,7 @@ def provider_controls(
     default_name: str,
     *,
     required_dimension: int | None = None,
+    deployed_model: str | None = None,
 ) -> ProviderSelection:
     """Render one adapter selector and only the fields required by that adapter.
 
@@ -205,6 +206,12 @@ def provider_controls(
     fitted_model = cortex_embedding_model_for_width(required_dimension)
     if fitted_model and model_default in CORTEX_EMBEDDING_MODELS_BY_WIDTH.values():
         model_default = fitted_model
+    # A fleet runs one model, and a run naming a different one is never claimed.
+    # Defaulting to the adapter's generic identifier therefore starts every
+    # Kubernetes submission in a state preflight will reject, so the deployed
+    # value wins where the operator has not chosen the provider themselves.
+    if deployed_model and selected_name == default_name:
+        model_default = deployed_model
     _synchronize_provider_fields(
         cast(_WidgetState, st.session_state),
         key_prefix,

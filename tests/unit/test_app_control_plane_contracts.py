@@ -21,6 +21,7 @@ from typing import Any, cast
 
 import pytest
 import yaml
+from flakegraph_app.backends.kubernetes import _semantic_mismatches
 from flakegraph_app.backends.local import LocalBackend, _failure_summary
 from flakegraph_app.backends.snowflake import SnowflakeBackend
 from flakegraph_app.configuration import (
@@ -1494,3 +1495,51 @@ def test_an_unchanged_log_leaves_its_checkpoint_alone(tmp_path: Path) -> None:
 
     assert checkpoint.stat().st_mtime_ns != first, "new records must reach the checkpoint"
     assert progress.documents_completed == 2
+
+
+def test_a_field_the_form_never_shows_still_blocks_an_unclaimable_run() -> None:
+    """The digest covers whole sections, so a named-field check is not enough.
+
+    These fields once passed preflight and left the run queued forever: the form
+    does not show them, and the comparison did not cover them. Only keys both
+    sides state are compared, so mineru_backend — which the fleet omitted — is
+    not caught here; either of the other two is enough to block the run.
+    """
+
+    effective = {
+        "ocr": {"provider": "fallback", "mineru_method": "ocr", "mineru_backend": "pipeline"},
+        "graph": {"fail_on_quality_error": True},
+    }
+    deployed = {
+        "ocr": {"provider": "fallback", "mineru_method": "auto"},
+        "graph": {"fail_on_quality_error": False},
+    }
+    problems = _semantic_mismatches(effective, deployed)
+    joined = " ".join(problems)
+    assert "ocr.mineru_method" in joined
+    assert "graph.fail_on_quality_error" in joined
+
+
+def test_matching_configurations_report_nothing() -> None:
+    """A run that equals its fleet must not be blocked by noise."""
+
+    shared = {
+        "ocr": {"provider": "builtin_text"},
+        "llm": {"provider": "vllm_local", "model": "qwen"},
+        "graph": {"fail_on_quality_error": True},
+    }
+    assert _semantic_mismatches(shared, shared) == []
+
+
+def test_deployment_local_differences_are_not_reported() -> None:
+    """Endpoints and parallelism never prevent a claim, so they are not errors."""
+
+    effective = {
+        "llm": {"provider": "vllm_local", "endpoint": "http://localhost:8000/v1"},
+        "graph": {"extraction_parallelism": 16},
+    }
+    deployed = {
+        "llm": {"provider": "vllm_local", "endpoint": "http://vllm:8000/v1"},
+        "graph": {"extraction_parallelism": 8},
+    }
+    assert _semantic_mismatches(effective, deployed) == []

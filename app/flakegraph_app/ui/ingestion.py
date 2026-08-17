@@ -223,10 +223,19 @@ def _request_controls(
         defaults,
         embedding_width=stored_width,
     )
+    # Workers claim only runs whose semantic configuration equals their own, so
+    # the models the fleet actually runs are the only ones this form can submit.
+    fleet = _fleet_models(backend)
     with provider_columns[0]:
         ocr = provider_controls("OCR", "ocr", OCR_PROVIDERS, defaults["ocr"])
     with provider_columns[1]:
-        llm = provider_controls("LLM", "llm", LLM_PROVIDERS, defaults["llm"])
+        llm = provider_controls(
+            "LLM",
+            "llm",
+            LLM_PROVIDERS,
+            defaults["llm"],
+            deployed_model=fleet.get("llm"),
+        )
     with provider_columns[2]:
         embedding = provider_controls(
             "Embeddings",
@@ -234,6 +243,7 @@ def _request_controls(
             EMBEDDING_PROVIDERS,
             defaults["embedding"],
             required_dimension=stored_width,
+            deployed_model=fleet.get("embedding"),
         )
 
     st.subheader("Destination")
@@ -1203,3 +1213,28 @@ def _qualified_stage(stage: str, database: str, schema: str) -> str:
     if database and schema:
         return f"@{database}.{schema}.{normalized}"
     return f"@{normalized}"
+
+
+def _fleet_models(backend: ControlPlaneBackend) -> dict[str, str]:
+    """Read the LLM and embedding models the deployed fleet runs.
+
+    Only the Kubernetes runtime has a fleet to read, and a backend that cannot
+    answer is not an error: these values seed form defaults, and preflight
+    remains the authority on whether a run actually matches its workers.
+    """
+
+    reader = getattr(backend, "fleet_profile", None)
+    if reader is None:
+        return {}
+    try:
+        profile = reader()
+    except Exception:
+        return {}
+    models: dict[str, str] = {}
+    for section in ("llm", "embedding"):
+        value = profile.get(section) if isinstance(profile, Mapping) else None
+        if isinstance(value, Mapping):
+            model = value.get("model")
+            if isinstance(model, str) and model.strip():
+                models[section] = model
+    return models

@@ -12,7 +12,7 @@ import time
 from base64 import b64decode
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +22,11 @@ from urllib.parse import urlparse, urlunparse
 import yaml
 from flakegraph_app.backends.local import LocalBackend, _last_json_object, _storage_kind
 from flakegraph_app.cluster_catalog import ClusterTarget, read_catalog
-from flakegraph_app.configuration import run_ontology_profile, write_run_config
+from flakegraph_app.configuration import (
+    build_run_config,
+    run_ontology_profile,
+    write_run_config,
+)
 from flakegraph_app.graph_store import load_local_graph
 from flakegraph_app.models import (
     DISTRIBUTED_STAGE_ORDER,
@@ -129,6 +133,46 @@ class KubernetesBackend(LocalBackend):
         """Report no fixed width: this destination stores vectors as written."""
 
         return None
+
+    def fleet_profile(self) -> Mapping[str, Any]:
+        """Return the processing profile the deployed workers actually mount.
+
+        The ingestion form uses this to default its provider fields to what the
+        fleet runs. A worker only claims a run whose semantic configuration
+        equals its own, so a form defaulting to anything else asks the operator
+        to reconcile two configurations by hand before their first submission —
+        and reports it as three separate errors when they do not.
+
+        Returns an empty mapping when the fleet cannot be read. Defaults are a
+        convenience; preflight remains the authority on whether a run matches.
+        """
+
+        try:
+            target = self._cluster_target()
+            namespace = self._namespace()
+            config_maps = _kubectl_json(
+                target=target,
+                arguments=[
+                    "get",
+                    "configmap",
+                    "-n",
+                    namespace,
+                    "-l",
+                    "app.kubernetes.io/name=flakegraph",
+                    "-o",
+                    "json",
+                ],
+            ).get("items", [])
+        except Exception:
+            return {}
+        for item in config_maps:
+            data = item.get("data", {})
+            if isinstance(data, Mapping) and "config.yaml" in data:
+                try:
+                    return _load_deployed_profile(item)
+                except RuntimeError:
+                    return {}
+        return {}
 
     def preflight(self, request: IngestionRequest) -> Mapping[str, object]:
         """Validate the submit host and the fleet without requiring worker packages.
@@ -1368,6 +1412,15 @@ def _fleet_preflight(
         )
         deployed_profile = _load_deployed_profile(config_map)
         profile_errors = _profile_mismatches(request, deployed_profile)
+        # The named comparisons above cover the fields an operator chooses in the
+        # form. The digest a worker claims by covers entire sections, so the
+        # effective configuration is compared too — otherwise a run differing
+        # only in a field the form never shows passes preflight and is never
+        # claimed.
+        with suppress(Exception):
+            profile_errors.extend(
+                _semantic_mismatches(build_run_config(request), deployed_profile)
+            )
         # The ontology is part of the digest a worker claims by, so a run whose
         # ontology differs from the fleet's is never claimed by anything. It does
         # not fail: it sits queued forever with nothing on the page to say why,
@@ -1984,6 +2037,81 @@ def _load_deployed_profile(config_map: Mapping[str, Any]) -> Mapping[str, Any]:
     if not isinstance(loaded, Mapping):
         raise RuntimeError("Fleet processing config.yaml must contain a mapping")
     return loaded
+
+
+# Keys inside the compared sections that describe how a worker reaches
+# infrastructure rather than what graph it produces. The runtime excludes these
+# from the digest workers claim by, so comparing them would report differences
+# that never prevent a claim.
+_DEPLOYMENT_LOCAL_KEYS: Mapping[str, frozenset[str]] = {
+    "ocr": frozenset(
+        {
+            "mineru_api_key",
+            "mineru_api_url",
+            "mineru_command",
+            "mineru_server_url",
+            "model_cache_dir",
+            "tesseract_command",
+            "tesseract_pdf_renderer_command",
+            "timeout_seconds",
+        }
+    ),
+    "llm": frozenset({"api_key", "endpoint", "timeout_seconds"}),
+    "embedding": frozenset({"api_key", "batch_size", "device", "endpoint"}),
+    "graph": frozenset(
+        {
+            "community_report_parallelism",
+            "description_merge_parallelism",
+            "extraction_parallelism",
+            "resolution_parallelism",
+        }
+    ),
+}
+
+
+def _semantic_mismatches(
+    effective: Mapping[str, Any],
+    deployed: Mapping[str, Any],
+) -> list[str]:
+    """Report every digest-relevant field on which a run and the fleet disagree.
+
+    A worker claims only runs whose semantic configuration hashes to its own, and
+    that hash covers whole configuration sections. Comparing a handful of named
+    fields therefore passes runs that no worker can ever claim: this check once
+    reported success on a run that differed in ``mineru_method``,
+    ``mineru_backend`` and ``fail_on_quality_error``, and the run sat queued with
+    nothing on the page to explain it.
+
+    Only keys both sides state are compared. A key the fleet omits takes the
+    runtime's default, and resolving that default needs the runtime's own
+    settings model, which this application deliberately cannot import — guessing
+    would reject working configurations. The observed failure disagreed on three
+    fields and two were stated by both sides, so either would have blocked it.
+    """
+
+    mismatches: list[str] = []
+    for section in ("ocr", "llm", "embedding", "graph", "extractors"):
+        run_section = effective.get(section)
+        fleet_section = deployed.get(section)
+        if not isinstance(run_section, Mapping):
+            continue
+        excluded = _DEPLOYMENT_LOCAL_KEYS.get(section, frozenset())
+        fleet_values = fleet_section if isinstance(fleet_section, Mapping) else {}
+        for key in sorted(set(run_section) | set(fleet_values)):
+            if key in excluded:
+                continue
+            selected = run_section.get(key)
+            actual = fleet_values.get(key)
+            if key not in fleet_values or key not in run_section:
+                continue
+            if isinstance(actual, str) and _environment_placeholder(actual):
+                continue
+            if selected != actual:
+                mismatches.append(
+                    f"{section}.{key} does not match fleet workers: "
+                    f"selected {selected!r}, deployed {actual!r}"
+                )
+    return mismatches
 
 
 def _profile_mismatches(
