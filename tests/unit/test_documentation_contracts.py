@@ -61,9 +61,8 @@ def test_readme_keeps_quick_start_paths_current_and_direct() -> None:
     assert "turns documents into evidence-backed knowledge graphs" in readme
     assert "provider interfaces" in readme
     assert "Python 3.14" in readme
-    assert "qwen3.6:35b-a3b-q4_K_M" in readme
-    assert "qwen3.5:9b" in readme
-    assert "https://docs.ollama.com/quickstart" in readme
+    assert "unsloth/Qwen3.8-27B-NVFP4" in readme
+    assert "https://docs.vllm.ai/en/latest/getting_started/installation.html" in readme
     assert "data/martial_arts/files" in readme
     assert 'uv tool install --python 3.13 "mineru[pipeline]==3.4.4"' in readme
     assert "uv sync --extra app --extra local-embeddings" in readme
@@ -72,6 +71,7 @@ def test_readme_keeps_quick_start_paths_current_and_direct() -> None:
 
     required_paths = [
         "configs/local-mineru-oss.yaml",
+        "deploy/vllm/serve-qwen38.sh",
         "app/README.md",
         "app/streamlit_app.py",
         "configs/README.md",
@@ -187,7 +187,11 @@ def test_third_party_notices_cover_runtime_license_boundaries() -> None:
         "sentence-transformers/all-MiniLM-L6-v2",
         "Apache-2.0",
         "vLLM",
-        "nvidia/Qwen3.6-35B-A3B-NVFP4",
+        "unsloth/Qwen3.8-27B-NVFP4",
+        "LiteLLM",
+        "Envoy",
+        "endpoint picker",
+        "fastapi",
         "Azure OpenAI",
         "vLLM",
         "NVIDIA's vLLM container",

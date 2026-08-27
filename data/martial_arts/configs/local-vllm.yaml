@@ -1,7 +1,7 @@
 runtime:
   runtime: local
 job:
-  job_id: local-vllm-qwen36
+  job_id: local-vllm
   # Keep graph identity identical across benchmark environments because stable
   # chunk IDs are included in extraction prompts.
   graph_id: martial-arts-history-v1
@@ -31,7 +31,7 @@ llm:
   # require a placeholder credential on a trusted loopback endpoint.
   provider: vllm_local
   endpoint: http://localhost:8000/v1
-  model: nvidia/Qwen3.6-35B-A3B-NVFP4
+  model: unsloth/Qwen3.8-27B-NVFP4
 embedding:
   # The chat checkpoint is generative, not an embedding model. Keep vectors on
   # the independent local provider so changing LLM runtimes never couples the
@@ -46,7 +46,7 @@ ontology:
   profile_path: data/martial_arts/ontology.yaml
 writer:
   provider: local_artifacts
-  output_path: out/local-vllm-qwen36
+  output_path: out/local-vllm
 cache:
   provider: local
-  path: out/cache/local-vllm-qwen36
+  path: out/cache/local-vllm

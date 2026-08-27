@@ -1458,7 +1458,7 @@ def test_kubernetes_node_inventory_combines_hardware_metrics_and_model_placement
                             "image": "nvcr.io/nvidia/vllm:26.06-py3",
                             "args": [
                                 "serve",
-                                "nvidia/Qwen3.6-35B-A3B-NVFP4",
+                                "unsloth/Qwen3.8-27B-NVFP4",
                                 "--served-model-name",
                                 "qwen-production",
                             ],
@@ -2418,7 +2418,7 @@ def _fleet_request(tmp_path: Path) -> IngestionRequest:
             "ocr": ProviderSelection("fallback"),
             "llm": ProviderSelection(
                 "vllm_local",
-                model="nvidia/Qwen3.6-35B-A3B-NVFP4",
+                model="unsloth/Qwen3.8-27B-NVFP4",
                 endpoint="http://localhost:8000/v1",
             ),
             "embedding": ProviderSelection(
@@ -2519,7 +2519,7 @@ def _fleet_kubectl_fixture(
                             "ocr": {"provider": profile_ocr},
                             "llm": {
                                 "provider": "vllm_local",
-                                "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+                                "model": "unsloth/Qwen3.8-27B-NVFP4",
                             },
                             "embedding": {
                                 "provider": "sentence_transformers",

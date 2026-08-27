@@ -254,7 +254,7 @@
     <circle cx="41" cy="41" r="4" fill="#0aa887"/>
     <path d="M33 32 L36 30 M33 36 L37 39" class="line"/>
     <text x="62" y="32" class="adapterTitle">LLM</text>
-    <text x="62" y="53" class="adapterBody">Ollama • vLLM • Azure OpenAI • Cortex</text>
+    <text x="62" y="53" class="adapterBody">vLLM • Ollama • Azure OpenAI • Cortex</text>
     <text x="22" y="83" class="adapterTitle">Structured extraction and adjudication</text>
   </g>
   <g transform="translate(960 914)">

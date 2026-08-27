@@ -40,9 +40,8 @@ only for a documented model or corpus constraint.
 The general-purpose ontology is `ontologies/general.yaml`. Dataset-specific
 profiles and ontologies live under `data/<dataset>/`; for example:
 
-- `data/martial_arts/configs/local-vllm-qwen36.yaml`
-- `data/martial_arts/configs/local-ollama-qwen36.yaml`
-- `data/martial_arts/configs/kubernetes-vllm-qwen36.yaml`
+- `data/martial_arts/configs/local-vllm.yaml`
+- `data/martial_arts/configs/kubernetes-vllm.yaml`
 
 ## Choosing A Profile
 

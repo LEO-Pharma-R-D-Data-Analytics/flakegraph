@@ -11,6 +11,12 @@ managed Azure OpenAI deployment while FlakeGraph extraction and Spark
 finalization run on the same four-node fleet. Each result is one complete,
 uncached run, so measurements are not multi-run means or stability estimates.
 
+The Qwen row was measured on `nvidia/Qwen3.6-35B-A3B-NVFP4`, which the
+repository's profiles no longer select — they now serve
+`unsloth/Qwen3.8-27B-NVFP4` behind the priority-aware serving plane. The figure
+is kept as the record of what ran, not as a prediction of what the current
+profile will produce. Re-measure before comparing against it.
+
 ## Results
 
 | Result | LLM serving | Wall time | Documents/minute | Entity F1 | Triple F1 | Hard errors | Quality gate |

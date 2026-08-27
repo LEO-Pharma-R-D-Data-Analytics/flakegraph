@@ -58,7 +58,7 @@ Run the local protocol with:
 
 ```bash
 uv run flakegraph benchmark extraction \
-  --config data/martial_arts/configs/local-vllm-qwen36.yaml \
+  --config data/martial_arts/configs/local-vllm.yaml \
   --gold data/martial_arts/gold.json \
   --repeats 3 \
   --output out/benchmarks/martial-arts

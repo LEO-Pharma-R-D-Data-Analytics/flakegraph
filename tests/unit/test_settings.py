@@ -296,20 +296,20 @@ def test_settings_expands_ai_backend_profiles_before_specific_provider_overrides
     assert override_settings.embedding.provider == "sentence_transformers"
 
 
-def test_local_vllm_profile_defaults_to_qwen36_endpoint() -> None:
+def test_local_vllm_profile_defaults_to_the_fleet_reference_model() -> None:
     settings = Settings.load(Path("configs/local-vllm-mineru-oss.yaml"), env={})
 
     assert settings.llm.provider == "vllm_local"
     assert settings.llm.endpoint == "http://localhost:8000/v1"
-    assert settings.llm.model == "nvidia/Qwen3.6-35B-A3B-NVFP4"
+    assert settings.llm.model == "unsloth/Qwen3.8-27B-NVFP4"
     assert settings.llm.api_key is None
 
 
-def test_local_vllm_qwen_profile_defaults_to_real_local_providers() -> None:
+def test_local_vllm_profile_defaults_to_real_local_providers() -> None:
     """Verify the quick-start profile selects vLLM and local embeddings."""
 
     settings = Settings.load(
-        Path("data/martial_arts/configs/local-vllm-qwen36.yaml"),
+        Path("data/martial_arts/configs/local-vllm.yaml"),
         env={},
     )
 
@@ -321,7 +321,7 @@ def test_local_vllm_qwen_profile_defaults_to_real_local_providers() -> None:
     assert "**/*.png" not in settings.files.include_globs
     assert settings.llm.provider == "vllm_local"
     assert settings.llm.endpoint == "http://localhost:8000/v1"
-    assert settings.llm.model == "nvidia/Qwen3.6-35B-A3B-NVFP4"
+    assert settings.llm.model == "unsloth/Qwen3.8-27B-NVFP4"
     assert settings.llm.api_key is None
     assert settings.llm.timeout_seconds == 180
     assert settings.embedding.provider == "sentence_transformers"
@@ -341,23 +341,7 @@ def test_local_vllm_qwen_profile_defaults_to_real_local_providers() -> None:
     assert settings.graph.resolution_adjudication_batch_size == 40
     assert settings.graph.resolution_parallelism == 2
     assert settings.graph.community_report_parallelism == 2
-    assert settings.writer.output_path == Path("out/local-vllm-qwen36")
-
-
-def test_local_ollama_profile_is_portable_and_keyless() -> None:
-    """Keep the quick-start profile independent from host-specific inference stacks."""
-
-    settings = Settings.load(
-        Path("data/martial_arts/configs/local-ollama-qwen36.yaml"),
-        env={},
-    )
-
-    assert settings.llm.provider == "ollama"
-    assert settings.llm.endpoint == "http://localhost:11434"
-    assert settings.llm.model == "qwen3.6:35b-a3b-q4_K_M"
-    assert settings.llm.api_key is None
-    assert settings.embedding.provider == "sentence_transformers"
-    assert settings.writer.output_path == Path("out/local-ollama-qwen36")
+    assert settings.writer.output_path == Path("out/local-vllm")
 
 
 def test_settings_loads_graph_parallelism_overrides_from_env() -> None:
@@ -367,7 +351,7 @@ def test_settings_loads_graph_parallelism_overrides_from_env() -> None:
     """
 
     settings = Settings.load(
-        Path("data/martial_arts/configs/local-vllm-qwen36.yaml"),
+        Path("data/martial_arts/configs/local-vllm.yaml"),
         env={
             "KG_GRAPH_EXTRACTION_PARALLELISM": "3",
             "KG_GRAPH_RESOLUTION_PARALLELISM": "2",

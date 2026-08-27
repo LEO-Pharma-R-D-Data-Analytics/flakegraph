@@ -38,17 +38,18 @@ system packages in that artifact.
   pinned revision so ephemeral executors do not download mutable weights during
   a run. Review the selected model card when changing models.
   Source: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
-- The README uses Ollama with the official Qwen3.6 35B-A3B Q4 model tag. The
-  upstream `Qwen/Qwen3.6-35B-A3B` model is Apache-2.0 licensed. Ollama and model
-  artifacts are obtained separately and are not redistributed by FlakeGraph;
-  review the selected Ollama artifact and model metadata before redistribution.
+- Ollama remains a selectable LLM provider, defaulting to Unsloth's GGUF build
+  of Qwen3.8 27B. The upstream `Qwen/Qwen3.8-27B` model is Apache-2.0 licensed.
+  Ollama and model artifacts are obtained separately and are not redistributed
+  by FlakeGraph; review the selected Ollama artifact and model metadata before
+  redistribution.
   Sources: https://github.com/ollama/ollama/blob/main/LICENSE and
-  https://huggingface.co/Qwen/Qwen3.6-35B-A3B
-- Fleet and benchmark profiles use vLLM with
-  `nvidia/Qwen3.6-35B-A3B-NVFP4`. NVIDIA publishes this quantized checkpoint
-  under Apache-2.0 and identifies Alibaba's Qwen3.6 model as its base. Review
-  the pinned model card and upstream notices before redistributing weights.
-  Source: https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4
+  https://huggingface.co/Qwen/Qwen3.8-27B
+- Fleet and benchmark profiles use vLLM with `unsloth/Qwen3.8-27B-NVFP4`.
+  Unsloth publishes this quantized checkpoint under Apache-2.0 and identifies
+  Alibaba's `Qwen/Qwen3.8-27B` as its base. Review the pinned model card and
+  upstream notices before redistributing weights.
+  Source: https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4
 - The optional chart-managed server uses NVIDIA's vLLM container. vLLM source
   is Apache-2.0, while the NGC container also contains NVIDIA and third-party
   runtime components governed by the container's accompanying notices and NGC
@@ -65,6 +66,12 @@ system packages in that artifact.
   and metadata. It is distributed under the GNU Lesser General Public License
   3.0 with exceptions described by the upstream project. Source:
   https://www.psycopg.org/psycopg3/docs/basic/license.html
+- `fastapi`, `starlette`, `uvicorn`, and `python-multipart` implement the
+  inference sidecar and the OCR shim. All four are MIT licensed and are
+  installed as ordinary Python dependencies into the FlakeGraph image, so they
+  carry their upstream licenses and notices into any image you redistribute.
+  Sources: https://github.com/fastapi/fastapi/blob/master/LICENSE and
+  https://github.com/encode/uvicorn/blob/master/LICENSE.md
 - `boto3`, `botocore`, and their transitive AWS SDK dependencies provide the
   S3-compatible artifact adapter. They are installed as ordinary Python
   dependencies and retain their upstream Apache-2.0 licenses and notices.
@@ -99,6 +106,21 @@ system packages in that artifact.
 - `poppler-utils` is installed only when `KG_INSTALL_TESSERACT=true`; distro
   packages include GPL/LGPL/MIT licensed components. Review this optional image
   variant before redistribution.
+- LiteLLM provides the chart-managed API gateway: virtual keys, budgets, spend
+  records, and model access control. The proxy is distributed under a MIT
+  license with additional terms covering its enterprise features; the chart
+  references the published image by tag and does not redistribute it. Review
+  those terms before enabling enterprise functionality.
+  Source: https://github.com/BerriAI/litellm/blob/main/LICENSE
+- Envoy provides the chart-managed inference listener and is Apache-2.0
+  licensed. The chart references the published image and does not redistribute
+  it. Source: https://github.com/envoyproxy/envoy/blob/main/LICENSE
+- The endpoint picker is llm-d's inference scheduler, Apache-2.0 licensed and
+  derived from the Kubernetes Gateway API Inference Extension. FlakeGraph's
+  chart configures the published image and adapts its upstream Envoy and plugin
+  configuration; it does not redistribute the image.
+  Sources: https://github.com/llm-d/llm-d-router and
+  https://github.com/kubernetes-sigs/gateway-api-inference-extension
 - KEDA provides queue-driven Kubernetes autoscaling and is installed separately
   from its pinned upstream Helm chart. KEDA is Apache-2.0 licensed and is not
   embedded in the FlakeGraph Python package or container images. Source:

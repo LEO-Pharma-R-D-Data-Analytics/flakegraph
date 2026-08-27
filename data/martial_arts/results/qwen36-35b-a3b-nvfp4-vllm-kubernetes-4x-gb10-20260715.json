@@ -18,7 +18,7 @@
     "evidence_observation_count": 109
   },
   "configuration": {
-    "path": "data/martial_arts/configs/kubernetes-vllm-qwen36.yaml",
+    "path": "data/martial_arts/configs/kubernetes-vllm.yaml",
     "sha256": "f8e31a60fc09209aab341cb6650ab36dcedacff0b78030cd37e916f4de655dad",
     "config_digest": "22b64b34c34a80708e5979fd95c76f85a885f26819ce75c4f79e1783d0260268",
     "ontology_path": "data/martial_arts/ontology.yaml",

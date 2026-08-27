@@ -29,7 +29,7 @@ llm:
   # with its chart-managed Service endpoint and immutable model identity.
   provider: vllm_local
   endpoint: http://localhost:8000/v1
-  model: nvidia/Qwen3.6-35B-A3B-NVFP4
+  model: unsloth/Qwen3.8-27B-NVFP4
 embedding:
   # Keep graph vectors independent from the generative model server so either
   # provider can be replaced without coupling their model inventories.

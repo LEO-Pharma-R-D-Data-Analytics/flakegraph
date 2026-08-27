@@ -29,7 +29,7 @@ corresponding Bottou and Mikolov PDFs hosted by the same site.
 | --- | --- |
 | `download.py` | Discovers, validates, and downloads the non-redistributed corpus. |
 | `ontology.yaml` | Scientific-paper entity and relation vocabulary. |
-| `configs/kubernetes-vllm-qwen36.yaml` | Queue-backed Qwen and MinerU fleet profile. |
+| `configs/kubernetes-vllm.yaml` | Queue-backed Qwen and MinerU fleet profile. |
 | `gold.json` | Selected reference graph and short evidence anchors. |
 | `BENCHMARKS.md` | Controlled GPT-5.6 Sol and Qwen measurements. |
 | `results/` | Compact public benchmark records without source content. |

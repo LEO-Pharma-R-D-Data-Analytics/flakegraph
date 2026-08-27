@@ -6,6 +6,12 @@ relation extraction, and Spark GraphFrames finalization. Qwen is served through
 NVIDIA vLLM; GPT-5.6 Sol uses Azure OpenAI. Every result aggregates three complete
 queue-backed repetitions.
 
+The Qwen rows were measured on `nvidia/Qwen3.6-35B-A3B-NVFP4`, which the
+repository's profiles no longer select — they now serve
+`unsloth/Qwen3.8-27B-NVFP4` behind the priority-aware serving plane. These
+figures are kept as the record of what ran, not as a prediction of what the
+current profile will produce. Re-measure before comparing against them.
+
 ## Results
 
 | Result | Environment | Mean Wall Time | Documents/Minute | Entity F1 | Triple F1 | Accepted Runs |

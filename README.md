@@ -21,13 +21,20 @@ Kubernetes, and Snowflake execution.
 
 ## Quick Start
 
-The bundled example uses Python 3.14, `uv`, Ollama, Qwen3.6,
-sentence-transformers, and the public martial-arts dataset. The same commands
-work on macOS and Linux, including DGX Spark. Install
-[Ollama](https://docs.ollama.com/quickstart), then pull the default model:
+The bundled example uses Python 3.14, `uv`, vLLM, `unsloth/Qwen3.8-27B-NVFP4`,
+sentence-transformers, and the public martial-arts dataset.
+
+FlakeGraph itself runs on macOS and Linux. The model server does not: vLLM needs
+a CUDA GPU, such as a DGX Spark. On a machine without one, point
+`KG_LLM_ENDPOINT` at a server running elsewhere, or select a hosted provider in
+the app.
+
+Install [vLLM](https://docs.vllm.ai/en/latest/getting_started/installation.html),
+then serve the pinned checkpoint. The launcher carries the same profile the Helm
+chart uses, so a local check and a fleet run exercise one engine configuration:
 
 ```bash
-ollama pull qwen3.6:35b-a3b-q4_K_M
+bash deploy/vllm/serve-qwen38.sh
 ```
 
 Start the FlakeGraph application:
@@ -50,16 +57,19 @@ Snowflake schema as the output independently from where processing runs. Active
 graphs show OCR, extraction, finalization, and writes; completed graphs open the
 entity, relation, community, and evidence explorer directly.
 
-The default Q4 model is about 24 GB and is intended for systems with at least
-32 GB of usable unified or GPU memory. On a smaller machine, select the compact
-6.6 GB Qwen3.5 fallback before running the same profile:
+The pinned checkpoint holds about 22 GB of weights before any KV cache. What is
+left over decides how many requests the server can run at once, and the sequence
+limit has to bind before that memory does — otherwise the engine starts evicting
+requests that are already running. Check a device before serving it:
 
 ```bash
-ollama pull qwen3.5:9b
-export KG_LLM_MODEL=qwen3.5:9b
+uv run flakegraph serving sizing --kv-heads 4 --head-dim 256 \
+  --attention-layers 16 --weights-gib 21.81 --device-memory-gib 119.2 \
+  --max-num-seqs 24
 ```
 
-Use `ollama ps` during processing to confirm that the model is fully accelerated.
+It exits non-zero when the limit is unsafe. On a smaller device, lower
+`VLLM_MAX_NUM_SEQS` until it passes, then pass the same value to the launcher.
 Select `data/martial_arts/files` in the app to process the complete public sample
 corpus. Graph views contain source text and evidence, so handle them with the
 same care as the input documents. See [Application](app/README.md) for local,
@@ -74,7 +84,7 @@ Configuration selects adapters for each boundary:
 | --- | --- |
 | Files | Uploads, local paths, manifests, Azure Blob Storage, S3-compatible buckets, Snowflake stages |
 | OCR | Adaptive provider fallback, built-in text extraction, MinerU, Tesseract, generic HTTP, Snowflake Cortex |
-| LLM | Ollama and other OpenAI-compatible APIs, Azure OpenAI, vLLM, Snowflake Cortex |
+| LLM | vLLM, other OpenAI-compatible APIs, Azure OpenAI, Ollama, Snowflake Cortex |
 | Entity extraction | LLM or optional local GLiNER |
 | Embeddings | Sentence-transformers, OpenAI-compatible APIs, Azure OpenAI, Snowflake Cortex |
 | Cache | Local JSON or Snowflake |

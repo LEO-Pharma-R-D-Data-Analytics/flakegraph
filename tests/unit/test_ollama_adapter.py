@@ -52,7 +52,7 @@ def test_ollama_uses_native_schema_and_disables_thinking(
     monkeypatch.setattr("kg_processor.adapters.http.httpx.Client", _OllamaMockClient)
     provider = OllamaLlmProvider(
         endpoint="http://localhost:11434/v1",
-        model="qwen3.6:35b-a3b-q4_K_M",
+        model="qwen3.8:27b-q4_K_M",
     )
     schema = {
         "type": "object",
@@ -64,7 +64,7 @@ def test_ollama_uses_native_schema_and_disables_thinking(
     result = provider.complete_structured(
         StructuredCompletionRequest(
             task_name="ollama_contract",
-            model="qwen3.6:35b-a3b-q4_K_M",
+            model="qwen3.8:27b-q4_K_M",
             system="Return JSON.",
             user="Confirm.",
             json_schema=schema,

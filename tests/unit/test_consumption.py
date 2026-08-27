@@ -98,7 +98,7 @@ def test_local_work_accrues_avoided_cost_not_billed_cost() -> None:
     """Local runs bill nothing; their value is what was not spent elsewhere."""
 
     totals = summarize(
-        [_event(provider="ollama", model="qwen3.6", locality=Locality.LOCAL)],
+        [_event(provider="ollama", model="qwen3.8", locality=Locality.LOCAL)],
         _card(),
     )
 

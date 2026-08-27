@@ -103,8 +103,8 @@ def cortex_embedding_model_for_width(width: int | None) -> str | None:
 
 DEFAULTS = {
     "llm": {
-        "ollama": ("http://localhost:11434", "qwen3.6:35b-a3b-q4_K_M"),
-        "vllm_local": ("http://localhost:8000/v1", "nvidia/Qwen3.6-35B-A3B-NVFP4"),
+        "ollama": ("http://localhost:11434", "hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M"),
+        "vllm_local": ("http://localhost:8000/v1", "unsloth/Qwen3.8-27B-NVFP4"),
         "openai_compatible": ("", ""),
         "azure_openai": ("", ""),
         "snowflake_cortex": ("", "mistral-large2"),

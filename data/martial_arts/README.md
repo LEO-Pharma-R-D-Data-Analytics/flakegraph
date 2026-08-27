@@ -25,9 +25,8 @@ flowchart LR
 | `manifest.jsonl` | Relative file paths, source URIs, SHA-256 checksums, byte sizes, and MIME types. |
 | `gold.json` | Canonical entities, directed relations, aliases, evidence observations, and quality thresholds. |
 | `ontology.yaml` | Entity vocabulary, relation signatures, inverses, aliases, and self-loop policy. |
-| `configs/local-ollama-qwen36.yaml` | Portable Ollama profile used by the repository quick start. |
-| `configs/local-vllm-qwen36.yaml` | Local vLLM benchmark profile. |
-| `configs/kubernetes-vllm-qwen36.yaml` | Distributed Kubernetes benchmark profile. |
+| `configs/local-vllm.yaml` | Local vLLM profile used by the repository quick start. |
+| `configs/kubernetes-vllm.yaml` | Distributed Kubernetes benchmark profile. |
 | `results/` | Compact published quality, timing, runtime, and hardware measurements. |
 | `LICENSE.md` | CC0 dedication for this dataset. |
 
@@ -60,18 +59,18 @@ whole-output structural diagnostics remain available separately.
 
 ## Run Locally
 
-Install Ollama and pull `qwen3.6:35b-a3b-q4_K_M`, then run:
+Serve the pinned checkpoint with `bash deploy/vllm/serve-qwen38.sh`, then run:
 
 ```bash
 uv run flakegraph preflight \
-  --config data/martial_arts/configs/local-ollama-qwen36.yaml
+  --config data/martial_arts/configs/local-vllm.yaml
 
 uv run flakegraph worker \
-  --config data/martial_arts/configs/local-ollama-qwen36.yaml \
+  --config data/martial_arts/configs/local-vllm.yaml \
   --progress rich
 
 uv run flakegraph inspect evaluate \
-  --output out/local-ollama-qwen36 \
+  --output out/local-vllm \
   --gold data/martial_arts/gold.json
 ```
 

@@ -86,7 +86,7 @@ def test_preflight_explains_environment_input_override(tmp_path: Path) -> None:
 
     missing = tmp_path / "old-input"
     settings = Settings.load(
-        Path("data/martial_arts/configs/local-ollama-qwen36.yaml"),
+        Path("data/martial_arts/configs/local-vllm.yaml"),
         env={"KG_INPUT_PATH": str(missing)},
     )
 
@@ -908,7 +908,7 @@ def test_ollama_llm_is_valid_without_api_key(tmp_path: Path) -> None:
             "llm": {
                 "provider": "ollama",
                 "endpoint": "http://localhost:11434",
-                "model": "qwen3.6:35b-a3b-q4_K_M",
+                "model": "qwen3.8:27b-q4_K_M",
             },
             "embedding": {"provider": "hash", "dimension": 8},
             "writer": {"output_path": tmp_path / "out"},

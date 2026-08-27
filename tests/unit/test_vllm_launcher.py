@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 
-def test_qwen36_launcher_passes_pinned_defaults_and_environment_overrides(
+def test_launcher_passes_pinned_defaults_and_environment_overrides(
     tmp_path: Path,
 ) -> None:
     """Exercise the shell boundary without loading vLLM or an actual model."""
@@ -31,7 +31,7 @@ def test_qwen36_launcher_passes_pinned_defaults_and_environment_overrides(
         "VLLM_MAX_NUM_SEQS": "2",
     }
     subprocess.run(
-        ["bash", "deploy/vllm/serve-qwen36.sh"],
+        ["bash", "deploy/vllm/serve-qwen38.sh"],
         check=True,
         env=environment,
         capture_output=True,
@@ -39,13 +39,17 @@ def test_qwen36_launcher_passes_pinned_defaults_and_environment_overrides(
     )
 
     arguments = arguments_path.read_text(encoding="utf-8").splitlines()
-    assert arguments[:2] == ["serve", "nvidia/Qwen3.6-35B-A3B-NVFP4"]
-    assert _option(arguments, "--revision") == "491c2f1ea524c639598bf8fa787a93fed5a6fbce"
+    assert arguments[:2] == ["serve", "unsloth/Qwen3.8-27B-NVFP4"]
+    assert _option(arguments, "--revision") == "9e3d73c76eddb75f795cc24ccfbc5affe41c66bd"
     assert _option(arguments, "--port") == "9000"
     assert _option(arguments, "--max-num-seqs") == "2"
     assert _option(arguments, "--max-num-batched-tokens") == "32768"
     assert _option(arguments, "--gpu-memory-utilization") == "0.50"
     assert "--enable-prefix-caching" in arguments
+    # Without this the engine serves FIFO and every stamped band is ignored.
+    assert _option(arguments, "--scheduling-policy") == "priority"
+    # Incompatible with --async-scheduling, which the profile does set.
+    assert "--speculative-config" not in arguments
     assert environment_path.read_text(encoding="utf-8").strip() == "1"
 
 
