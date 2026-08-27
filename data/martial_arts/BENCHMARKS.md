@@ -3,14 +3,14 @@
 This benchmark processes all ten documents with built-in text extraction,
 all-MiniLM-L6-v2 embeddings, disabled cross-run caches, two-pass entity and
 relation extraction, and Spark GraphFrames finalization. Qwen is served through
-NVIDIA vLLM; GPT-5.6 Sol uses Azure OpenAI. Every result aggregates three complete
-queue-backed repetitions.
+NVIDIA vLLM; GPT-5.6 Sol uses Azure OpenAI.
 
-The Qwen rows were measured on `nvidia/Qwen3.6-35B-A3B-NVFP4`, which the
-repository's profiles no longer select — they now serve
-`unsloth/Qwen3.8-27B-NVFP4` behind the priority-aware serving plane. These
-figures are kept as the record of what ran, not as a prediction of what the
-current profile will produce. Re-measure before comparing against them.
+The three 2026-07-15 rows each aggregate three complete queue-backed
+repetitions on `nvidia/Qwen3.6-35B-A3B-NVFP4`, which the repository's profiles
+no longer select. The 2026-08-27 row is a **single** repetition on the current
+profile — `unsloth/Qwen3.8-27B-NVFP4` behind the priority-aware serving plane —
+so it carries no stability estimate and its wall time is not comparable with the
+rows above it. Read the two groups as different measurements, not as a series.
 
 ## Results
 
@@ -19,12 +19,34 @@ current profile will produce. Re-measure before comparing against them.
 | [`mah-v1-qwen36-35b-a3b-nvfp4-vllm-k8s-1x-gb10-20260715`](results/qwen36-35b-a3b-nvfp4-vllm-kubernetes-1x-gb10-20260715.json) | Kubernetes, 1x GB10 | 18m 3.917s | 0.558 | 0.9909 | 0.9263 | 1/3 |
 | [`mah-v1-qwen36-35b-a3b-nvfp4-vllm-k8s-4x-gb10-20260715`](results/qwen36-35b-a3b-nvfp4-vllm-kubernetes-4x-gb10-20260715.json) | Kubernetes, 4x GB10 | 7m 56.188s | 1.266 | 0.9693 | 0.9065 | 0/3 |
 | [`mah-v1-gpt56-sol-azure-openai-k8s-4x-gb10-20260715`](results/gpt56-sol-azure-openai-kubernetes-4x-gb10-20260715.json) | Kubernetes, 4x GB10, Azure OpenAI | 4m 0.173s | 2.562 | 0.9955 | 0.9592 | 0/3 |
+| [`mah-v1-qwen38-27b-nvfp4-vllm-k8s-1x-gb10-20260827`](results/qwen38-27b-nvfp4-vllm-kubernetes-1x-gb10-20260827.json) | Kubernetes, 1x GB10, serving plane | 58m extraction (see below) | 0.172 | recall 1.0 | recall 1.0 | 1/1 |
 
 Four-node Qwen is **2.28x faster than one-node Qwen** end to end. GPT-5.6 Sol
 is **1.98x faster than four-node Qwen** on the same processing fleet. All nine
-runs completed successfully; one Qwen 1x task retried after a malformed model
-response. The strict per-run acceptance gate includes structural thresholds, so
-mean F1 alone does not determine whether a run is accepted.
+2026-07-15 runs completed successfully; one Qwen 1x task retried after a
+malformed model response. The strict per-run acceptance gate includes structural
+thresholds, so mean F1 alone does not determine whether a run is accepted.
+
+### Reading the 2026-08-27 row
+
+It is the first run to pass every acceptance gate: 74 nodes and 104 edges
+against a gold graph of exactly 74 and 104, recall 1.0 on both entities and
+triples, one component, no isolates. The evaluator reports precision as not
+applicable under reference entity coverage, so precision and F1 are recorded as
+null rather than assumed, and only recall is quoted above.
+
+Its timing needs three caveats. Extraction ran uninterrupted in **3,479 s**, and
+that is the figure the throughput column uses. Total wall time was 6,553 s, but
+finalization stalled twice on operator-fixable faults — a Spark image predating
+the coordination schema, then a missing provider Secret the executors reference
+— so the total measures an incident, not the fleet.
+
+The throughput gap against the 2026-07-15 rows is mostly architectural, not a
+regression in the pipeline. `Qwen3.6-35B-A3B` activates about 3B parameters per
+token; `Qwen3.8-27B` is dense and activates all 27B. Decode on this part is
+bound by memory bandwidth, so the newer model measured **10.7 tokens/s** where
+the older one sustained several times that. Expect the same ratio on any
+bandwidth-bound accelerator, and size `maxNumSeqs` and client timeouts for it.
 
 ## Protocol
 
