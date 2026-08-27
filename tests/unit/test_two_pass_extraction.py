@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from kg_processor.adapters.embeddings.hash import HashEmbeddingProvider
@@ -10,6 +11,8 @@ from kg_processor.adapters.llm.fake import FakeLlmProvider
 from kg_processor.application.llm_extractors import LlmRelationExtractor
 from kg_processor.application.ontology import load_ontology
 from kg_processor.application.two_pass_extraction import (
+    _WINDOW_FAILURE_DETAIL_LIMIT,
+    _all_windows_failed_message,
     _relation_completion_inventory,
     _relation_inventory_for_window,
     _run_window_stage,
@@ -1384,3 +1387,65 @@ def _relation(
         "quote": quote,
         "confidence": 1.0,
     }
+
+
+def _failure_window(identifier: str) -> ExtractionWindow:
+    """Build the minimal window the failure-message helper needs to count."""
+
+    chunk = Chunk(
+        id=f"chunk-{identifier}",
+        file_id="file-1",
+        document_id="doc-1",
+        page_number=1,
+        chunk_index=0,
+        content="text",
+        start_offset=0,
+        end_offset=4,
+        token_count=1,
+        content_hash="hash",
+    )
+    return ExtractionWindow(id=identifier, document_id="doc-1", chunks=[chunk], token_count=1)
+
+
+def test_every_window_failing_reports_the_first_cause_not_only_a_count() -> None:
+    """Carry the reason in the message, because the chain does not survive.
+
+    A distributed worker records the message and drops the exception chain, so a
+    bare "all extraction windows failed" reaches the operator with nothing to act
+    on — the provider may have answered perfectly and the pipeline discarded
+    every record, and which of those happened is the whole question.
+    """
+
+    message = _all_windows_failed_message(
+        [_failure_window("a"), _failure_window("b")],
+        [ValueError("no records survived grounding")],
+    )
+
+    assert "all 2 extraction windows failed" in message
+    assert "ValueError" in message
+    assert "no records survived grounding" in message
+
+
+def test_a_window_failure_detail_cannot_carry_a_document_into_the_task_record() -> None:
+    """Bound the detail so a provider echoing its prompt cannot leak the corpus."""
+
+    message = _all_windows_failed_message([_failure_window("a")], [ValueError("x" * 5000)])
+
+    assert len(message) < _WINDOW_FAILURE_DETAIL_LIMIT + 200
+    assert message.endswith("...")
+
+
+def test_a_transport_failure_names_the_endpoint_that_refused() -> None:
+    """Say which host refused, because that is the whole question.
+
+    "Connection refused" alone cannot distinguish a gateway that is rolling from
+    a consumer still addressing an engine it is no longer allowed to reach.
+    """
+
+    request = httpx.Request("POST", "http://gateway:4000/v1/chat/completions")
+    failure = httpx.ConnectError("[Errno 111] Connection refused", request=request)
+
+    message = _all_windows_failed_message([_failure_window("a")], [failure])
+
+    assert "while calling http://gateway:4000/v1/chat/completions" in message
+    assert "ConnectError" in message

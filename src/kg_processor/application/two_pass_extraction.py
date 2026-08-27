@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
@@ -27,6 +27,7 @@ from kg_processor.application.llm_extractors import (
 )
 from kg_processor.application.progress import error_metadata
 from kg_processor.application.prompt_registry import TWO_PASS_PROMPT_REVISION
+from kg_processor.application.redaction import redact_sensitive_text
 from kg_processor.application.relation_candidates import discover_cue_relation_candidates
 from kg_processor.application.window_errors import is_systemic_provider_error
 from kg_processor.config.settings import GraphSettings
@@ -409,7 +410,7 @@ def _run_window_stage(  # noqa: PLR0912
             if progress:
                 progress(len(results), len(windows), len(result.entities), len(result.relations))
         if windows and len(failures) == len(windows):
-            raise RuntimeError("all extraction windows failed") from failures[0]
+            raise RuntimeError(_all_windows_failed_message(windows, failures)) from failures[0]
         return results
 
     results_by_index: dict[int, _WindowResult] = {}
@@ -437,8 +438,57 @@ def _run_window_stage(  # noqa: PLR0912
     finally:
         executor.shutdown(wait=True)
     if windows and len(parallel_failures) == len(windows):
-        raise RuntimeError("all extraction windows failed") from parallel_failures[0]
+        raise RuntimeError(
+            _all_windows_failed_message(windows, parallel_failures)
+        ) from parallel_failures[0]
     return [results_by_index[index] for index in range(len(windows))]
+
+
+_WINDOW_FAILURE_DETAIL_LIMIT = 300
+
+
+def _all_windows_failed_message(
+    windows: Sequence[ExtractionWindow],
+    failures: Sequence[Exception],
+) -> str:
+    """Name the first cause in the message, not only in the exception chain.
+
+    A worker records this message and discards the chain, so a bare "all
+    extraction windows failed" reaches the operator with nothing to act on: the
+    provider answered, the pipeline rejected every record, and which of those
+    happened is exactly what is missing. Carry a bounded, redacted summary of the
+    first failure so the reason survives the trip through the task store.
+    """
+
+    first = failures[0]
+    detail = redact_sensitive_text(str(first)).strip().replace("\n", " ")
+    if len(detail) > _WINDOW_FAILURE_DETAIL_LIMIT:
+        detail = detail[:_WINDOW_FAILURE_DETAIL_LIMIT] + "..."
+    # A transport error says only that something refused a connection. Which
+    # endpoint refused it is the entire question, and the exception carries it.
+    target = _failed_request_target(first)
+    location = f" while calling {target}" if target else ""
+    return (
+        f"all {len(windows)} extraction windows failed; "
+        f"first cause{location}: {type(first).__name__}: {detail or '<no message>'}"
+    )
+
+
+def _failed_request_target(exc: BaseException) -> str:
+    """Return the scheme, host, and path an HTTP failure was aimed at.
+
+    Credentials and query strings are dropped: this ends up in a task record
+    that operators read casually, and the useful part is the destination.
+    """
+
+    request = getattr(exc, "request", None)
+    url = getattr(request, "url", None)
+    if url is None:
+        return ""
+    host = getattr(url, "host", "") or ""
+    port = getattr(url, "port", None)
+    authority = f"{host}:{port}" if port else host
+    return f"{getattr(url, 'scheme', '')}://{authority}{getattr(url, 'path', '')}"
 
 
 def _failed_window_result(window: ExtractionWindow, exc: Exception) -> _WindowResult:
