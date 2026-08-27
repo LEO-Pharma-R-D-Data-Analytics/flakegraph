@@ -1,4 +1,4 @@
-"""Protect the Kubernetes-managed local model-serving deployment contract."""
+"""Protect the Kubernetes-managed serving and document-parsing contract."""
 
 from __future__ import annotations
 
@@ -9,10 +9,21 @@ from typing import Any
 
 import yaml
 
+from kg_processor.serving.sizing import (
+    BYTES_PER_GIB,
+    DeviceBudget,
+    ModelGeometry,
+    compute_sizing,
+)
+
 _CHART = Path("deploy/helm/flakegraph")
 _VALUES = _CHART / "values.yaml"
 _SCHEMA = _CHART / "values.schema.json"
 _MODEL_TEMPLATE = _CHART / "templates/model-serving.yaml"
+_NETWORK_POLICY_TEMPLATE = _CHART / "templates/model-serving-networkpolicy.yaml"
+_LITELLM_TEMPLATE = _CHART / "templates/gateway-litellm.yaml"
+_PLACEMENT_TEMPLATE = _CHART / "templates/gateway-placement.yaml"
+_DOCUMENT_PARSING_TEMPLATE = _CHART / "templates/document-parsing.yaml"
 _WORKER_TEMPLATE = _CHART / "templates/workers.yaml"
 _AUTOSCALING_TEMPLATE = _CHART / "templates/queue-autoscaling.yaml"
 _DATABASE_BOOTSTRAP_TEMPLATE = _CHART / "templates/database-bootstrap-job.yaml"
@@ -37,16 +48,49 @@ def test_model_serving_defaults_are_pinned_and_resource_bounded() -> None:
         == "sha256:94e21552f644e0c1627464ba89d2f7a4ce7442e196f72afa0bb5d7fba23cbb03"
     )
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", values["image"]["digest"])
-    assert values["model"]["name"] == "nvidia/Qwen3.6-35B-A3B-NVFP4"
+    assert values["model"]["name"] == "unsloth/Qwen3.8-27B-NVFP4"
     assert _COMMIT.fullmatch(values["model"]["revision"])
-    assert values["server"]["maxNumSeqs"] == 4
     assert values["server"]["maxNumBatchedTokens"] == 32768
-    assert values["server"]["gpuMemoryUtilization"] == 0.5
     assert values["huggingFaceTokenSecret"]["name"] == ""
     assert values["persistence"]["enabled"] is True
     assert values["resources"]["requests"]["nvidia.com/gpu"] == "1"
     assert values["resources"]["limits"]["nvidia.com/gpu"] == "1"
-    assert values["service"]["internalTrafficPolicy"] == "Cluster"
+    # Speculative decoding conflicts with asynchronous scheduling and forfeits
+    # much of the reusable prefix, so it is opt-in behind a benchmark.
+    assert values["server"]["speculativeTokens"] == 0
+    # The checkpoint declares its own scheme, and asserting a different one is a
+    # startup failure. The reference build is compressed-tensors, not modelopt.
+    assert values["server"]["quantization"] == "compressed-tensors"
+
+
+def test_the_shipped_sequence_limit_is_one_the_sizing_formula_supports() -> None:
+    """Ship a default that keeps KV-pressure eviction of batch work impossible.
+
+    The chart and the sidecar must agree on this or the pods refuse to start,
+    so the contract is checked against the formula rather than a magic number.
+    """
+
+    values = _load_yaml(_VALUES)["modelServing"]
+    sizing = values["sizing"]
+
+    verdict = compute_sizing(
+        ModelGeometry(
+            kv_heads=sizing["kvHeads"],
+            head_dim=sizing["headDim"],
+            attention_layers=sizing["attentionLayers"],
+            kv_cache_dtype=values["server"]["kvCacheDtype"],
+            weights_bytes=int(sizing["weightsGiB"] * BYTES_PER_GIB),
+        ),
+        DeviceBudget(
+            device_memory_bytes=int(sizing["deviceMemoryGiB"] * BYTES_PER_GIB),
+            gpu_memory_utilization=values["server"]["gpuMemoryUtilization"],
+            overhead_bytes=int(sizing["overheadGiB"] * BYTES_PER_GIB),
+        ),
+        sizing["expectedContextTokens"],
+        values["server"]["maxNumSeqs"],
+    )
+
+    assert verdict.sequence_limit_binds_first, verdict.detail
 
 
 def test_model_serving_template_owns_the_complete_model_lifecycle() -> None:
@@ -61,18 +105,151 @@ def test_model_serving_template_owns_the_complete_model_lifecycle() -> None:
         "requiredDuringSchedulingIgnoredDuringExecution:",
         "--revision",
         "--max-num-batched-tokens",
-        "--speculative-config",
         "VLLM_MARLIN_USE_ATOMIC_ADD",
         "huggingFaceTokenSecret",
         "fastsafetensors",
         "startupProbe:",
         "readinessProbe:",
         "livenessProbe:",
-        "internalTrafficPolicy:",
-        'include "flakegraph.localModelServingName"',
     ]
     for fragment in required_fragments:
         assert fragment in template
+
+
+def test_priority_scheduling_cannot_be_configured_away() -> None:
+    """Render the flag unconditionally; without it every stamp is silently ignored.
+
+    There is no values key that omits it and no branch that guards it, because
+    an engine serving FIFO looks exactly like an engine honouring priority until
+    someone measures the wait.
+    """
+
+    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+    before, _, after = template.partition("- --scheduling-policy")
+
+    assert after.startswith("\n            - priority")
+    # Nothing between the engine's own argument list and the flag may branch,
+    # so no values file can leave it out.
+    assert "{{- if" not in before.rsplit("- serve", maxsplit=1)[1]
+
+
+def test_the_engine_is_reachable_only_through_the_enforcement_floor() -> None:
+    """Bind the engine to loopback so no route to inference skips the sidecar."""
+
+    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+    policy = _NETWORK_POLICY_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "- --host\n            - 127.0.0.1" in template
+    assert "command: [flakegraph, serving, sidecar]" in template
+    assert "FLAKEGRAPH_SIDECAR_KEYS_FILE" in template
+    assert "FLAKEGRAPH_SIDECAR_BANDS" in template
+    # The sidecar refuses to start on a limit the KV budget cannot support, so
+    # the numbers it checks must actually reach it.
+    assert "FLAKEGRAPH_SIDECAR_GEOMETRY" in template
+    assert "FLAKEGRAPH_SIDECAR_DEVICE_BUDGET" in template
+    assert "FLAKEGRAPH_SIDECAR_MAX_NUM_SEQS" in template
+    # Probes belong to the floor: a healthy engine behind an unhealthy sidecar
+    # is not a servable replica.
+    assert template.index("startupProbe:") < template.index("name: vllm")
+    assert "kind: NetworkPolicy" in policy
+    assert "app.kubernetes.io/component: inference-router" in policy
+    assert "enginePort" not in policy
+
+
+def test_the_engine_pod_accepts_a_site_supplied_trust_store() -> None:
+    """Let an operator give the engine the CA bundle its egress requires.
+
+    The pod downloads its own weights. Where TLS is terminated on the way out,
+    Hub metadata still resolves while the weight transfer fails verification —
+    which presents as a stalled download, not an error, so the escape hatch has
+    to exist rather than being discovered under time pressure.
+    """
+
+    values = _load_yaml(_VALUES)["modelServing"]
+    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+
+    for field in ("extraEnv", "extraVolumes", "extraVolumeMounts"):
+        assert values[field] == []
+        assert f".Values.modelServing.{field}" in template
+    # The mounts belong to the engine, which is the container that downloads.
+    engine = template.split("name: vllm", maxsplit=1)[1]
+    assert ".Values.modelServing.extraVolumeMounts" in engine
+    assert ".Values.modelServing.extraEnv" in engine
+
+
+def test_the_gateway_expresses_priority_as_which_alias_a_key_may_call() -> None:
+    """Keep the class-to-band mapping out of the request body entirely."""
+
+    template = _LITELLM_TEMPLATE.read_text(encoding="utf-8")
+    values = _load_yaml(_VALUES)["gateway"]
+
+    assert values["enabled"] is True
+    assert set(values["litellm"]["aliases"]) == {"interactive", "dev", "batch"}
+    # Each alias must present a *different* upstream key. Sharing one would make
+    # every class the same band while still looking correctly configured.
+    for field in ("interactiveKey", "devKey", "batchKey"):
+        assert f"upstreamKeySecret.{field}" in template
+    upstream_keys = values["litellm"]["upstreamKeySecret"]
+    assert len({upstream_keys[field] for field in ("interactiveKey", "devKey", "batchKey")}) == 3
+    assert len(set(values["litellm"]["aliases"].values())) == 3
+    # Body injection would be stripped by the sidecar and would collide with
+    # LiteLLM's own reserved field name besides.
+    assert "priority:" not in template
+    # Pointed at FlakeGraph's own schema, LiteLLM's migration tool baselines
+    # instead of migrating and silently creates none of its tables.
+    assert values["litellm"]["databaseUrlSuffix"].endswith("schema=litellm")
+    assert "$(FLAKEGRAPH_DATABASE_URI)" in template
+    assert "proxy_batch_write_at" in template
+
+
+def test_placement_routes_on_the_pickers_choice_and_needs_no_crds() -> None:
+    """Keep the chart installable where no Inference Extension CRDs exist."""
+
+    template = _PLACEMENT_TEMPLATE.read_text(encoding="utf-8")
+    chart_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(_CHART.rglob("*")) if path.is_file()
+    )
+
+    assert "type: ORIGINAL_DST" in template
+    assert "http_header_name: x-gateway-destination-endpoint" in template
+    assert "envoy.filters.http.ext_proc" in template
+    assert "--endpoint-selector" in template
+    assert "prefix-cache-scorer" in template
+    # An InferencePool would make a CRD a precondition for installing at all.
+    assert "InferencePool" not in chart_text
+    assert "kind: Role" in template
+    assert "resources: [pods]" in template
+
+
+def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
+    """Give the shim a resolvable pool and the capacity it must not exceed."""
+
+    template = _DOCUMENT_PARSING_TEMPLATE.read_text(encoding="utf-8")
+    values = _load_yaml(_VALUES)["documentParsing"]
+
+    assert values["enabled"] is True
+    # MinerU's own default of three is too low to keep a node busy.
+    assert values["mineru"]["maxConcurrentRequests"] > 3
+    assert "command: [flakegraph, serving, ocr-shim]" in template
+    assert "FLAKEGRAPH_OCR_SHIM_UPSTREAM_CAPACITY" in template
+    assert "FLAKEGRAPH_OCR_SHIM_DATABASE_URL" in template
+    assert "MINERU_API_MAX_CONCURRENT_REQUESTS" in template
+    assert "- 0.0.0.0" in template
+    # Headless: a load-balanced ClusterIP would hide the per-replica load that
+    # admission control has to count.
+    assert "clusterIP: None" in template
+    # The parsing pool runs the same image as everything else. MinerU is already
+    # installed in it and exposes an entry point, so a second image would only
+    # add another artefact to keep on the right architecture.
+    assert "command: [mineru-api]" in template
+    # Every path the parser writes to has to be one of the writable mounts; the
+    # image's defaults sit inside the read-only layer.
+    assert "MINERU_API_OUTPUT_ROOT" in template
+    for variable in ("MINERU_API_OUTPUT_ROOT", "XDG_CACHE_HOME", "HF_HOME", "HOME"):
+        value = template.split(f"name: {variable}", maxsplit=1)[1].split("value:", maxsplit=1)[1]
+        assert value.strip().splitlines()[0].strip().startswith(("/tmp", "/models")), variable
+    assert "mineru" not in values or "image" not in values["mineru"]
+    assert template.count('include "flakegraph.image"') == 2
 
 
 def test_spark_executor_spreading_degrades_gracefully() -> None:
@@ -91,32 +268,83 @@ def test_spark_executor_spreading_degrades_gracefully() -> None:
     assert values["spark"]["executorContainerSecurityContext"]["allowPrivilegeEscalation"] is False
 
 
-def test_workers_receive_only_the_chart_managed_llm_endpoint() -> None:
-    """Wire chat to vLLM while preserving the independent embedding provider."""
+def test_the_pipeline_is_a_metered_consumer_like_any_other() -> None:
+    """Send batch traffic through the same gateway, holding a batch virtual key.
+
+    The exception that used to exist here — workers addressing an engine
+    directly — made "what is consuming this fleet" a question with a partial
+    answer, and pinned a node's workers to the GPU beside them so an idle pool
+    left that GPU idle too.
+    """
 
     template = _WORKER_TEMPLATE.read_text(encoding="utf-8")
+    helpers = (_CHART / "templates/_helpers.tpl").read_text(encoding="utf-8")
+    consumer_env = helpers.split('define "flakegraph.consumerEnv"', maxsplit=1)[1].split(
+        "{{- end -}}", maxsplit=1
+    )[0]
 
-    assert "if $root.Values.modelServing.enabled" in template
-    assert "KG_LLM_ENDPOINT" in template
-    assert "KG_LLM_MODEL" in template
+    assert "KG_LLM_ENDPOINT" in consumer_env
+    assert "KG_LLM_MODEL" in consumer_env
+    assert "KG_LLM_API_KEY" in consumer_env
+    assert 'include "flakegraph.gatewayEndpoint"' in consumer_env
+    assert ".Values.gateway.litellm.aliases.batch" in consumer_env
+    assert "KG_MINERU_API_URL" in consumer_env
+    assert 'include "flakegraph.consumerEnv"' in template
+    # Embeddings stay an independently configured provider.
     assert "KG_EMBED_ENDPOINT" not in template
     assert "KG_EMBED_MODEL" not in template
-    assert 'include "flakegraph.modelServingEndpoint"' in template
-    assert 'include "flakegraph.localModelServingEndpoint"' in template
-    assert "if $pool.localModelServing" in template
     assert "topologySpreadConstraints:" in template
 
 
-def test_local_model_workers_are_colocated_and_invalid_profiles_fail_rendering() -> None:
-    """Make a node-local inference endpoint unreachable only by invalid chart input."""
+def test_the_llm_credential_is_declared_exactly_once_per_container() -> None:
+    """Never let two sources define KG_LLM_API_KEY in one pod spec.
+
+    Kubernetes resolves a duplicated variable by ordering, not by intent, and an
+    optional key that is absent can blank a value another source just set. With
+    the gateway on, its virtual key is the credential and the provider Secret's
+    mapping must stand aside.
+    """
 
     template = _WORKER_TEMPLATE.read_text(encoding="utf-8")
 
-    assert "localModelServing requires modelServing.enabled=true" in template
-    assert "affinity.podAffinity is managed by localModelServing" in template
-    assert "requiredDuringSchedulingIgnoredDuringExecution:" in template
-    assert "app.kubernetes.io/component: model-serving" in template
-    assert "topologyKey: {{ $root.Values.modelServing.topologyKey }}" in template
+    assert 'eq $mapping.name "KG_LLM_API_KEY"' in template
+    guard = template.split("range $mapping := $root.Values.providerSecret.env", maxsplit=1)[1]
+    assert "$root.Values.gateway.enabled" in guard.split("- name: {{ $mapping.name }}")[0]
+
+
+def test_the_validator_is_configured_exactly_like_what_it_validates() -> None:
+    """Emit one env block for workers and for the Job that preflights them.
+
+    The bootstrap Job runs preflight against the same profile the workers run.
+    Configured separately, the two have drifted in both directions: the Job has
+    passed a profile the workers could not execute, and failed one they could.
+    """
+
+    workers = _WORKER_TEMPLATE.read_text(encoding="utf-8")
+    bootstrap = _DATABASE_BOOTSTRAP_TEMPLATE.read_text(encoding="utf-8")
+    helpers = (_CHART / "templates/_helpers.tpl").read_text(encoding="utf-8")
+
+    assert 'define "flakegraph.consumerEnv"' in helpers
+    for template in (workers, bootstrap):
+        assert 'include "flakegraph.consumerEnv"' in template
+        # Neither may hand-roll the variables the shared block owns.
+        assert "- name: KG_LLM_ENDPOINT" not in template
+        assert "- name: KG_MINERU_API_URL" not in template
+    # The Job must not be left pointing at an engine the consumers no longer use.
+    assert 'include "flakegraph.modelServingEndpoint"' not in bootstrap
+
+
+def test_no_consumer_can_still_address_an_engine_directly() -> None:
+    """Leave one endpoint key, so the placement layer stays replaceable."""
+
+    chart_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(_CHART.rglob("*")) if path.is_file()
+    )
+    example = _PUBLIC_EXAMPLE.read_text(encoding="utf-8")
+
+    assert "localModelServing" not in chart_text
+    assert "localModelServing" not in example
+    assert "internalTrafficPolicy" not in chart_text
 
 
 def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
@@ -254,22 +482,24 @@ def test_schema_and_public_fleet_example_expose_local_model_serving() -> None:
     example = _load_yaml(_PUBLIC_EXAMPLE)
 
     assert "modelServing" in schema["required"]
+    assert "gateway" in schema["required"]
+    assert "documentParsing" in schema["required"]
     assert schema["properties"]["modelServing"]["additionalProperties"] is False
     assert example["modelServing"] == {
         "enabled": True,
         "replicas": 4,
         "nodeSelector": {"flakegraph.io/node-class": "nvidia-spark"},
     }
+    assert example["gateway"]["placement"]["replicas"] == 2
+    assert example["documentParsing"]["mineru"]["replicas"] == 4
     prepare = example["workers"]["prepare"]
     assert prepare["replicas"] == 16
     assert prepare["autoscaling"]["maxReplicas"] == 16
     assert prepare["topologySpreadConstraints"][0]["maxSkew"] == 1
     assert prepare["topologySpreadConstraints"][0]["matchLabelKeys"] == ["pod-template-hash"]
     extract = example["workers"]["extract"]
-    assert extract["replicas"] == 8
-    assert extract["autoscaling"]["maxReplicas"] == 8
-    assert extract["localModelServing"] is True
-    assert extract["nodeSelector"] == {"flakegraph.io/node-class": "nvidia-spark"}
+    assert extract["replicas"] == 16
+    assert extract["autoscaling"]["maxReplicas"] == 16
     assert extract["topologySpreadConstraints"][0]["maxSkew"] == 1
     assert extract["topologySpreadConstraints"][0]["matchLabelKeys"] == ["pod-template-hash"]
 
@@ -302,11 +532,29 @@ def test_worker_pools_autoscale_from_dependency_aware_postgres_demand() -> None:
     assert 'lookup "apps/v1" "Deployment"' in workers
     assert "replicas: {{ $pool.autoscaling.minReplicas }}" in workers
     assert "if not $existingDeployment" in workers
-    assert "CREATE OR REPLACE VIEW flakegraph_worker_demand" in postgres
+    assert "CREATE VIEW flakegraph_worker_demand" in postgres
     assert "task.status = 'running'" in postgres
     assert "remaining_dependencies" in postgres
     assert "FROM flakegraph_publication AS publication" in postgres
     assert "SELECT 'finalize_graph' AS stage" in postgres
+
+
+def test_each_pool_scales_on_each_priority_band_independently() -> None:
+    """Let a small urgent run raise a drained pool without a bulk backlog.
+
+    With one combined trigger, demand from an urgent run is indistinguishable
+    from demand from a queue of a hundred thousand bulk tasks.
+    """
+
+    autoscaling = _AUTOSCALING_TEMPLATE.read_text(encoding="utf-8")
+    postgres = Path("src/kg_processor/adapters/distributed/postgres.py").read_text(encoding="utf-8")
+
+    assert 'range $band := list "interactive" "bulk"' in autoscaling
+    assert "WHERE priority_band = '{{ $band }}'" in autoscaling
+    # The cap stays inside each band, so one band cannot spend the other's.
+    assert "SUM(LEAST(" in autoscaling
+    assert "AS priority_band" in postgres
+    assert "DROP VIEW IF EXISTS flakegraph_worker_demand" in postgres
 
 
 def test_database_schema_is_bootstrapped_before_a_helm_release_is_ready() -> None:
@@ -365,8 +613,25 @@ def test_scheduling_priorities_preserve_models_and_release_workers_for_spark() -
     model_template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
 
     assert priorities["enabled"] is True
-    assert priorities["workerValue"] < priorities["sparkValue"] < priorities["modelValue"]
-    assert priority_template.count("kind: PriorityClass") == 3
+    # The serving plane outranks the workers deliberately: it is the path every
+    # consumer takes, so leaving it at the default priority lets a queue scale-up
+    # preempt the gateway those same workers are trying to reach.
+    assert (
+        priorities["workerValue"]
+        < priorities["sparkValue"]
+        < priorities["servingValue"]
+        < priorities["modelValue"]
+    )
+    assert priority_template.count("kind: PriorityClass") == 4
+    for template_path in (
+        _LITELLM_TEMPLATE,
+        _PLACEMENT_TEMPLATE,
+        _DOCUMENT_PARSING_TEMPLATE,
+    ):
+        assert (
+            'include "flakegraph.servingPriorityClassName"'
+            in template_path.read_text(encoding="utf-8")
+        )
     assert 'include "flakegraph.workerPriorityClassName"' in worker_template
     assert 'include "flakegraph.sparkPriorityClassName"' in spark_template
     assert 'include "flakegraph.modelPriorityClassName"' in model_template
@@ -427,12 +692,15 @@ def test_model_serving_documentation_is_consolidated_into_the_fleet_guide() -> N
         and any(word in name for word in ("model", "serving", "vllm", "host", "gpu"))
     ]
     assert not forbidden, f"model-serving documentation must stay in the fleet guide: {forbidden}"
-    assert "## Local Model Serving" in fleet_guide
+    assert "## Serving Plane" in fleet_guide
     assert "KEDA 2.20.1" in fleet_guide
     assert "kind: ScaledObject" in _AUTOSCALING_TEMPLATE.read_text(encoding="utf-8")
     assert "autoscaling:" in fleet_guide
-    assert "No separate inference router is required" in fleet_guide
     assert "--set-file config.content=deploy/private/fleet-config.yaml" in fleet_guide
+    # The guide has to state the trap, because both conventions live in one repo.
+    prose = " ".join(fleet_guide.split())
+    assert "lower is served first" in prose
+    assert "priority DESC" in prose
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

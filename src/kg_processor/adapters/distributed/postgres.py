@@ -56,7 +56,7 @@ _ARTIFACT_READ_PARALLELISM = 8
 _ARTIFACT_DELETE_BATCH_SIZE = 1_000
 _INITIAL_TASK_COPY_BATCH_SIZE = 2_000
 _MAX_RUN_LIST_LIMIT = 500
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 _EXHAUSTED_TASK_RECOVERY_GRACE_SECONDS = 300
 _POSTGRES_SESSION_OPTIONS = " ".join(
     (
@@ -2611,6 +2611,36 @@ _SCHEMA_STATEMENTS = (
     ON flakegraph_publication (status, available_at, generation)
     """,
     """
+    -- The OCR shim's admission queue. It lives here because the parsing plane
+    -- must order waiting requests across every shim replica, which process
+    -- memory cannot do, and because a restart should not drop work a client is
+    -- still blocked on. Rows are short-lived: one exists only while a caller
+    -- waits or is being parsed.
+    --
+    -- Priority follows the serving convention, where a LOWER value is served
+    -- first. That is the opposite of flakegraph_task above, which orders by
+    -- priority DESC. The two are different queues: this one shares its bands
+    -- with the inference sidecar, not with the run planner.
+    CREATE TABLE IF NOT EXISTS flakegraph_ocr_request (
+        id TEXT PRIMARY KEY,
+        priority INTEGER NOT NULL,
+        consumer_class TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('waiting', 'dispatched')),
+        shim_owner TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS flakegraph_ocr_request_waiting_idx
+    ON flakegraph_ocr_request (priority, created_at, id)
+    WHERE status = 'waiting'
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS flakegraph_ocr_request_stale_idx
+    ON flakegraph_ocr_request (heartbeat_at)
+    """,
+    """
     CREATE INDEX IF NOT EXISTS flakegraph_task_ready_claim_idx
     ON flakegraph_task (
         stage, status, remaining_dependencies, available_at,
@@ -2651,11 +2681,18 @@ _SCHEMA_STATEMENTS = (
     ON flakegraph_artifact (run_id, kind)
     """,
     """
-    CREATE OR REPLACE VIEW flakegraph_worker_demand AS
+    -- The view gained a priority_band column, and a replace cannot rename or
+    -- reorder an existing view's output.
+    DROP VIEW IF EXISTS flakegraph_worker_demand
+    """,
+    """
+    CREATE VIEW flakegraph_worker_demand AS
     SELECT demand.stage,
+           CASE WHEN demand.priority >= 1000 THEN 'interactive' ELSE 'bulk' END
+               AS priority_band,
            COUNT(*)::BIGINT AS desired_workers
     FROM (
-        SELECT task.stage
+        SELECT task.stage, task.priority
         FROM flakegraph_task AS task
         JOIN flakegraph_run AS run ON run.id = task.run_id
         WHERE run.status IN ('queued', 'running')
@@ -2683,7 +2720,15 @@ _SCHEMA_STATEMENTS = (
               )
           )
         UNION ALL
-        SELECT 'finalize_graph' AS stage
+        -- A publication carries no priority of its own, so it inherits the band
+        -- of the run that produced it. Every task in a run shares one offset,
+        -- so any of them answers the question.
+        SELECT 'finalize_graph' AS stage,
+               COALESCE((
+                   SELECT max(sibling.priority)
+                   FROM flakegraph_task AS sibling
+                   WHERE sibling.run_id = publication.run_id
+               ), 0) AS priority
         FROM flakegraph_publication AS publication
         JOIN flakegraph_run AS run ON run.id = publication.run_id
         WHERE run.status = 'running'
@@ -2695,7 +2740,8 @@ _SCHEMA_STATEMENTS = (
               )
           )
     ) AS demand
-    GROUP BY demand.stage
+    GROUP BY demand.stage,
+             CASE WHEN demand.priority >= 1000 THEN 'interactive' ELSE 'bulk' END
     """,
     """
     COMMENT ON VIEW flakegraph_worker_demand IS

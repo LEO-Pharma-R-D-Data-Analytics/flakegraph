@@ -33,10 +33,13 @@ flowchart LR
 | Prepare, context/extract, and finalize workers | FlakeGraph Helm chart |
 | Queue-driven scale-to-zero | KEDA PostgreSQL scaler |
 | Spark driver, executor template, and RBAC | FlakeGraph Helm chart |
-| Local vLLM service | Optional FlakeGraph StatefulSet |
+| Engine pods, each an authenticating sidecar plus one pinned engine | Optional FlakeGraph StatefulSet |
+| LiteLLM gateway: keys, budgets, spend, model access | FlakeGraph Helm chart |
+| Envoy and the endpoint picker: prefix-aware placement | FlakeGraph Helm chart |
+| OCR shim and the `mineru-api` pool | FlakeGraph Helm chart |
 | PostgreSQL | Managed service or optional CloudNativePG cluster |
 | S3-compatible storage | External managed or self-hosted service |
-| OCR, embedding, and external model services | Selected provider deployment |
+| Embedding and external model services | Selected provider deployment |
 | GPU drivers and NVIDIA device plugin | Cluster administrator |
 
 FlakeGraph does not install object storage or hide its lifecycle inside the
@@ -347,75 +350,167 @@ database, the URI in `database.secretName` must contain a fully qualified host
 reachable from the KEDA namespace. The CloudNativePG profile configures its
 fully qualified service automatically.
 
-## Local Model Serving
+## Serving Plane
 
-Set `modelServing.enabled=true` to run one pinned vLLM server per configured
-StatefulSet replica. The chart provides:
+Set `modelServing.enabled=true` to run one pinned engine per StatefulSet replica.
+Three classes of consumer share that fleet: interactive applications, the batch
+extraction pipeline, and developer tooling. All three take one path.
 
-- one persistent model cache per replica;
-- anti-affinity, health probes, and a PodDisruptionBudget;
-- a cluster-wide Service for ordinary workers and Spark;
-- a node-local Service for colocated extraction workers; and
-- `KG_LLM_ENDPOINT` and `KG_LLM_MODEL` injection into workers.
+```
+  interactive apps ─┐
+  batch pipeline   ─┼─→ LiteLLM ─→ Envoy + picker ─→ [ sidecar → engine ] × N
+  developer tools  ─┘   keys        prefix-aware       enforcement floor
+                        budgets     placement
+                        spend
 
-When a pool sets `localModelServing: true`, the chart adds required pod affinity
-to this release's model-serving pods using `modelServing.topologyKey`. Workers
-therefore cannot schedule on a node where the node-local Service has no endpoint.
-Helm rejects local mode when model serving is disabled, and rejects a custom
-`podAffinity` that would conflict with the chart-owned rule. Operators may still
-set `nodeAffinity`, `podAntiAffinity`, topology spreading, and node selectors.
-
-The default profile serves `nvidia/Qwen3.6-35B-A3B-NVFP4` with the pinned NVIDIA
-vLLM image, model revision, FP8 KV cache, FlashInfer attention, Marlin MoE,
-chunked prefill, prefix caching, asynchronous scheduling, and MTP speculative
-decoding. The `vllm_local` adapter disables free-form reasoning for strict JSON
-extraction.
-
-The default `modelServing.server.gpuMemoryUtilization` is `0.50`. On unified-
-memory systems, CUDA allocations are not fully represented by Kubernetes pod
-memory metrics, and the same physical memory must also accommodate workers,
-Spark executors, storage, and system services. Increase this value only for
-dedicated inference nodes or after validating finalization under peak load.
-
-```yaml
-modelServing:
-  enabled: true
-  replicas: 4
-  nodeSelector:
-    flakegraph.io/node-class: nvidia-spark
-
-workers:
-  extract:
-    # Two workers * two concurrent windows fill each four-sequence server.
-    replicas: 8
-    autoscaling:
-      maxReplicas: 8
-    localModelServing: true
-    nodeSelector:
-      flakegraph.io/node-class: nvidia-spark
+  consumers ─→ OCR shim (auth · priority queue · admission) ─→ mineru-api pool
 ```
 
-The public checkpoint does not require authentication. Configure
-`modelServing.huggingFaceTokenSecret.name` when a token is needed for rate limits
-or a replacement model.
+### Queue-jump, never evict
 
-No separate inference router is required. The cluster-wide Service distributes
-ordinary traffic, while the node-local Service keeps colocated workers attached
-to their local model pod. An external gateway remains supported by disabling
-`modelServing` and selecting an OpenAI-compatible endpoint in the normal
-provider config.
+Interactive work waits for a running batch request to finish, then goes first. A
+running request is never preempted and a sequence slot is never held empty, so
+compute already paid for is never discarded.
 
-Validate model identity and acceleration before submitting work:
+`--scheduling-policy priority` orders the *waiting* queue on `(priority,
+arrival_time)`. vLLM has no waiting-to-running preemption, which for this policy
+is the desired behaviour rather than a limitation: a high-priority arrival goes
+to the head of the queue and takes the next slot to free.
+
+Interactive wait is therefore bounded by how long a batch request runs, not by
+scheduling. Expected wait is roughly `D / N`, for batch duration `D` across `N`
+concurrent slots, which gives two levers:
+
+- **`llm.max_output_tokens`** shortens `D`. This is the primary latency control.
+- **`modelServing.server.maxNumSeqs`** raises `N`, so slots free more often.
+
+### Priority is stamped, never claimed
+
+Each engine binds `127.0.0.1` and a sidecar owns the only exposed port. The
+sidecar authenticates the caller, maps the key to a consumer class, strips any
+client-supplied `priority`, and stamps the server's band before forwarding.
+
+The stamp is unconditional because vLLM reads a missing `priority` as `0`, which
+is its *highest* band — an unstamped request would be promoted, not dropped. For
+the same reason an unrecognised class resolves to the band served last.
+
+`/health` and `/metrics` pass through unauthenticated: the kubelet probes the
+first and the endpoint picker scores replicas on the second, and neither runs
+inference. Adapter-management paths are refused outright.
+
+Two Secrets carry the vocabulary, and they must agree:
+
+| Secret | Key | Holds |
+| --- | --- | --- |
+| `modelServing.sidecar.keySecret` | `serving-keys.json` | A JSON object mapping each bearer key to a consumer class |
+| | `SIDECAR_KEY_INTERACTIVE` / `_DEV` / `_BATCH` | The same key values, read by LiteLLM as environment variables |
+
+LiteLLM presents a different upstream key per model alias, so **priority class is
+which alias a virtual key may call**. Restrict each virtual key to one alias and
+the mapping cannot be forged: nothing is injected into a request body, and the
+sidecar would strip it if it were.
+
+### Sizing, as a formula
+
+`maxNumSeqs` cannot be a constant — it depends on the model, its quantisation,
+the GPU, and the expected context:
+
+```
+kv_bytes_per_token = 2 × n_kv_heads × head_dim × n_attention_layers × dtype_bytes
+kv_budget          = (device_memory × gpu_memory_utilization) − weights − overhead
+max_concurrent     = kv_budget ÷ (kv_bytes_per_token × expected_context)
+
+set max_num_seqs  <  max_concurrent
+```
+
+That last line is load-bearing. vLLM *does* preempt a running request when it
+cannot allocate KV blocks, and it evicts the lowest-priority victim — batch work,
+mid-flight, against the policy above. Sizing so the sequence limit binds first
+keeps that path cold. The sidecar recomputes this at startup from
+`modelServing.sizing` and refuses to serve a configuration that crosses it.
+
+Check a configuration before deploying it:
+
+```bash
+flakegraph serving sizing --kv-heads 4 --head-dim 256 --attention-layers 16 \
+  --weights-gib 21.81 --device-memory-gib 119.2 --max-num-seqs 24
+```
+
+The default profile serves `unsloth/Qwen3.8-27B-NVFP4` at a pinned revision with
+an FP8 KV cache, FlashInfer attention, Marlin MoE, chunked prefill, prefix
+caching, and asynchronous scheduling. Speculative decoding is off: it conflicts
+with `--async-scheduling` and forfeits much of the reusable prefix on
+hybrid-cache models. Set `modelServing.server.speculativeTokens` above zero only
+behind a benchmark on the hardware you are deploying to.
+
+`gpuMemoryUtilization` defaults to `0.50`. On a unified-memory part the same
+physical pool holds the operating system, the kubelet, workers, Spark executors,
+and storage, and CUDA allocations are not fully represented in pod memory
+metrics. This is not a conservative guess: `0.70` on GB10 hardware starved sshd
+and the cluster API and took the node off the network for hours, while ICMP kept
+answering. Raise it only on a node doing nothing but inference, raise
+`maxNumSeqs` with it, and confirm with the sizing command above first.
+
+### Placement
+
+Envoy and the endpoint picker share a pod, so the `ext_proc` call stays on
+loopback. Envoy terminates the connection, the picker names a replica in
+`x-gateway-destination-endpoint`, and an `ORIGINAL_DST` cluster routes there.
+The picker scores queue depth, KV utilisation, and prefix affinity, weighted by
+`gateway.placement.endpointPicker.scorerWeights`; with
+`modelServing.kvEvents.enabled` it indexes what each replica actually holds
+rather than hashing prefixes.
+
+The picker selects engine pods by label rather than through an `InferencePool`,
+so no Gateway API Inference Extension CRDs are required.
+
+Placement never changes what the engine sees. The body is forwarded verbatim, so
+the priority the sidecar stamps is unaffected by where the request lands.
+
+### Document parsing
+
+`mineru-api` answers **409 when it is busy**, and FlakeGraph's HTTP transport
+does not retry, so a saturated pool would drop documents rather than slow down.
+The shim holds that work instead: it authenticates, orders waiting requests by
+priority in PostgreSQL, and admits only what the pool can take.
+
+The queue is in PostgreSQL rather than process memory because ordering has to
+hold *across* shim replicas — two replicas each ordering their own callers
+correctly still serve them in the wrong order relative to each other. Tracking
+how much of the pool is busy is what admission control needs anyway, which makes
+least-loaded dispatch free.
+
+The shim resolves the parsing pool by one DNS name, so `documentParsing.mineru`
+can autoscale underneath it without a configuration change.
+
+Note that the parsing bands follow the serving convention — **lower is served
+first** — while the pipeline's own task queue orders by `priority DESC`. They are
+different queues; the shim shares its vocabulary with the sidecar.
+
+### Run priority
+
+`distributed.priority_offset` selects the band a whole run is submitted at. The
+stage ladder occupies 0-20, so `0` keeps a run in the bulk band and `1000` puts
+it ahead of any backlog. The value must be `0` or at least `1000`: an offset
+between the bands would interleave an urgent run with bulk work, which looks
+correct until a large corpus arrives.
+
+KEDA gets one trigger per band, so a small urgent run can scale a drained pool
+up on its own rather than waiting for a bulk backlog to justify the capacity.
+Workers then claim by priority, which is what serves the urgent run first.
+
+### Verifying a fleet
 
 ```bash
 kubectl -n flakegraph rollout status statefulset/flakegraph-flakegraph-vllm --timeout=60m
 kubectl -n flakegraph get pods,pvc,service -l app.kubernetes.io/instance=flakegraph
-kubectl -n flakegraph get --raw \
-  /api/v1/namespaces/flakegraph/services/http:flakegraph-flakegraph-vllm:8000/proxy/v1/models
-kubectl -n flakegraph logs flakegraph-flakegraph-vllm-0 -c vllm \
-  | grep -E 'NVFP4|MARLIN|FLASHINFER'
-kubectl -n flakegraph exec flakegraph-flakegraph-vllm-0 -c vllm -- \
-  nvidia-smi --query-compute-apps=used_memory --format=csv
+
+# Priority cannot be forged: a batch key asking for band 0 is rewritten.
+kubectl -n flakegraph logs flakegraph-flakegraph-vllm-0 -c vllm | grep -i 'priority'
+
+# Nothing is evicted mid-flight. This must stay at zero under mixed load.
+kubectl -n flakegraph exec flakegraph-flakegraph-vllm-0 -c sidecar -- \
+  curl -s localhost:8000/metrics | grep vllm:num_preemptions_total
 ```
 
 Change one image, model revision, context limit, or concurrency control at a

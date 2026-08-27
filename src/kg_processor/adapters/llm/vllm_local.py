@@ -21,6 +21,7 @@ class VllmLocalLlmProvider(OpenAICompatibleLlmProvider):
         api_key: str | None = None,
         model: str = "",
         timeout_seconds: int = DEFAULT_LLM_TIMEOUT_SECONDS,
+        max_output_tokens: int | None = None,
     ) -> None:
         """Configure the inherited transport with vLLM-specific provider identity.
 
@@ -34,15 +35,20 @@ class VllmLocalLlmProvider(OpenAICompatibleLlmProvider):
             model=model,
             provider_name="vllm_local",
             timeout_seconds=timeout_seconds,
+            max_output_tokens=max_output_tokens,
         )
 
     def capabilities(self) -> LlmCapabilities:
         """Advertise deterministic seeds and the tested local decode budget.
 
         Dense relation windows can legitimately produce more than 8,192 tokens
-        of schema-constrained JSON. The chart-managed Qwen server has ample
-        context and KV capacity for a 16,384-token completion, while unrelated
+        of schema-constrained JSON. The chart-managed server has ample context
+        and KV capacity for a 16,384-token completion, while unrelated
         OpenAI-compatible providers retain their conservative inherited ceiling.
+
+        On a fleet shared with interactive callers an operator will often want a
+        tighter bound than this, because completion length is what sets how long
+        a queue-jumping request waits. A configured ceiling therefore wins.
         """
 
         inherited = super().capabilities()
@@ -50,13 +56,13 @@ class VllmLocalLlmProvider(OpenAICompatibleLlmProvider):
             strict_json_schema=inherited.strict_json_schema,
             native_structured_output=inherited.native_structured_output,
             supports_seed=True,
-            max_output_tokens=_VLLM_MAX_OUTPUT_TOKENS,
+            max_output_tokens=self._max_output_tokens or _VLLM_MAX_OUTPUT_TOKENS,
         )
 
     def _chat_request_overrides(self) -> dict[str, object]:
         """Disable free-form reasoning before strict JSON generation.
 
-        Qwen3.6 enables thinking in its chat template by default. vLLM exposes
+        Qwen enables thinking in its chat template by default. vLLM exposes
         that reasoning separately from ``message.content`` and counts it toward
         the completion budget, so structured extraction can otherwise exhaust
         its budget without producing a JSON object. The template switch is a

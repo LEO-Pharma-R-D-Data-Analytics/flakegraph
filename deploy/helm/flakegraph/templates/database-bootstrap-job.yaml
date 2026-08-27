@@ -58,12 +58,7 @@ spec:
             - name: KG_ONTOLOGY_PROFILE
               value: /etc/flakegraph-ontology/{{ .Values.ontology.key }}
             {{- end }}
-            {{- if .Values.modelServing.enabled }}
-            - name: KG_LLM_ENDPOINT
-              value: {{ include "flakegraph.modelServingEndpoint" . | quote }}
-            - name: KG_LLM_MODEL
-              value: {{ .Values.modelServing.model.name | quote }}
-            {{- end }}
+            {{- include "flakegraph.consumerEnv" . | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

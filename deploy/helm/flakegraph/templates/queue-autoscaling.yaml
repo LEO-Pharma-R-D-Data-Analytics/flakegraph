@@ -45,8 +45,14 @@ spec:
             - type: Percent
               value: {{ $root.Values.autoscaling.scaleDown.percentPerPeriod }}
               periodSeconds: {{ $root.Values.autoscaling.scaleDown.periodSeconds }}
+  # One trigger per priority band. KEDA takes the largest replica count any
+  # trigger asks for, so a small urgent run can scale a drained pool up on its
+  # own instead of waiting for a bulk backlog to justify the capacity. Workers
+  # then claim by priority, which is what actually serves the urgent run first.
   triggers:
+  {{- range $band := list "interactive" "bulk" }}
     - type: postgresql
+      name: {{ printf "%s-%s" $poolName $band }}
       metricType: AverageValue
       metadata:
         {{- if $root.Values.database.cloudNativePG.enabled }}
@@ -65,10 +71,12 @@ spec:
             {{ mul $pool.autoscaling.maxReplicas $pool.autoscaling.targetTasksPerReplica }}
           )), 0)
           FROM flakegraph_worker_demand
-          WHERE stage IN (
+          WHERE priority_band = '{{ $band }}'
+          AND stage IN (
               {{- range $index, $stage := $pool.stages }}{{ if $index }}, {{ end }}'{{ $stage }}'{{- end }}
           )
         targetQueryValue: {{ $pool.autoscaling.targetTasksPerReplica | quote }}
+  {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -21,6 +21,16 @@ spec:
       port: {{ .Values.modelServing.service.port }}
       targetPort: http
       protocol: TCP
+    {{- if .Values.modelServing.kvEvents.enabled }}
+    - name: kv-events
+      port: {{ .Values.modelServing.kvEvents.port }}
+      targetPort: kv-events
+      protocol: TCP
+    - name: kv-replay
+      port: {{ .Values.modelServing.kvEvents.replayPort }}
+      targetPort: kv-replay
+      protocol: TCP
+    {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -31,31 +41,6 @@ metadata:
     app.kubernetes.io/component: model-serving
 spec:
   type: ClusterIP
-  internalTrafficPolicy: {{ .Values.modelServing.service.internalTrafficPolicy }}
-  sessionAffinity: None
-  selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: model-serving
-  ports:
-    - name: http
-      port: {{ .Values.modelServing.service.port }}
-      targetPort: http
-      protocol: TCP
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "flakegraph.localModelServingName" . }}
-  labels:
-    {{- include "flakegraph.labels" . | nindent 4 }}
-    app.kubernetes.io/component: model-serving
-spec:
-  type: ClusterIP
-  # This companion Service sends a worker to the vLLM pod on the same node.
-  # Queue workers still claim work dynamically; locality only removes a router
-  # hop and keeps each GPU fed by consumers scheduled beside it.
-  internalTrafficPolicy: Local
   sessionAffinity: None
   selector:
     app.kubernetes.io/name: {{ .Chart.Name }}
@@ -93,9 +78,11 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: model-serving
       annotations:
-        # Restart replicas whenever either the immutable model revision or the
-        # serving profile changes, even when the image itself remains pinned.
-        checksum/model-serving: {{ dict "model" .Values.modelServing.model "server" .Values.modelServing.server | toJson | sha256sum }}
+        # Restart replicas whenever the immutable model revision, the serving
+        # profile, or the enforcement floor's own configuration changes, even
+        # when the images themselves remain pinned. A silently stale priority
+        # band would be indistinguishable from a correctly served fleet.
+        checksum/model-serving: {{ dict "model" .Values.modelServing.model "server" .Values.modelServing.server "sidecar" .Values.modelServing.sidecar "sizing" .Values.modelServing.sizing | toJson | sha256sum }}
     spec:
       {{- if .Values.scheduling.priorityClasses.enabled }}
       priorityClassName: {{ include "flakegraph.modelPriorityClassName" . }}
@@ -128,69 +115,32 @@ spec:
                   app.kubernetes.io/component: model-serving
               topologyKey: {{ .Values.modelServing.topologyKey }}
       containers:
-        - name: vllm
-          image: {{ include "flakegraph.modelServingImage" . }}
-          imagePullPolicy: {{ .Values.modelServing.image.pullPolicy }}
-          command: [vllm]
-          args:
-            - serve
-            - {{ .Values.modelServing.model.name | quote }}
-            - --served-model-name
-            - {{ .Values.modelServing.model.name | quote }}
-            - --revision
-            - {{ .Values.modelServing.model.revision | quote }}
-            - --host
-            - 0.0.0.0
-            - --port
-            - {{ .Values.modelServing.service.port | quote }}
-            - --tensor-parallel-size
-            - {{ .Values.modelServing.server.tensorParallelSize | quote }}
-            - --trust-remote-code
-            - --quantization
-            - modelopt
-            - --kv-cache-dtype
-            - {{ .Values.modelServing.server.kvCacheDtype | quote }}
-            - --attention-backend
-            - {{ .Values.modelServing.server.attentionBackend | quote }}
-            - --moe-backend
-            - {{ .Values.modelServing.server.moeBackend | quote }}
-            - --gpu-memory-utilization
-            - {{ .Values.modelServing.server.gpuMemoryUtilization | quote }}
-            - --max-model-len
-            - {{ .Values.modelServing.server.maxModelLen | quote }}
-            - --max-num-seqs
-            - {{ .Values.modelServing.server.maxNumSeqs | quote }}
-            - --max-num-batched-tokens
-            - {{ .Values.modelServing.server.maxNumBatchedTokens | quote }}
-            - --enable-chunked-prefill
-            - --async-scheduling
-            - --enable-prefix-caching
-            - --speculative-config
-            - {{ printf "{\"method\":\"mtp\",\"num_speculative_tokens\":%v,\"moe_backend\":\"triton\"}" .Values.modelServing.server.speculativeTokens | quote }}
-            - --load-format
-            - fastsafetensors
-            - --reasoning-parser
-            - qwen3
-            - --tool-call-parser
-            - qwen3_xml
-            - --enable-auto-tool-choice
+        # The sidecar owns the only exposed port. It authenticates the caller,
+        # maps the key to a consumer class, strips any client-supplied priority,
+        # and stamps the server's band before forwarding over localhost. Probes
+        # live here rather than on the engine because a healthy engine behind an
+        # unhealthy floor is not a servable replica.
+        - name: sidecar
+          image: {{ include "flakegraph.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [flakegraph, serving, sidecar]
           env:
-            - name: HOME
-              value: /tmp/vllm-home
-            - name: HF_HOME
-              value: /models/huggingface
-            - name: VLLM_CACHE_ROOT
-              value: /models/vllm
-            - name: VLLM_MARLIN_USE_ATOMIC_ADD
-              value: "1"
-            {{- if .Values.modelServing.huggingFaceTokenSecret.name }}
-            - name: HF_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.modelServing.huggingFaceTokenSecret.name }}
-                  key: {{ .Values.modelServing.huggingFaceTokenSecret.key }}
-                  optional: {{ .Values.modelServing.huggingFaceTokenSecret.optional }}
-            {{- end }}
+            - name: FLAKEGRAPH_SIDECAR_UPSTREAM
+              value: {{ printf "http://127.0.0.1:%v" .Values.modelServing.server.enginePort | quote }}
+            - name: FLAKEGRAPH_SIDECAR_LISTEN_PORT
+              value: {{ .Values.modelServing.service.port | quote }}
+            - name: FLAKEGRAPH_SIDECAR_KEYS_FILE
+              value: {{ printf "/etc/flakegraph/serving/%s" .Values.modelServing.sidecar.keySecret.key | quote }}
+            - name: FLAKEGRAPH_SIDECAR_BANDS
+              value: {{ .Values.modelServing.sidecar.bands | toJson | quote }}
+            - name: FLAKEGRAPH_SIDECAR_GEOMETRY
+              value: {{ include "flakegraph.modelServingGeometry" . | quote }}
+            - name: FLAKEGRAPH_SIDECAR_DEVICE_BUDGET
+              value: {{ include "flakegraph.modelServingDeviceBudget" . | quote }}
+            - name: FLAKEGRAPH_SIDECAR_EXPECTED_CONTEXT_TOKENS
+              value: {{ .Values.modelServing.sizing.expectedContextTokens | quote }}
+            - name: FLAKEGRAPH_SIDECAR_MAX_NUM_SEQS
+              value: {{ .Values.modelServing.server.maxNumSeqs | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.modelServing.service.port }}
@@ -217,6 +167,113 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 3
           resources:
+            {{- toYaml .Values.modelServing.sidecar.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.modelServing.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: serving-keys
+              mountPath: /etc/flakegraph/serving
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+        - name: vllm
+          image: {{ include "flakegraph.modelServingImage" . }}
+          imagePullPolicy: {{ .Values.modelServing.image.pullPolicy }}
+          command: [vllm]
+          args:
+            - serve
+            - {{ .Values.modelServing.model.name | quote }}
+            - --served-model-name
+            - {{ .Values.modelServing.model.name | quote }}
+            - --revision
+            - {{ .Values.modelServing.model.revision | quote }}
+            # Bound to loopback so the sidecar is the only route in. A
+            # NetworkPolicy adds defence in depth; this is the boundary itself.
+            - --host
+            - 127.0.0.1
+            - --port
+            - {{ .Values.modelServing.server.enginePort | quote }}
+            # Orders the waiting queue on (priority, arrival). Rendered
+            # unconditionally: without it the engine silently serves FIFO and
+            # every stamped priority is ignored with no error raised anywhere.
+            - --scheduling-policy
+            - priority
+            - --tensor-parallel-size
+            - {{ .Values.modelServing.server.tensorParallelSize | quote }}
+            - --trust-remote-code
+            {{- with .Values.modelServing.server.quantization }}
+            # The checkpoint declares its own scheme and the engine refuses to
+            # start when this disagrees with it. Leave the value empty to let
+            # the engine read it from the model instead of asserting it here.
+            - --quantization
+            - {{ . | quote }}
+            {{- end }}
+            - --kv-cache-dtype
+            - {{ .Values.modelServing.server.kvCacheDtype | quote }}
+            - --attention-backend
+            - {{ .Values.modelServing.server.attentionBackend | quote }}
+            - --moe-backend
+            - {{ .Values.modelServing.server.moeBackend | quote }}
+            - --gpu-memory-utilization
+            - {{ .Values.modelServing.server.gpuMemoryUtilization | quote }}
+            - --max-model-len
+            - {{ .Values.modelServing.server.maxModelLen | quote }}
+            - --max-num-seqs
+            - {{ .Values.modelServing.server.maxNumSeqs | quote }}
+            - --max-num-batched-tokens
+            - {{ .Values.modelServing.server.maxNumBatchedTokens | quote }}
+            - --enable-chunked-prefill
+            - --async-scheduling
+            - --enable-prefix-caching
+            {{- if .Values.modelServing.kvEvents.enabled }}
+            # Publishing cache events lets the endpoint picker route on what each
+            # replica actually holds rather than on a hash of the prefix.
+            - --kv-events-config
+            - {{ printf "{\"enable_kv_cache_events\":true,\"publisher\":\"zmq\",\"endpoint\":\"tcp://*:%v\",\"replay_endpoint\":\"tcp://*:%v\"}" .Values.modelServing.kvEvents.port .Values.modelServing.kvEvents.replayPort | quote }}
+            {{- end }}
+            {{- if gt (int .Values.modelServing.server.speculativeTokens) 0 }}
+            # Off by default: MTP conflicts with async scheduling and forfeits a
+            # large share of the reusable prefix on hybrid-cache models.
+            - --speculative-config
+            - {{ printf "{\"method\":\"mtp\",\"num_speculative_tokens\":%v,\"moe_backend\":\"triton\"}" .Values.modelServing.server.speculativeTokens | quote }}
+            {{- end }}
+            - --load-format
+            - fastsafetensors
+            - --reasoning-parser
+            - qwen3
+            - --tool-call-parser
+            - qwen3_xml
+            - --enable-auto-tool-choice
+          env:
+            - name: HOME
+              value: /tmp/vllm-home
+            - name: HF_HOME
+              value: /models/huggingface
+            - name: VLLM_CACHE_ROOT
+              value: /models/vllm
+            - name: VLLM_MARLIN_USE_ATOMIC_ADD
+              value: "1"
+            {{- if .Values.modelServing.huggingFaceTokenSecret.name }}
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.modelServing.huggingFaceTokenSecret.name }}
+                  key: {{ .Values.modelServing.huggingFaceTokenSecret.key }}
+                  optional: {{ .Values.modelServing.huggingFaceTokenSecret.optional }}
+            {{- end }}
+            {{- with .Values.modelServing.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.modelServing.kvEvents.enabled }}
+          ports:
+            - name: kv-events
+              containerPort: {{ .Values.modelServing.kvEvents.port }}
+              protocol: TCP
+            - name: kv-replay
+              containerPort: {{ .Values.modelServing.kvEvents.replayPort }}
+              protocol: TCP
+          {{- end }}
+          resources:
             {{- toYaml .Values.modelServing.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.modelServing.containerSecurityContext | nindent 12 }}
@@ -227,7 +284,13 @@ spec:
               mountPath: /tmp
             - name: dshm
               mountPath: /dev/shm
+            {{- with .Values.modelServing.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
+        - name: serving-keys
+          secret:
+            secretName: {{ .Values.modelServing.sidecar.keySecret.name }}
         - name: tmp
           emptyDir: {}
         - name: dshm
@@ -237,6 +300,9 @@ spec:
         {{- if not .Values.modelServing.persistence.enabled }}
         - name: models
           emptyDir: {}
+        {{- end }}
+        {{- with .Values.modelServing.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
   {{- if .Values.modelServing.persistence.enabled }}
   volumeClaimTemplates:

@@ -64,14 +64,83 @@
 {{- printf "http://%s:%v/v1" (include "flakegraph.modelServingName" .) .Values.modelServing.service.port -}}
 {{- end -}}
 
-{{/* Return the Service name that keeps inference traffic on the caller's node. */}}
-{{- define "flakegraph.localModelServingName" -}}
-{{- printf "%s-local" (include "flakegraph.modelServingName" .) | trunc 63 | trimSuffix "-" -}}
+{{/* Describe the attention shape that sets KV cost per token, as sidecar JSON. */}}
+{{- define "flakegraph.modelServingGeometry" -}}
+{{- printf "{\"kv_heads\":%v,\"head_dim\":%v,\"attention_layers\":%v,\"kv_cache_dtype\":\"%s\",\"weights_bytes\":%v}" .Values.modelServing.sizing.kvHeads .Values.modelServing.sizing.headDim .Values.modelServing.sizing.attentionLayers .Values.modelServing.server.kvCacheDtype (mulf .Values.modelServing.sizing.weightsGiB 1073741824 | int64) -}}
 {{- end -}}
 
-{{/* Return the node-local OpenAI-compatible endpoint used by colocated workers. */}}
-{{- define "flakegraph.localModelServingEndpoint" -}}
-{{- printf "http://%s:%v/v1" (include "flakegraph.localModelServingName" .) .Values.modelServing.service.port -}}
+{{/* Describe the memory an engine may spend, as sidecar JSON. */}}
+{{- define "flakegraph.modelServingDeviceBudget" -}}
+{{- printf "{\"device_memory_bytes\":%v,\"gpu_memory_utilization\":%v,\"overhead_bytes\":%v}" (mulf .Values.modelServing.sizing.deviceMemoryGiB 1073741824 | int64) .Values.modelServing.server.gpuMemoryUtilization (mulf .Values.modelServing.sizing.overheadGiB 1073741824 | int64) -}}
+{{- end -}}
+
+{{/* Return the one OpenAI-compatible URL every consumer resolves. */}}
+{{- define "flakegraph.gatewayName" -}}
+{{- printf "%s-litellm" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "flakegraph.gatewayEndpoint" -}}
+{{- printf "http://%s:%v/v1" (include "flakegraph.gatewayName" .) .Values.gateway.litellm.service.port -}}
+{{- end -}}
+
+{{/* Return the Envoy listener the gateway forwards inference to. */}}
+{{- define "flakegraph.inferenceRouterName" -}}
+{{- printf "%s-inference-router" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "flakegraph.inferenceRouterEndpoint" -}}
+{{- printf "http://%s:%v/v1" (include "flakegraph.inferenceRouterName" .) .Values.gateway.placement.service.port -}}
+{{- end -}}
+
+{{/* Resolve an immutable digest or a tag for any component image block. */}}
+{{- define "flakegraph.componentImage" -}}
+{{- if .digest -}}
+{{- printf "%s@%s" .repository .digest -}}
+{{- else -}}
+{{- printf "%s:%s" .repository .tag -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Return the OCR shim Service and the endpoint the pipeline parses through. */}}
+{{- define "flakegraph.ocrShimName" -}}
+{{- printf "%s-ocr" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "flakegraph.ocrShimEndpoint" -}}
+{{- printf "http://%s:%v" (include "flakegraph.ocrShimName" .) .Values.documentParsing.shim.service.port -}}
+{{- end -}}
+
+{{- define "flakegraph.mineruName" -}}
+{{- printf "%s-mineru" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/* The coordinates every FlakeGraph consumer needs to reach the shared planes.
+
+     Defined once because the bootstrap Job validates the very profile the
+     workers run: configured differently, it either passes a profile the workers
+     cannot execute or fails one they can. Both have drifted from each other
+     before, in both directions. */}}
+{{- define "flakegraph.consumerEnv" -}}
+{{- if .Values.gateway.enabled }}
+- name: KG_LLM_ENDPOINT
+  value: {{ include "flakegraph.gatewayEndpoint" . | quote }}
+- name: KG_LLM_MODEL
+  value: {{ .Values.gateway.litellm.aliases.batch | quote }}
+- name: KG_LLM_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.gateway.litellm.virtualKeySecret.name }}
+      key: {{ .Values.gateway.litellm.virtualKeySecret.batchKey }}
+{{- end }}
+{{- if .Values.documentParsing.enabled }}
+- name: KG_MINERU_API_URL
+  value: {{ include "flakegraph.ocrShimEndpoint" . | quote }}
+- name: KG_MINERU_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.documentParsing.shim.keySecret.name }}
+      key: {{ .Values.documentParsing.shim.keySecret.batchKey }}
+{{- end }}
 {{- end -}}
 
 {{/* Use an existing config map when configuration is managed externally. */}}
@@ -95,6 +164,10 @@
 
 {{- define "flakegraph.sparkPriorityClassName" -}}
 {{- printf "%s-spark" (include "flakegraph.priorityClassPrefix" .) -}}
+{{- end -}}
+
+{{- define "flakegraph.servingPriorityClassName" -}}
+{{- printf "%s-serving" (include "flakegraph.priorityClassPrefix" .) -}}
 {{- end -}}
 
 {{- define "flakegraph.modelPriorityClassName" -}}

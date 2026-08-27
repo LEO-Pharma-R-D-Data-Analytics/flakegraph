@@ -10,12 +10,6 @@ has already completed OCR and extraction.
 {{- $root := . -}}
 {{- range $poolName, $pool := .Values.workers }}
 {{- if $pool.enabled }}
-{{- if and $pool.localModelServing (not $root.Values.modelServing.enabled) }}
-{{- fail (printf "workers.%s.localModelServing requires modelServing.enabled=true" $poolName) }}
-{{- end }}
-{{- if and $pool.localModelServing (hasKey $pool.affinity "podAffinity") }}
-{{- fail (printf "workers.%s.affinity.podAffinity is managed by localModelServing; configure nodeAffinity or podAntiAffinity only" $poolName) }}
-{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -99,24 +93,9 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if or $pool.localModelServing $pool.affinity }}
+      {{- with $pool.affinity }}
       affinity:
-        {{- if $pool.localModelServing }}
-        # A node-local Service has endpoints only on model-serving nodes. Required
-        # affinity prevents a healthy worker from being scheduled where every LLM
-        # request would fail despite the cluster Service itself existing.
-        podAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app.kubernetes.io/name: {{ $root.Chart.Name }}
-                  app.kubernetes.io/instance: {{ $root.Release.Name }}
-                  app.kubernetes.io/component: model-serving
-              topologyKey: {{ $root.Values.modelServing.topologyKey }}
-        {{- end }}
-        {{- with $pool.affinity }}
         {{- toYaml . | nindent 8 }}
-        {{- end }}
       {{- end }}
       {{- with $pool.topologySpreadConstraints }}
       topologySpreadConstraints:
@@ -275,27 +254,33 @@ spec:
             - name: SENTENCE_TRANSFORMERS_HOME
               value: /cache/sentence_transformers
             {{- end }}
-            {{- if $root.Values.modelServing.enabled }}
-            - name: KG_LLM_ENDPOINT
-              {{- if $pool.localModelServing }}
-              value: {{ include "flakegraph.localModelServingEndpoint" $root | quote }}
-              {{- else }}
-              value: {{ include "flakegraph.modelServingEndpoint" $root | quote }}
-              {{- end }}
-            - name: KG_LLM_MODEL
-              value: {{ $root.Values.modelServing.model.name | quote }}
-            {{- end }}
+            {{- /*
+            The pipeline is a consumer like any other: it holds a virtual key,
+            its calls are metered beside every interactive tenant, and the
+            gateway's alias is what selects its priority band. Placement across
+            replicas is the endpoint picker's decision, not node affinity's.
+            */ -}}
+            {{- include "flakegraph.consumerEnv" $root | nindent 12 }}
             {{- with $root.Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
             {{- if $root.Values.providerSecret.name }}
             {{- range $mapping := $root.Values.providerSecret.env }}
+            {{- /*
+            When the gateway is enabled its virtual key *is* the LLM credential,
+            and it was already emitted above. Declaring the same variable twice
+            leaves which one survives up to the kubelet's ordering rather than
+            the chart's intent, and an absent optional key can blank a value the
+            gateway just set. Skip the duplicate instead.
+            */ -}}
+            {{- if not (and $root.Values.gateway.enabled (eq $mapping.name "KG_LLM_API_KEY")) }}
             - name: {{ $mapping.name }}
               valueFrom:
                 secretKeyRef:
                   name: {{ $root.Values.providerSecret.name }}
                   key: {{ $mapping.key }}
                   optional: {{ or $root.Values.providerSecret.optional $mapping.optional }}
+            {{- end }}
             {{- end }}
             {{- end }}
           resources:

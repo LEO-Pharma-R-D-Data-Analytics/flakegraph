@@ -49,13 +49,37 @@ spark:
   nodeSelector:
     flakegraph.io/node-class: nvidia-spark
 
-# Run one pinned vLLM replica on each GPU node. FlakeGraph workers are wired
-# to the chart-managed Service automatically; no external router is required.
+# Run one pinned engine on each GPU node, each behind its own authenticating
+# sidecar. Consumers never address these directly: they resolve the gateway, and
+# the endpoint picker decides which replica serves each request.
 modelServing:
   enabled: true
   replicas: 4
   nodeSelector:
     flakegraph.io/node-class: nvidia-spark
+
+# The router and the gateway are cheap next to an engine, so they sit on the
+# control-plane nodes and leave GPU nodes to inference and document parsing.
+gateway:
+  litellm:
+    replicas: 2
+    autoscaling:
+      maxReplicas: 6
+  placement:
+    replicas: 2
+    autoscaling:
+      maxReplicas: 6
+
+documentParsing:
+  mineru:
+    image:
+      repository: registry.example.com/mineru-api
+      tag: "2.6.4"
+    replicas: 4
+    nodeSelector:
+      flakegraph.io/node-class: nvidia-spark
+  shim:
+    replicas: 2
 
 workers:
   prepare:
@@ -77,14 +101,16 @@ workers:
           matchLabels:
             app.kubernetes.io/component: worker-prepare
   extract:
-    # Each worker runs two logical windows concurrently. Two workers therefore
-    # consume the four sequence slots exposed by one local vLLM replica.
-    replicas: 8
+    # Each worker runs two logical windows concurrently, so sixteen workers ask
+    # for thirty-two concurrent sequences against the ninety-six
+    # the four replicas expose at the shipped sequence limit. The fleet is
+    # bounded by worker CPU rather than by sequence slots here, and the headroom
+    # is what an interactive request lands in without waiting at all. Workers are
+    # no longer pinned to the engine beside them: the endpoint picker spreads the
+    # load, so a node whose own workers are idle still has its GPU fed.
+    replicas: 16
     autoscaling:
-      maxReplicas: 8
-    localModelServing: true
-    nodeSelector:
-      flakegraph.io/node-class: nvidia-spark
+      maxReplicas: 16
     topologySpreadConstraints:
       - maxSkew: 1
         topologyKey: kubernetes.io/hostname

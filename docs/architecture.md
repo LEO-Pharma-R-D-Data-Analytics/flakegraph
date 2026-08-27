@@ -25,10 +25,40 @@ flowchart TD
 | `adapters/` | Concrete provider transports and persistence implementations |
 | `config/` | Typed settings, provider discovery, validation, and preflight checks |
 | `factories.py` | The composition root that maps configuration to adapters |
+| `serving/` | HTTP services that put a priority-aware enforcement floor in front of a shared fleet |
 | `app/` | Python 3.11-compatible Streamlit control plane with local, Kubernetes, and Snowflake backends |
 
 Domain and port modules do not import application or adapter modules. Provider
 SDKs are imported only by adapters and the composition root.
+
+## The Serving Contract
+
+`serving/` is deliberately separate from the pipeline. It speaks wire formats
+owned by other projects — the OpenAI chat contract and MinerU's `/file_parse` —
+so that a fleet's inference and parsing planes hold the same guarantees whatever
+engine or parser sits behind them.
+
+Four invariants hold at every fleet size. Everything else is an implementation
+detail an operator may swap.
+
+1. **Consumers see one OpenAI-compatible URL** for inference and one HTTP
+   endpoint for parsing. They never learn the topology behind either.
+2. **Priority is a request field**, stamped at a trusted point and honoured by
+   the engine. It is never a routing-layer concept.
+3. **Everything is configured from environment variables and files** — never
+   from cluster shape, node count, or discovered topology.
+4. **Failure modes are safe by default**: an unknown caller is rejected, an
+   unknown class is served last, and a misconfigured engine fails at startup
+   rather than silently serving FIFO.
+
+Hold these and the gateway, the placement layer, the engine, and the queue
+backend all become replaceable without any consumer changing.
+
+Note that the two planes order priority in opposite directions, and the
+difference is not cosmetic. The serving bands follow vLLM, where a **lower**
+value is served first and a missing value therefore means *highest* priority.
+The pipeline's own task queue orders by `priority DESC`. Code that touches both
+must be explicit about which queue it is talking to.
 
 ## Processing Contract
 

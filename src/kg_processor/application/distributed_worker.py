@@ -400,7 +400,7 @@ class DistributedWorker:
             stage=TaskStage.EXTRACT_DOCUMENT_CONTEXT,
             scope_id=lease.task.scope_id,
             dependency_ids=[lease.task.id],
-            priority=15,
+            priority=self.settings.distributed.task_priority(15),
             max_attempts=self.settings.distributed.max_attempts,
         )
         return TaskExecution(
@@ -495,7 +495,7 @@ class DistributedWorker:
                     scope_id=batch_id,
                     payload={"window_artifact_id": window_ref.id},
                     dependency_ids=[lease.task.id],
-                    priority=10,
+                    priority=self.settings.distributed.task_priority(10),
                     max_attempts=self.settings.distributed.max_attempts,
                 )
             )
@@ -518,7 +518,7 @@ class DistributedWorker:
                     "windows": window_payloads,
                 },
                 dependency_ids=[lease.task.id, *entity_task_ids],
-                priority=5,
+                priority=self.settings.distributed.task_priority(5),
                 max_attempts=self.settings.distributed.max_attempts,
             )
         )
@@ -665,7 +665,7 @@ class DistributedWorker:
                     scope_id=window_id,
                     payload={"window_artifact_id": artifact_id},
                     dependency_ids=[lease.task.id],
-                    priority=4,
+                    priority=self.settings.distributed.task_priority(4),
                     max_attempts=self.settings.distributed.max_attempts,
                 )
             )
@@ -681,7 +681,7 @@ class DistributedWorker:
             scope_id=lease.task.scope_id,
             payload={"prepared_artifact_id": lease.task.payload.get("prepared_artifact_id")},
             dependency_ids=[lease.task.id, *(task.id for task in relation_tasks)],
-            priority=3,
+            priority=self.settings.distributed.task_priority(3),
             max_attempts=self.settings.distributed.max_attempts,
         )
         return TaskExecution(

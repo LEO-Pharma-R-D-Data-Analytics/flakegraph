@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["image", "config", "ontology", "database", "providerSecret", "artifactStorage", "spark", "modelServing", "workers", "autoscaling", "scheduling", "distributed"],
+  "required": ["image", "config", "ontology", "database", "providerSecret", "artifactStorage", "spark", "modelServing", "gateway", "documentParsing", "workers", "autoscaling", "scheduling", "distributed"],
   "properties": {
     "image": {
       "type": "object",
@@ -165,7 +165,14 @@
         "model",
         "huggingFaceTokenSecret",
         "server",
+        "sizing",
+        "kvEvents",
+        "sidecar",
         "service",
+        "networkPolicy",
+        "extraEnv",
+        "extraVolumes",
+        "extraVolumeMounts",
         "persistence",
         "runtimeClassName",
         "startupTimeoutSeconds",
@@ -215,26 +222,73 @@
         "server": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["tensorParallelSize", "gpuMemoryUtilization", "maxModelLen", "maxNumBatchedTokens", "maxNumSeqs", "kvCacheDtype", "attentionBackend", "moeBackend", "speculativeTokens"],
+          "required": ["tensorParallelSize", "gpuMemoryUtilization", "maxModelLen", "maxNumBatchedTokens", "maxNumSeqs", "quantization", "kvCacheDtype", "attentionBackend", "moeBackend", "speculativeTokens", "enginePort"],
           "properties": {
             "tensorParallelSize": {"type": "integer", "minimum": 1},
             "gpuMemoryUtilization": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
             "maxModelLen": {"type": "integer", "minimum": 1024},
             "maxNumBatchedTokens": {"type": "integer", "minimum": 1},
             "maxNumSeqs": {"type": "integer", "minimum": 1},
+            "quantization": {"type": "string"},
             "kvCacheDtype": {"type": "string", "minLength": 1},
             "attentionBackend": {"type": "string", "minLength": 1},
             "moeBackend": {"type": "string", "minLength": 1},
-            "speculativeTokens": {"type": "integer", "minimum": 1}
+            "speculativeTokens": {"type": "integer", "minimum": 0},
+            "enginePort": {"type": "integer", "minimum": 1, "maximum": 65535}
+          }
+        },
+        "sizing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kvHeads", "headDim", "attentionLayers", "weightsGiB", "deviceMemoryGiB", "overheadGiB", "expectedContextTokens"],
+          "properties": {
+            "kvHeads": {"type": "integer", "minimum": 1},
+            "headDim": {"type": "integer", "minimum": 1},
+            "attentionLayers": {"type": "integer", "minimum": 1},
+            "weightsGiB": {"type": "number", "exclusiveMinimum": 0},
+            "deviceMemoryGiB": {"type": "number", "exclusiveMinimum": 0},
+            "overheadGiB": {"type": "number", "minimum": 0},
+            "expectedContextTokens": {"type": "integer", "minimum": 1}
+          }
+        },
+        "kvEvents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "port", "replayPort"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "replayPort": {"type": "integer", "minimum": 1, "maximum": 65535}
+          }
+        },
+        "sidecar": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["keySecret", "bands", "resources"],
+          "properties": {
+            "keySecret": {"$ref": "#/$defs/servingKeySecret"},
+            "bands": {"$ref": "#/$defs/priorityBands"},
+            "resources": {"type": "object"}
           }
         },
         "service": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["port", "internalTrafficPolicy"],
+          "required": ["port"],
           "properties": {
-            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-            "internalTrafficPolicy": {"enum": ["Cluster", "Local"]}
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+          }
+        },
+        "extraEnv": {"type": "array", "items": {"type": "object"}},
+        "extraVolumes": {"type": "array", "items": {"type": "object"}},
+        "extraVolumeMounts": {"type": "array", "items": {"type": "object"}},
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "extraIngress"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "extraIngress": {"type": "array", "items": {"type": "object"}}
           }
         },
         "persistence": {
@@ -262,6 +316,194 @@
         "resources": {"type": "object"},
         "podSecurityContext": {"type": "object"},
         "containerSecurityContext": {"type": "object"}
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "litellm", "placement"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "litellm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["image", "replicas", "aliases", "virtualKeySecret", "upstreamKeySecret", "spendLogging", "service", "autoscaling", "resources", "extraEnv", "extraVolumes", "extraVolumeMounts", "podSecurityContext", "containerSecurityContext", "databaseUrlSuffix"],
+          "properties": {
+            "image": {"$ref": "#/$defs/componentImage"},
+            "extraEnv": {"type": "array", "items": {"type": "object"}},
+            "extraVolumes": {"type": "array", "items": {"type": "object"}},
+            "extraVolumeMounts": {"type": "array", "items": {"type": "object"}},
+            "databaseUrlSuffix": {"type": "string"},
+            "podSecurityContext": {"type": "object"},
+            "containerSecurityContext": {"type": "object"},
+            "replicas": {"type": "integer", "minimum": 1},
+            "aliases": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["interactive", "dev", "batch"],
+              "properties": {
+                "interactive": {"type": "string", "minLength": 1},
+                "dev": {"type": "string", "minLength": 1},
+                "batch": {"type": "string", "minLength": 1}
+              }
+            },
+            "virtualKeySecret": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "batchKey", "masterKey", "saltKey"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "batchKey": {"type": "string", "minLength": 1},
+                "masterKey": {"type": "string", "minLength": 1},
+                "saltKey": {"type": "string", "minLength": 1}
+              }
+            },
+            "upstreamKeySecret": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "interactiveKey", "devKey", "batchKey"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "interactiveKey": {"type": "string", "minLength": 1},
+                "devKey": {"type": "string", "minLength": 1},
+                "batchKey": {"type": "string", "minLength": 1}
+              }
+            },
+            "spendLogging": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled", "batchWriteIntervalSeconds"],
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "batchWriteIntervalSeconds": {"type": "integer", "minimum": 1}
+              }
+            },
+            "service": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["port"],
+              "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+            },
+            "autoscaling": {"$ref": "#/$defs/utilizationAutoscaling"},
+            "resources": {"type": "object"}
+          }
+        },
+        "placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["replicas", "service", "autoscaling", "envoy", "endpointPicker"],
+          "properties": {
+            "replicas": {"type": "integer", "minimum": 1},
+            "service": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["port"],
+              "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+            },
+            "autoscaling": {"$ref": "#/$defs/utilizationAutoscaling"},
+            "envoy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["image", "adminPort", "readyPort", "resources"],
+              "properties": {
+                "image": {"$ref": "#/$defs/componentImage"},
+                "adminPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "readyPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "resources": {"type": "object"}
+              }
+            },
+            "endpointPicker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["image", "extProcPort", "grpcHealthPort", "metricsPort", "failOpen", "scorerWeights", "resources"],
+              "properties": {
+                "image": {"$ref": "#/$defs/componentImage"},
+                "extProcPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "grpcHealthPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "metricsPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "failOpen": {"type": "boolean"},
+                "scorerWeights": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["queue", "kvCacheUtilization", "prefixCache"],
+                  "properties": {
+                    "queue": {"type": "integer", "minimum": 0},
+                    "kvCacheUtilization": {"type": "integer", "minimum": 0},
+                    "prefixCache": {"type": "integer", "minimum": 0}
+                  }
+                },
+                "resources": {"type": "object"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "documentParsing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "mineru", "shim"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "mineru": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["replicas", "maxConcurrentRequests", "modelSource", "service", "autoscaling", "persistence", "nodeSelector", "tolerations", "resources", "extraEnv", "extraVolumes", "extraVolumeMounts"],
+          "properties": {
+            "replicas": {"type": "integer", "minimum": 1},
+            "maxConcurrentRequests": {"type": "integer", "minimum": 1},
+            "modelSource": {"type": "string", "minLength": 1},
+            "extraEnv": {"type": "array", "items": {"type": "object"}},
+            "extraVolumes": {"type": "array", "items": {"type": "object"}},
+            "extraVolumeMounts": {"type": "array", "items": {"type": "object"}},
+            "service": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["port"],
+              "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+            },
+            "autoscaling": {"$ref": "#/$defs/utilizationAutoscaling"},
+            "persistence": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled", "size", "storageClass", "accessModes"],
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "size": {"type": "string", "minLength": 1},
+                "storageClass": {"type": "string"},
+                "accessModes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {"enum": ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"]}
+                }
+              }
+            },
+            "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+            "tolerations": {"type": "array", "items": {"type": "object"}},
+            "resources": {"type": "object"}
+          }
+        },
+        "shim": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["replicas", "keySecret", "bands", "queuePollIntervalSeconds", "requestTimeoutSeconds", "service", "autoscaling", "resources"],
+          "properties": {
+            "replicas": {"type": "integer", "minimum": 1},
+            "keySecret": {"$ref": "#/$defs/servingKeySecret"},
+            "bands": {"$ref": "#/$defs/priorityBands"},
+            "queuePollIntervalSeconds": {"type": "number", "exclusiveMinimum": 0},
+            "requestTimeoutSeconds": {"type": "integer", "minimum": 1},
+            "service": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["port"],
+              "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+            },
+            "autoscaling": {"$ref": "#/$defs/utilizationAutoscaling"},
+            "resources": {"type": "object"}
+          }
+        }
       }
     },
     "workers": {
@@ -322,11 +564,12 @@
         "priorityClasses": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "workerValue", "sparkValue", "modelValue"],
+          "required": ["enabled", "workerValue", "sparkValue", "servingValue", "modelValue"],
           "properties": {
             "enabled": {"type": "boolean"},
             "workerValue": {"type": "integer", "minimum": 1, "maximum": 999999999},
             "sparkValue": {"type": "integer", "minimum": 1, "maximum": 999999999},
+            "servingValue": {"type": "integer", "minimum": 1, "maximum": 999999999},
             "modelValue": {"type": "integer", "minimum": 1, "maximum": 999999999}
           }
         }
@@ -373,6 +616,44 @@
     "extraVolumeMounts": {"type": "array", "items": {"type": "object"}}
   },
   "$defs": {
+    "priorityBands": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "servingKeySecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "key"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "key": {"type": "string", "minLength": 1},
+        "batchKey": {"type": "string", "minLength": 1}
+      }
+    },
+    "componentImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "digest", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1},
+        "digest": {"type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$"},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]},
+        "pullSecrets": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "utilizationAutoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "minReplicas", "maxReplicas", "targetCpuUtilizationPercentage"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "minReplicas": {"type": "integer", "minimum": 1},
+        "maxReplicas": {"type": "integer", "minimum": 1},
+        "targetCpuUtilizationPercentage": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
     "claim": {
       "type": "object",
       "additionalProperties": false,
@@ -382,7 +663,7 @@
     "worker": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "replicas", "autoscaling", "stages", "localModelServing", "resources", "nodeSelector", "tolerations", "affinity", "topologySpreadConstraints"],
+      "required": ["enabled", "replicas", "autoscaling", "stages", "resources", "nodeSelector", "tolerations", "affinity", "topologySpreadConstraints"],
       "properties": {
         "enabled": {"type": "boolean"},
         "replicas": {"type": "integer", "minimum": 0},
@@ -412,7 +693,6 @@
             ]
           }
         },
-        "localModelServing": {"type": "boolean"},
         "resources": {"type": "object"},
         "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
         "tolerations": {"type": "array", "items": {"type": "object"}},

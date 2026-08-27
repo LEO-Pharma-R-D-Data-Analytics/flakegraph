@@ -30,6 +30,7 @@ class OllamaLlmProvider(OpenAICompatibleLlmProvider):
         timeout_seconds: int = DEFAULT_LLM_TIMEOUT_SECONDS,
         api_key: str | None = None,
         context_window_tokens: int = 32_768,
+        max_output_tokens: int | None = None,
     ) -> None:
         """Configure an Ollama server URL, model tag, and optional proxy credential.
 
@@ -47,6 +48,7 @@ class OllamaLlmProvider(OpenAICompatibleLlmProvider):
             model=model,
             provider_name="ollama",
             timeout_seconds=timeout_seconds,
+            max_output_tokens=max_output_tokens,
         )
         self.context_window_tokens = context_window_tokens
 

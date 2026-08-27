@@ -97,6 +97,11 @@ class JobSettings(_SettingsModel):
         return value
 
 
+# The floor of the interactive band. Everything below it is bulk work, and the
+# stage ladder is small enough that the two can never meet.
+_INTERACTIVE_PRIORITY_BAND = 1_000
+
+
 class DistributedSettings(_SettingsModel):
     """Configure durable multi-process execution independently of Kubernetes.
 
@@ -140,6 +145,11 @@ class DistributedSettings(_SettingsModel):
     spark_executor_memory: str = "8g"
     spark_executor_memory_overhead: str = "8g"
     spark_shuffle_partitions: int = 0
+    # Added to every task the run creates. The stage ladder occupies 0-20, so a
+    # run submitted at 0 stays inside the bulk band while one submitted at 1000
+    # claims workers ahead of any backlog. Reserve 0-99 for bulk work and 1000
+    # and above for a run someone is waiting on.
+    priority_offset: int = 0
 
     @field_validator(
         "database_url",
@@ -203,6 +213,33 @@ class DistributedSettings(_SettingsModel):
         if value < 0:
             raise ValueError("distributed.spark_shuffle_partitions must not be negative")
         return value
+
+    @field_validator("priority_offset")
+    @classmethod
+    def priority_offset_must_name_a_band(cls, value: int) -> int:
+        """Keep offsets on a band boundary so the two never overlap.
+
+        An offset between the bands would interleave an urgent run with the bulk
+        backlog, which reads as working until a large corpus arrives and the
+        ordering silently stops meaning anything.
+        """
+
+        if value != 0 and value < _INTERACTIVE_PRIORITY_BAND:
+            raise ValueError(
+                "distributed.priority_offset must be 0 for bulk work or at least "
+                f"{_INTERACTIVE_PRIORITY_BAND} for a run someone is waiting on"
+            )
+        return value
+
+    def task_priority(self, stage_priority: int) -> int:
+        """Return the stored priority for a task at this point in the ladder.
+
+        Workers claim by ``priority DESC``, so a larger number is served first.
+        Note that the serving plane inverts this — vLLM serves the lowest value
+        first — and the two must not be confused.
+        """
+
+        return stage_priority + self.priority_offset
 
     @field_validator(
         "artifact_region",
@@ -460,6 +497,12 @@ class LlmSettings(_SettingsModel):
     api_version: str = "2025-01-01-preview"
     timeout_seconds: int = DEFAULT_LLM_TIMEOUT_SECONDS
     context_window_tokens: int = 32_768
+    # The ceiling on a single completion. On a shared fleet this is the primary
+    # control over how long interactive work waits: a queue-jumping request is
+    # served after the next running request finishes, so capping how long any one
+    # of them can run is what bounds that wait. Left unset, each adapter keeps
+    # the budget it was measured against.
+    max_output_tokens: int | None = None
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -467,6 +510,15 @@ class LlmSettings(_SettingsModel):
         """Validate LLM provider names before adapter construction."""
 
         return _validate_provider_name(value, "llm")
+
+    @field_validator("max_output_tokens")
+    @classmethod
+    def max_output_tokens_must_be_positive(cls, value: int | None) -> int | None:
+        """Reject a ceiling that would truncate every completion to nothing."""
+
+        if value is not None and value <= 0:
+            raise ValueError("llm max_output_tokens must be positive")
+        return value
 
     @field_validator("timeout_seconds", "context_window_tokens")
     @classmethod
@@ -1185,6 +1237,7 @@ def _from_env(env: dict[str, str]) -> dict[str, Any]:
             "finalization_engine",
             str,
         ),
+        "KG_DISTRIBUTED_PRIORITY_OFFSET": ("distributed", "priority_offset", int),
         "KG_DISTRIBUTED_SPARK_MASTER": ("distributed", "spark_master", str),
         "KG_DISTRIBUTED_SPARK_IMAGE": ("distributed", "spark_image", str),
         "KG_DISTRIBUTED_SPARK_NAMESPACE": (
@@ -1368,6 +1421,7 @@ def _from_env(env: dict[str, str]) -> dict[str, Any]:
         "KG_LLM_API_KEY": ("llm", "api_key", str),
         "KG_LLM_API_VERSION": ("llm", "api_version", str),
         "KG_LLM_TIMEOUT_SECONDS": ("llm", "timeout_seconds", int),
+        "KG_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens", int),
         "KG_EMBED_PROVIDER": ("embedding", "provider", str),
         "KG_EMBED_ENDPOINT": ("embedding", "endpoint", str),
         "KG_EMBED_MODEL": ("embedding", "model", str),

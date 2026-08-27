@@ -31,6 +31,7 @@ class AzureOpenAILlmProvider(OpenAICompatibleLlmProvider):
         api_version: str,
         default_deployment: str,
         timeout_seconds: int = DEFAULT_LLM_TIMEOUT_SECONDS,
+        max_output_tokens: int | None = None,
     ) -> None:
         """Configure Azure URL negotiation and the default enrichment deployment."""
 
@@ -40,6 +41,7 @@ class AzureOpenAILlmProvider(OpenAICompatibleLlmProvider):
             model=default_deployment,
             provider_name="azure_openai",
             timeout_seconds=timeout_seconds,
+            max_output_tokens=max_output_tokens,
         )
         self.api_version = api_version
         self.default_deployment = default_deployment
@@ -54,7 +56,7 @@ class AzureOpenAILlmProvider(OpenAICompatibleLlmProvider):
             strict_json_schema=True,
             native_structured_output=True,
             supports_seed=False,
-            max_output_tokens=_STRUCTURED_CHAT_MAX_TOKENS,
+            max_output_tokens=self._max_output_tokens or _STRUCTURED_CHAT_MAX_TOKENS,
         )
 
     def _chat_content(

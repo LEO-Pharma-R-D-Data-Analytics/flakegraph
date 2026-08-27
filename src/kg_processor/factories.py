@@ -371,6 +371,7 @@ def _build_raw_llm_provider(settings: Settings) -> LlmProvider:
             settings.llm.api_key,
             settings.llm.model,
             timeout_seconds=settings.llm.timeout_seconds,
+            max_output_tokens=settings.llm.max_output_tokens,
         )
     if settings.llm.provider == "ollama":
         if not settings.llm.endpoint:
@@ -381,6 +382,7 @@ def _build_raw_llm_provider(settings: Settings) -> LlmProvider:
             timeout_seconds=settings.llm.timeout_seconds,
             api_key=settings.llm.api_key,
             context_window_tokens=settings.llm.context_window_tokens,
+            max_output_tokens=settings.llm.max_output_tokens,
         )
     if settings.llm.provider == "azure_openai":
         if not settings.llm.endpoint or not settings.llm.api_key:
@@ -391,6 +393,7 @@ def _build_raw_llm_provider(settings: Settings) -> LlmProvider:
             settings.llm.api_version,
             settings.llm.model,
             timeout_seconds=settings.llm.timeout_seconds,
+            max_output_tokens=settings.llm.max_output_tokens,
         )
     if settings.llm.provider == "vllm_local":
         if not settings.llm.endpoint:
@@ -400,6 +403,7 @@ def _build_raw_llm_provider(settings: Settings) -> LlmProvider:
             settings.llm.api_key,
             settings.llm.model,
             timeout_seconds=settings.llm.timeout_seconds,
+            max_output_tokens=settings.llm.max_output_tokens,
         )
     if settings.llm.provider == "snowflake_cortex":
         return SnowflakeCortexLlmProvider(_snowflake_config(settings), settings.llm.model)

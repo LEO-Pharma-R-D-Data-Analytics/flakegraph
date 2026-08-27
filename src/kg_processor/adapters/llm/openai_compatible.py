@@ -50,6 +50,7 @@ class OpenAICompatibleLlmProvider:
         model: str,
         provider_name: str = "openai_compatible",
         timeout_seconds: int = DEFAULT_LLM_TIMEOUT_SECONDS,
+        max_output_tokens: int | None = None,
     ) -> None:
         """Configure the endpoint, default model, credentials, and request timeout.
 
@@ -69,6 +70,10 @@ class OpenAICompatibleLlmProvider:
         # Extraction requests carry their own timeout. Enrichment calls do not,
         # so retain the same configured value here for description/community work.
         self.timeout_seconds = timeout_seconds
+        # An operator-configured ceiling wins over the adapter's own. On a shared
+        # fleet it is the primary control over how long interactive work waits,
+        # because a queue-jumping request is served once a running one finishes.
+        self._max_output_tokens = max_output_tokens
         self._http_clients = HttpClientPool()
 
     def close(self) -> None:
@@ -90,7 +95,7 @@ class OpenAICompatibleLlmProvider:
             strict_json_schema=True,
             native_structured_output=True,
             supports_seed=False,
-            max_output_tokens=DEFAULT_CHAT_MAX_TOKENS,
+            max_output_tokens=self._max_output_tokens or DEFAULT_CHAT_MAX_TOKENS,
         )
 
     def complete_structured(

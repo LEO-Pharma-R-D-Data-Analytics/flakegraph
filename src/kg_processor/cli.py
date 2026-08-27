@@ -78,6 +78,16 @@ from kg_processor.factories import (
     build_local_artifacts_writer,
     build_pipeline,
 )
+from kg_processor.serving.ocr_shim import OcrShimConfig
+from kg_processor.serving.ocr_shim import run as run_ocr_shim
+from kg_processor.serving.sidecar import SidecarConfig
+from kg_processor.serving.sidecar import run as run_sidecar
+from kg_processor.serving.sizing import (
+    BYTES_PER_GIB,
+    DeviceBudget,
+    ModelGeometry,
+    compute_sizing,
+)
 
 APP_DISPLAY_NAME = "FlakeGraph"
 
@@ -119,11 +129,13 @@ inspect_app = _typer_app()
 snowflake_app = _typer_app()
 benchmark_app = _typer_app()
 distributed_app = _typer_app()
+serving_app = _typer_app()
 app.add_typer(config_app, name="config")
 app.add_typer(inspect_app, name="inspect")
 app.add_typer(snowflake_app, name="snowflake")
 app.add_typer(benchmark_app, name="benchmark")
 app.add_typer(distributed_app, name="distributed")
+app.add_typer(serving_app, name="serving")
 
 
 def _version_callback(value: bool) -> None:
@@ -1118,6 +1130,73 @@ def snowflake_submit(
             "files_queued": queued,
         }
     )
+
+
+@serving_app.command("sidecar")
+def serving_sidecar() -> None:
+    """Run the authenticating, priority-stamping proxy in front of an engine.
+
+    Configuration comes from ``FLAKEGRAPH_SIDECAR_*`` variables so the container
+    needs no arguments and no mounted processing config. The process refuses to
+    start on an unsafe sequence limit rather than serving a fleet that will evict
+    batch work mid-flight under KV pressure.
+    """
+
+    run_sidecar(SidecarConfig.from_env())
+
+
+@serving_app.command("ocr-shim")
+def serving_ocr_shim() -> None:
+    """Run the priority queue and admission control in front of a parsing pool.
+
+    Configuration comes from ``FLAKEGRAPH_OCR_SHIM_*`` variables. The shim holds
+    work rather than refusing it, because MinerU answers 409 when busy and the
+    pipeline's HTTP transport does not retry.
+    """
+
+    run_ocr_shim(OcrShimConfig.from_env())
+
+
+@serving_app.command("sizing")
+def serving_sizing(
+    kv_heads: Annotated[int, typer.Option("--kv-heads")],
+    head_dim: Annotated[int, typer.Option("--head-dim")],
+    attention_layers: Annotated[int, typer.Option("--attention-layers")],
+    weights_gib: Annotated[float, typer.Option("--weights-gib")],
+    device_memory_gib: Annotated[float, typer.Option("--device-memory-gib")],
+    max_num_seqs: Annotated[int, typer.Option("--max-num-seqs")],
+    kv_cache_dtype: Annotated[str, typer.Option("--kv-cache-dtype")] = "fp8",
+    overhead_gib: Annotated[float, typer.Option("--overhead-gib")] = 12.0,
+    gpu_memory_utilization: Annotated[float, typer.Option("--gpu-memory-utilization")] = 0.50,
+    context_tokens: Annotated[int, typer.Option("--context-tokens")] = 32768,
+) -> None:
+    """Report whether a sequence limit binds before KV memory does.
+
+    Exits non-zero when it does not, so the same arithmetic can gate a pipeline
+    as well as answer an operator sizing a new GPU.
+    """
+
+    verdict = compute_sizing(
+        ModelGeometry(
+            kv_heads=kv_heads,
+            head_dim=head_dim,
+            attention_layers=attention_layers,
+            kv_cache_dtype=kv_cache_dtype,
+            weights_bytes=int(weights_gib * BYTES_PER_GIB),
+        ),
+        DeviceBudget(
+            device_memory_bytes=int(device_memory_gib * BYTES_PER_GIB),
+            gpu_memory_utilization=gpu_memory_utilization,
+            overhead_bytes=int(overhead_gib * BYTES_PER_GIB),
+        ),
+        context_tokens,
+        max_num_seqs,
+    )
+    payload = verdict.model_dump()
+    payload["kv_budget_gib"] = round(verdict.kv_budget_bytes / BYTES_PER_GIB, 2)
+    _echo_json(payload)
+    if not verdict.sequence_limit_binds_first:
+        raise typer.Exit(code=1)
 
 
 def _echo_json(payload: Any) -> None:

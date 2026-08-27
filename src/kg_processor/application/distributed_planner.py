@@ -164,7 +164,7 @@ class DistributedRunPlanner:
                     stage=TaskStage.PREPARE_DOCUMENT,
                     scope_id=file.id,
                     payload={"source_artifact_id": source_ref.id},
-                    priority=20,
+                    priority=self.settings.distributed.task_priority(20),
                     max_attempts=self.settings.distributed.max_attempts,
                 )
         yield TaskDefinition(
@@ -173,7 +173,7 @@ class DistributedRunPlanner:
             stage=TaskStage.FINALIZE_GRAPH,
             scope_id=self.settings.job.graph_id,
             payload=_graph_output_payload(self.settings),
-            priority=0,
+            priority=self.settings.distributed.task_priority(0),
             max_attempts=self.settings.distributed.max_attempts,
         )
 

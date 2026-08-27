@@ -68,8 +68,12 @@ def test_spark_account_defaults_are_release_scoped_and_schema_valid() -> None:
 
     spark_name = "review-a-flakegraph-spark"
     assert spark_name in _names_for_kind(documents, "ServiceAccount")
-    assert _names_for_kind(documents, "Role") == {spark_name}
-    assert _names_for_kind(documents, "RoleBinding") == {spark_name}
+    assert spark_name in _names_for_kind(documents, "Role")
+    assert spark_name in _names_for_kind(documents, "RoleBinding")
+    # The chart owns other roles now, so what matters is that every one of them
+    # is scoped to this release rather than that Spark's is the only one.
+    for kind in ("Role", "RoleBinding"):
+        assert all(name.startswith("review-a-") for name in _names_for_kind(documents, kind))
 
     binding = _document(documents, "RoleBinding", spark_name)
     assert binding["subjects"][0]["name"] == spark_name
@@ -79,10 +83,10 @@ def test_spark_account_defaults_are_release_scoped_and_schema_valid() -> None:
     assert _container_env(pod_spec, "KG_DISTRIBUTED_SPARK_SERVICE_ACCOUNT") == spark_name
 
     long_release_documents = _render_chart("r" * 53)
-    long_spark_names = _names_for_kind(long_release_documents, "Role")
+    long_role_names = _names_for_kind(long_release_documents, "Role")
+    long_spark_names = {name for name in long_role_names if name.endswith("-spark")}
     assert len(long_spark_names) == 1
-    assert next(iter(long_spark_names)).endswith("-spark")
-    assert len(next(iter(long_spark_names))) <= 63
+    assert all(len(name) <= 63 for name in long_role_names)
 
 
 def test_explicit_external_spark_account_name_is_not_rewritten_or_created() -> None:
@@ -95,7 +99,7 @@ def test_explicit_external_spark_account_name_is_not_rewritten_or_created() -> N
     )
 
     assert "platform-spark" not in _names_for_kind(documents, "ServiceAccount")
-    assert _names_for_kind(documents, "Role") == {"review-b-flakegraph-spark"}
+    assert "review-b-flakegraph-spark" in _names_for_kind(documents, "Role")
     binding = _document(documents, "RoleBinding", "review-b-flakegraph-spark")
     assert binding["subjects"][0]["name"] == "platform-spark"
 

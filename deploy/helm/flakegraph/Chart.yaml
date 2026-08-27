@@ -1,8 +1,11 @@
 apiVersion: v2
 name: flakegraph
-description: Distributed knowledge graph processing with optional local model serving
+description: Distributed knowledge graph processing with a priority-aware serving plane
 type: application
-version: 0.3.1
+# Minor bump, not patch: worker pools no longer choose where their inference
+# lands, and the gateway and document planes are now required sections. A values
+# file written for 0.3.x fails schema validation, which names the keys to fix.
+version: 0.4.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.34.0-0"
 home: https://github.com/flakegraph/flakegraph
