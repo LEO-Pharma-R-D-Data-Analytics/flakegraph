@@ -25,6 +25,7 @@ from flakegraph_app.cluster_catalog import ClusterTarget, read_catalog
 from flakegraph_app.configuration import (
     build_run_config,
     run_ontology_profile,
+    sensitive_config_key,
     write_run_config,
 )
 from flakegraph_app.graph_store import load_local_graph
@@ -68,6 +69,7 @@ _ARTIFACT_ENVIRONMENT_NAMES = (
     "KG_DISTRIBUTED_ARTIFACT_REGION",
 )
 _DATABASE_ENVIRONMENT_NAME = "KG_DISTRIBUTED_DATABASE_URL"
+_PARSING_ENDPOINT_ENVIRONMENT_NAME = "KG_MINERU_API_URL"
 _POSTGRES_DEFAULT_PORT = 5432
 _PORT_FORWARD_STARTUP_SECONDS = 15.0
 _KUBERNETES_SERVICE_NAMESPACE_LABELS = 2
@@ -178,6 +180,76 @@ class KubernetesBackend(LocalBackend):
                 except RuntimeError:
                     return {}
         return {}
+
+    def fleet_ocr_options(self) -> Mapping[str, Any]:
+        """Return the OCR routing a run must carry to be claimed by these workers.
+
+        The form offers the OCR provider, but not the composition beneath it: for
+        the fallback adapter, which concrete parser reads a page the primary
+        cannot. That composition is part of the digest a worker claims by, so a
+        run keeping whatever the base profile happens to say is claimed by
+        nothing and sits queued with nothing on the page to explain it. The base
+        profile is a local default — a worker parses through the deployed
+        document plane instead — and the fleet is the only authority on which.
+
+        The parsing endpoint is read from the worker contract rather than the
+        mounted profile because the chart supplies it through the environment,
+        where it also overrides any value the profile carries. It is excluded
+        from the digest, so it is transport, not identity: it travels only so a
+        submitted run states the endpoint its own preflight requires.
+
+        Returns an empty mapping when the fleet cannot be read. These are
+        defaults; preflight remains the authority on whether a run matches.
+        """
+
+        section = self.fleet_profile().get("ocr")
+        options: dict[str, Any] = {}
+        if isinstance(section, Mapping):
+            options = {
+                str(key): value
+                for key, value in section.items()
+                if str(key) != "provider"
+                and str(key) not in _DEPLOYMENT_LOCAL_KEYS["ocr"]
+                and not sensitive_config_key(str(key))
+            }
+        if not options:
+            return {}
+        with suppress(Exception):
+            endpoint = self._fleet_parsing_endpoint()
+            if endpoint:
+                options["mineru_api_url"] = endpoint
+        return options
+
+    def _fleet_parsing_endpoint(self) -> str | None:
+        """Read the parsing endpoint literal the deployed workers are given."""
+
+        deployments = _kubectl_json(
+            target=self._cluster_target(),
+            arguments=[
+                "get",
+                "deployments",
+                "-n",
+                self._namespace(),
+                "-l",
+                "app.kubernetes.io/name=flakegraph",
+                "-o",
+                "json",
+            ],
+        ).get("items", [])
+        for item in deployments:
+            if not str(_component(item)).startswith("worker-"):
+                continue
+            containers = (
+                item.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+            )
+            for container in containers:
+                for entry in container.get("env", []):
+                    if str(entry.get("name")) != _PARSING_ENDPOINT_ENVIRONMENT_NAME:
+                        continue
+                    value = str(entry.get("value") or "").strip()
+                    if value:
+                        return value
+        return None
 
     def preflight(self, request: IngestionRequest) -> Mapping[str, object]:
         """Validate the submit host and the fleet without requiring worker packages.

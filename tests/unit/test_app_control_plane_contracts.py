@@ -52,7 +52,11 @@ from flakegraph_app.providers import (
     EMBEDDING_MODEL_DIMENSIONS,
     cortex_embedding_model_for_width,
 )
-from flakegraph_app.ui.ingestion import _adopt_stored_embedding_width, _source_controls
+from flakegraph_app.ui.ingestion import (
+    _adopt_stored_embedding_width,
+    _source_controls,
+    _with_fleet_ocr_routing,
+)
 from flakegraph_app.ui.navigation import _dismiss_bulk_forget, _dismiss_forget
 from streamlit.testing.v1 import AppTest
 
@@ -1543,3 +1547,76 @@ def test_deployment_local_differences_are_not_reported() -> None:
         "graph": {"extraction_parallelism": 8},
     }
     assert _semantic_mismatches(effective, deployed) == []
+
+
+_FLEET_OCR_SECTION = {
+    "provider": "fallback",
+    "fallback_primary_provider": "builtin_text",
+    "fallback_secondary_provider": "mineru_api",
+    "mineru_backend": "pipeline",
+    "mineru_method": "ocr",
+}
+
+
+class _FleetOcrBackend:
+    """One backend that answers with a deployed document plane's OCR routing."""
+
+    def fleet_ocr_options(self) -> dict[str, object]:
+        """Return the routing plus the endpoint read from the worker contract."""
+
+        return {
+            key: value for key, value in _FLEET_OCR_SECTION.items() if key != "provider"
+        } | {"mineru_api_url": "http://flakegraph-flakegraph-ocr:8080"}
+
+
+def test_a_fleet_submission_carries_the_deployed_parsing_route(tmp_path: Path) -> None:
+    """The routing under a fallback provider is not on the form but is in the digest.
+
+    A fleet parses through a deployed document plane over HTTP; the base profile
+    names the in-process parser a local run should use. Left alone, a submission
+    would carry the local one, hash to something no worker shares, and sit queued
+    with nothing on the page to explain it.
+    """
+
+    repository = tmp_path / "repository"
+    (repository / "configs").mkdir(parents=True)
+    profile = repository / "configs" / "app-defaults.yaml"
+    profile.write_text(
+        yaml.safe_dump(
+            {
+                "ocr": {
+                    "provider": "fallback",
+                    "fallback_primary_provider": "builtin_text",
+                    "fallback_secondary_provider": "mineru_internal",
+                    "mineru_backend": "pipeline",
+                    "mineru_method": "ocr",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    request = dataclasses.replace(
+        _request(tmp_path, SourceKind.LOCAL, {"kind": "local", "path": str(tmp_path)}),
+        ocr=_with_fleet_ocr_routing(ProviderSelection("fallback"), _FleetOcrBackend(), "fallback"),
+        base_config_path=profile,
+    )
+
+    section = build_run_config(request)["ocr"]
+
+    assert section["fallback_secondary_provider"] == "mineru_api"
+    # The endpoint is transport, so it never enters the digest, but the run has
+    # to state it or the submitting host's own preflight rejects the run before
+    # any worker sees it.
+    assert section["mineru_api_url"] == "http://flakegraph-flakegraph-ocr:8080"
+    assert _semantic_mismatches({"ocr": section}, {"ocr": _FLEET_OCR_SECTION}) == []
+
+
+def test_an_operator_who_chose_another_parser_keeps_it() -> None:
+    """A stated choice is reported by preflight, never silently rewritten."""
+
+    chosen = ProviderSelection("builtin_text")
+
+    assert _with_fleet_ocr_routing(chosen, _FleetOcrBackend(), "fallback") is chosen
+    # A runtime with no fleet to read leaves the base profile's routing in place,
+    # which is the routing a local run should execute.
+    assert _with_fleet_ocr_routing(chosen, object(), "builtin_text") is chosen

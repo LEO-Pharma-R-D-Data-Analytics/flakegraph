@@ -7,6 +7,7 @@ import re
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -27,6 +28,7 @@ from flakegraph_app.models import (
     DEFAULT_PROVIDER_PARALLELISM,
     IngestionRequest,
     OutputDestination,
+    ProviderSelection,
     RuntimeMode,
     SnowflakeOutput,
     SourceKind,
@@ -228,6 +230,11 @@ def _request_controls(
     fleet = _fleet_models(backend)
     with provider_columns[0]:
         ocr = provider_controls("OCR", "ocr", OCR_PROVIDERS, defaults["ocr"])
+    # The provider is on the page; the routing beneath a fallback provider is
+    # not, and it is part of the same digest. An operator who kept the offered
+    # provider gets the fleet's own routing rather than the base profile's local
+    # default, which no worker in the deployed document plane can execute.
+    ocr = _with_fleet_ocr_routing(ocr, backend, defaults["ocr"])
     with provider_columns[1]:
         llm = provider_controls(
             "LLM",
@@ -1238,3 +1245,30 @@ def _fleet_models(backend: ControlPlaneBackend) -> dict[str, str]:
             if isinstance(model, str) and model.strip():
                 models[section] = model
     return models
+
+
+def _with_fleet_ocr_routing(
+    selection: ProviderSelection,
+    backend: ControlPlaneBackend,
+    default_provider: str,
+) -> ProviderSelection:
+    """Carry the fleet's own OCR routing into a run that kept the offered provider.
+
+    An operator who chose a different provider has said what they want, and their
+    choice is reported by preflight rather than silently rewritten here. A backend
+    with no fleet to read leaves the base profile's routing in place, which is
+    what a local run should use.
+    """
+
+    if selection.provider != default_provider:
+        return selection
+    reader = getattr(backend, "fleet_ocr_options", None)
+    if reader is None:
+        return selection
+    try:
+        options = reader()
+    except Exception:
+        return selection
+    if not isinstance(options, Mapping) or not options:
+        return selection
+    return replace(selection, options={**dict(options), **dict(selection.options)})
