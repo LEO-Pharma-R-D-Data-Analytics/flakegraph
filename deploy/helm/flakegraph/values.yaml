@@ -230,10 +230,12 @@ modelServing:
     kvCacheDtype: fp8
     attentionBackend: flashinfer
     moeBackend: marlin
-    # Off by default. Speculative decoding conflicts with --async-scheduling and
-    # forfeits much of the reusable prefix on hybrid-cache models. Set above zero
-    # only with a benchmark that shows a gain on the deployed hardware.
-    speculativeTokens: 0
+    # Decode here is bound by weight bandwidth, so one token per pass through
+    # ~19 GB of weights is the ceiling a drafter exists to break. The reference
+    # checkpoint ships a one-layer MTP head; vLLM reuses it once per speculative
+    # token, and accepts any multiple of that layer count. Zero disables it, in
+    # which case the head is downloaded and never loaded.
+    speculativeTokens: 4
     # The engine binds loopback on this port; nothing outside the pod reaches it.
     enginePort: 8001
   # Attention geometry and device memory are declared, never discovered, so the

@@ -232,8 +232,8 @@ spec:
             - {{ printf "{\"enable_kv_cache_events\":true,\"publisher\":\"zmq\",\"endpoint\":\"tcp://*:%v\",\"replay_endpoint\":\"tcp://*:%v\"}" .Values.modelServing.kvEvents.port .Values.modelServing.kvEvents.replayPort | quote }}
             {{- end }}
             {{- if gt (int .Values.modelServing.server.speculativeTokens) 0 }}
-            # Off by default: MTP conflicts with async scheduling and forfeits a
-            # large share of the reusable prefix on hybrid-cache models.
+            # MTP is compatible with --async-scheduling: config/vllm.py admits
+            # every EagleModelTypes member, and mtp is one of them.
             - --speculative-config
             - {{ printf "{\"method\":\"mtp\",\"num_speculative_tokens\":%v,\"moe_backend\":\"triton\"}" .Values.modelServing.server.speculativeTokens | quote }}
             {{- end }}

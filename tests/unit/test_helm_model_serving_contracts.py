@@ -55,9 +55,10 @@ def test_model_serving_defaults_are_pinned_and_resource_bounded() -> None:
     assert values["persistence"]["enabled"] is True
     assert values["resources"]["requests"]["nvidia.com/gpu"] == "1"
     assert values["resources"]["limits"]["nvidia.com/gpu"] == "1"
-    # Speculative decoding conflicts with asynchronous scheduling and forfeits
-    # much of the reusable prefix, so it is opt-in behind a benchmark.
-    assert values["server"]["speculativeTokens"] == 0
+    # Decode is bandwidth-bound here, so the drafter is what breaks the one
+    # token per weight read ceiling. The reference checkpoint ships a one-layer
+    # MTP head and vLLM accepts any multiple of that layer count.
+    assert values["server"]["speculativeTokens"] == 4
     # The checkpoint declares its own scheme, and asserting a different one is a
     # startup failure. The reference build is compressed-tensors, not modelopt.
     assert values["server"]["quantization"] == "compressed-tensors"

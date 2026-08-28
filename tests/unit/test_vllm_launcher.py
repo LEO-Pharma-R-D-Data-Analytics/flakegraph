@@ -48,7 +48,8 @@ def test_launcher_passes_pinned_defaults_and_environment_overrides(
     assert "--enable-prefix-caching" in arguments
     # Without this the engine serves FIFO and every stamped band is ignored.
     assert _option(arguments, "--scheduling-policy") == "priority"
-    # Incompatible with --async-scheduling, which the profile does set.
+    # The quick start stays minimal; the drafter is a fleet concern and is
+    # configured by the chart. MTP is compatible with --async-scheduling.
     assert "--speculative-config" not in arguments
     assert environment_path.read_text(encoding="utf-8").strip() == "1"
 
