@@ -187,10 +187,15 @@ modelServing:
   enabled: false
   runtime: vllm
   replicas: 1
+  # vLLM mainline, not NVIDIA's fork. The fork stopped at 0.21 and never
+  # registered DFlash2DraftModel, so the drafter below cannot load on it. The
+  # digest is the linux/arm64 manifest of vllm/vllm-openai:v0.28.0; pinning the
+  # per-architecture manifest rather than the multi-arch index keeps the pull
+  # from silently resolving to a different build on a mixed-architecture node.
   image:
-    repository: nvcr.io/nvidia/vllm
-    tag: "26.05.post1-py3"
-    digest: sha256:94e21552f644e0c1627464ba89d2f7a4ce7442e196f72afa0bb5d7fba23cbb03
+    repository: vllm/vllm-openai
+    tag: "v0.28.0"
+    digest: sha256:2a7cde230b59f3ce6cab33dd245ba6bee41aa87b38c9fe84f966ff24016813ce
     pullPolicy: IfNotPresent
     pullSecrets: []
   model:
@@ -216,12 +221,12 @@ modelServing:
     gpuMemoryUtilization: 0.50
     maxModelLen: 262144
     maxNumBatchedTokens: 32768
-    # Must stay below the max_concurrent the sizing block implies, which is 20 at
-    # the utilization and context above once the linear-attention state is
-    # charged. The sidecar recomputes that at startup and refuses to serve if
-    # this crosses it: an engine that runs out of KV blocks preempts a *running*
-    # request and evicts the lowest-priority one, which is batch work,
-    # mid-flight, against policy.
+    # Must stay below the max_concurrent the sizing block implies, which is 18 at
+    # the utilization and context above once the linear-attention state and the
+    # resident drafter are charged. The sidecar recomputes that at startup and
+    # refuses to serve if this crosses it: an engine that runs out of KV blocks
+    # preempts a *running* request and evicts the lowest-priority one, which is
+    # batch work, mid-flight, against policy.
     maxNumSeqs: 16
     # Matches the reference checkpoint, which is quantized with
     # compressed-tensors. NVIDIA's own NVFP4 builds use "modelopt" instead, and
@@ -231,21 +236,41 @@ modelServing:
     kvCacheDtype: fp8
     attentionBackend: flashinfer
     moeBackend: marlin
+    # Which loader reads the weights off the volume. Empty means the engine's
+    # own default. "fastsafetensors" buys nothing here: it wants GPUDirect
+    # Storage, GB10 does not offer it, and the loader warns that it is falling
+    # back to the ordinary read path rather than failing.
+    loadFormat: ""
+    # The reference checkpoint is a vision-language model and this fleet serves
+    # it text-only. Both keys below exist to stop the engine reserving encoder
+    # memory for modalities no request will use.
+    skipMultimodalProfiling: true
+    limitMultimodalPerPrompt:
+      image: 0
+      video: 0
     # Decode here is bound by weight bandwidth, so one token per pass through
-    # ~19 GB of weights is the ceiling a drafter exists to break. The reference
-    # checkpoint ships a one-layer MTP head; vLLM reuses it once per speculative
-    # token, and accepts any multiple of that layer count. Zero disables it, in
-    # which case the head is downloaded and never loaded.
-    speculativeTokens: 4
+    # ~19 GB of weights is the ceiling a drafter exists to break. DFlash2
+    # proposes a block of eight at a time; measured on one GB10, that decodes a
+    # code prompt at 46.1 tok/s against 27.2 for the checkpoint's own MTP head
+    # at four, and prose at 20.5 against 18.9. The gap is acceptance: code
+    # accepts 0.59 of the drafted tokens, prose 0.19. Zero disables speculation.
+    speculativeTokens: 8
     # Which drafter proposes those tokens. "mtp" needs no download: the head
     # travels inside the target checkpoint. "dflash" needs a separate draft
-    # model, named below, and a build that registers its architecture.
-    speculativeMethod: mtp
+    # model, named below, and a build that registers its architecture — vLLM
+    # mainline does, NVIDIA's fork does not.
+    speculativeMethod: dflash
     # Empty means the drafter lives in the target checkpoint. A path or a hub id
-    # names a separate one; pin its revision for the same reason the target's is
-    # pinned.
-    speculativeDraftModel: ""
+    # names a separate one. Pin the revision when this is a hub id, for the same
+    # reason the target's is pinned; leave it empty when this is a filesystem
+    # path, which has no Hub commit for a revision to refer to.
+    speculativeDraftModel: /models/dflash2
     speculativeDraftRevision: ""
+    # The MoE kernel the drafter itself uses. Empty omits the key, which is what
+    # a dense draft model wants: DFlash2 has no experts to route. It only means
+    # anything for a drafter that is itself a mixture of experts, such as the
+    # target checkpoint's own MTP head.
+    speculativeMoeBackend: ""
     # The engine binds loopback on this port; nothing outside the pod reaches it.
     enginePort: 8001
   # Attention geometry and device memory are declared, never discovered, so the
@@ -265,7 +290,12 @@ modelServing:
     recurrentLayers: 48
     recurrentStateBytesPerLayer: 3207168
     recurrentStateSlotsPerSequence: 2
-    weightsGiB: 21.81
+    # What the engine reports as "Model loading took" — the target checkpoint
+    # and the resident draft model together, not the target alone. The drafter
+    # occupies device memory for the whole life of the process, so leaving it
+    # out understates the weights by its own size and overstates how many
+    # sequences the KV budget can hold.
+    weightsGiB: 24.24
     deviceMemoryGiB: 119.2
     overheadGiB: 12.0
     expectedContextTokens: 32768

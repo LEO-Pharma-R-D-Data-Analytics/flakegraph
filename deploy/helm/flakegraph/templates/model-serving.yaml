@@ -210,10 +210,18 @@ spec:
             {{- end }}
             - --kv-cache-dtype
             - {{ .Values.modelServing.server.kvCacheDtype | quote }}
+            {{- with .Values.modelServing.server.attentionBackend }}
+            # Empty means the engine picks a backend for the platform it finds.
             - --attention-backend
-            - {{ .Values.modelServing.server.attentionBackend | quote }}
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.modelServing.server.moeBackend }}
+            # Empty means the engine picks a MoE kernel for the platform it
+            # finds. Naming one that the build does not carry is a startup
+            # failure rather than a fallback.
             - --moe-backend
-            - {{ .Values.modelServing.server.moeBackend | quote }}
+            - {{ . | quote }}
+            {{- end }}
             - --gpu-memory-utilization
             - {{ .Values.modelServing.server.gpuMemoryUtilization | quote }}
             - --max-model-len
@@ -225,6 +233,18 @@ spec:
             - --enable-chunked-prefill
             - --async-scheduling
             - --enable-prefix-caching
+            {{- if .Values.modelServing.server.skipMultimodalProfiling }}
+            # The reference checkpoint is a vision-language model that this
+            # fleet serves text-only. Profiling a dummy image and video anyway
+            # reserves activation memory for encoders no request will reach.
+            - --skip-mm-profiling
+            {{- end }}
+            {{- with .Values.modelServing.server.limitMultimodalPerPrompt }}
+            # Zero here closes the modality rather than merely leaving it
+            # unused, so a caller cannot spend the engine's memory on one.
+            - --limit-mm-per-prompt
+            - {{ toJson . | quote }}
+            {{- end }}
             {{- if .Values.modelServing.kvEvents.enabled }}
             # Publishing cache events lets the endpoint picker route on what each
             # replica actually holds rather than on a hash of the prefix.
@@ -234,7 +254,10 @@ spec:
             {{- if gt (int .Values.modelServing.server.speculativeTokens) 0 }}
             # Compatible with --async-scheduling: config/vllm.py admits every
             # EagleModelTypes member, and both mtp and dflash are among them.
-            {{- $speculative := dict "method" .Values.modelServing.server.speculativeMethod "num_speculative_tokens" (int .Values.modelServing.server.speculativeTokens) "moe_backend" "triton" }}
+            {{- $speculative := dict "method" .Values.modelServing.server.speculativeMethod "num_speculative_tokens" (int .Values.modelServing.server.speculativeTokens) }}
+            {{- with .Values.modelServing.server.speculativeMoeBackend }}
+            {{- $_ := set $speculative "moe_backend" . }}
+            {{- end }}
             {{- if .Values.modelServing.server.speculativeDraftModel }}
             {{- $_ := set $speculative "model" .Values.modelServing.server.speculativeDraftModel }}
             {{- end }}
@@ -244,8 +267,16 @@ spec:
             - --speculative-config
             - {{ toJson $speculative | quote }}
             {{- end }}
+            {{- with .Values.modelServing.server.loadFormat }}
+            # Empty means the engine's own default loader, which is what this
+            # hardware wants. A loader that stages weights outside the torch
+            # allocator is charged to the KV budget without appearing in the
+            # engine's own "Model loading took" figure, so it goes wrong at
+            # cache-allocation time with nothing in the weights line to explain
+            # it. See modelServing.server.loadFormat in values.yaml.
             - --load-format
-            - fastsafetensors
+            - {{ . | quote }}
+            {{- end }}
             - --reasoning-parser
             - qwen3
             - --tool-call-parser

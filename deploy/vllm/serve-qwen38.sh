@@ -30,9 +30,16 @@ max_num_seqs="${VLLM_MAX_NUM_SEQS:-24}"
 # Atomic accumulation is faster for Marlin MoE kernels on the GB10 profile.
 export VLLM_MARLIN_USE_ATOMIC_ADD="${VLLM_MARLIN_USE_ATOMIC_ADD:-1}"
 
-# Speculative decoding is deliberately absent. It conflicts with
-# --async-scheduling and forfeits much of the reusable prefix on this model's
-# hybrid cache, so it belongs behind a benchmark rather than in a default.
+# Speculative decoding is deliberately absent: the drafter is a fleet concern,
+# and picking one needs a benchmark on the hardware in hand. It does not
+# conflict with --async-scheduling -- vLLM keeps async scheduling on for every
+# Eagle-family method, mtp and dflash included -- so the chart runs both.
+#
+# --load-format fastsafetensors is deliberately absent too. It wants GPUDirect
+# Storage, GB10 does not offer it, and the fallback path it takes there pins
+# host pages that are charged against the same unified pool the engine sizes
+# its KV cache from. On vLLM 0.28 that alone moved the cache budget from
+# +27.7 GiB to -10.9 GiB and the engine refused to start.
 exec vllm serve "$model" \
   --served-model-name "$model" \
   --revision "$revision" \
@@ -52,7 +59,6 @@ exec vllm serve "$model" \
   --enable-chunked-prefill \
   --async-scheduling \
   --enable-prefix-caching \
-  --load-format fastsafetensors \
   --reasoning-parser qwen3 \
   --tool-call-parser qwen3_xml \
   --enable-auto-tool-choice

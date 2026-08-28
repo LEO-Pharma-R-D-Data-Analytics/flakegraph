@@ -42,10 +42,13 @@ def test_model_serving_defaults_are_pinned_and_resource_bounded() -> None:
 
     assert values["enabled"] is False
     assert values["runtime"] == "vllm"
-    assert values["image"]["tag"] == "26.05.post1-py3"
+    # vLLM mainline. NVIDIA's fork stopped at 0.21 and never registered
+    # DFlash2DraftModel, so the drafter configured below cannot load on it.
+    assert values["image"]["repository"] == "vllm/vllm-openai"
+    assert values["image"]["tag"] == "v0.28.0"
     assert (
         values["image"]["digest"]
-        == "sha256:94e21552f644e0c1627464ba89d2f7a4ce7442e196f72afa0bb5d7fba23cbb03"
+        == "sha256:2a7cde230b59f3ce6cab33dd245ba6bee41aa87b38c9fe84f966ff24016813ce"
     )
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", values["image"]["digest"])
     assert values["model"]["name"] == "unsloth/Qwen3.8-27B-NVFP4"
@@ -56,12 +59,47 @@ def test_model_serving_defaults_are_pinned_and_resource_bounded() -> None:
     assert values["resources"]["requests"]["nvidia.com/gpu"] == "1"
     assert values["resources"]["limits"]["nvidia.com/gpu"] == "1"
     # Decode is bandwidth-bound here, so the drafter is what breaks the one
-    # token per weight read ceiling. The reference checkpoint ships a one-layer
-    # MTP head and vLLM accepts any multiple of that layer count.
-    assert values["server"]["speculativeTokens"] == 4
+    # token per weight read ceiling. DFlash2 proposes a block of eight.
+    assert values["server"]["speculativeTokens"] == 8
+    assert values["server"]["speculativeMethod"] == "dflash"
     # The checkpoint declares its own scheme, and asserting a different one is a
     # startup failure. The reference build is compressed-tensors, not modelopt.
     assert values["server"]["quantization"] == "compressed-tensors"
+    # Served text-only, so the vision tower must neither be profiled nor
+    # reachable. Profiling it reserves activation memory for an encoder no
+    # request will use, which is memory the KV cache does not get.
+    assert values["server"]["skipMultimodalProfiling"] is True
+    assert values["server"]["limitMultimodalPerPrompt"] == {"image": 0, "video": 0}
+
+
+def test_a_local_draft_checkpoint_is_not_pinned_to_a_hub_revision() -> None:
+    """Keep the drafter's path and its revision from being set together.
+
+    A filesystem path has no Hub commit behind it. Naming one anyway is not a
+    no-op: the engine tries to resolve the revision against a repository that
+    does not exist and fails at startup, long after the chart looked correct.
+    """
+
+    server = _load_yaml(_VALUES)["modelServing"]["server"]
+
+    assert server["speculativeDraftModel"] == "/models/dflash2"
+    if server["speculativeDraftModel"].startswith("/"):
+        assert server["speculativeDraftRevision"] == ""
+
+
+def test_the_weight_budget_counts_the_drafter_that_stays_resident() -> None:
+    """Charge the draft model against the KV budget it actually competes with.
+
+    The drafter occupies device memory for the whole life of the process, so a
+    weights figure covering only the target checkpoint overstates how many
+    sequences fit and walks the engine into KV-pressure preemption.
+    """
+
+    values = _load_yaml(_VALUES)["modelServing"]
+
+    # The engine reports "Model loading took 24.24 GiB" for the target plus the
+    # DFlash2 draft; the target alone is 21.81.
+    assert values["sizing"]["weightsGiB"] == 24.24
 
 
 def test_the_shipped_sequence_limit_is_one_the_sizing_formula_supports() -> None:
@@ -111,13 +149,32 @@ def test_model_serving_template_owns_the_complete_model_lifecycle() -> None:
         "--max-num-batched-tokens",
         "VLLM_MARLIN_USE_ATOMIC_ADD",
         "huggingFaceTokenSecret",
-        "fastsafetensors",
+        "--load-format",
+        "--skip-mm-profiling",
+        "--limit-mm-per-prompt",
         "startupProbe:",
         "readinessProbe:",
         "livenessProbe:",
     ]
     for fragment in required_fragments:
         assert fragment in template
+
+
+def test_engine_tuning_flags_can_be_configured_away() -> None:
+    """Let an empty value omit a flag rather than render an empty argument.
+
+    Every one of these names a backend, a loader, or a scheme that a given vLLM
+    build may not carry, and vLLM fails at startup on an unknown name rather
+    than falling back. A chart that can only ever assert one is a chart that
+    cannot follow the engine across an upgrade — which is exactly the move that
+    stranded this deployment on a fork.
+    """
+
+    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+
+    for key in ("quantization", "attentionBackend", "moeBackend", "loadFormat"):
+        guard = f"{{{{- with .Values.modelServing.server.{key} }}}}"
+        assert guard in template, key
 
 
 def test_priority_scheduling_cannot_be_configured_away() -> None:
