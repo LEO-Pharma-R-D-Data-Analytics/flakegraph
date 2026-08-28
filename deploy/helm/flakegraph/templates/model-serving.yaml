@@ -232,10 +232,17 @@ spec:
             - {{ printf "{\"enable_kv_cache_events\":true,\"publisher\":\"zmq\",\"endpoint\":\"tcp://*:%v\",\"replay_endpoint\":\"tcp://*:%v\"}" .Values.modelServing.kvEvents.port .Values.modelServing.kvEvents.replayPort | quote }}
             {{- end }}
             {{- if gt (int .Values.modelServing.server.speculativeTokens) 0 }}
-            # MTP is compatible with --async-scheduling: config/vllm.py admits
-            # every EagleModelTypes member, and mtp is one of them.
+            # Compatible with --async-scheduling: config/vllm.py admits every
+            # EagleModelTypes member, and both mtp and dflash are among them.
+            {{- $speculative := dict "method" .Values.modelServing.server.speculativeMethod "num_speculative_tokens" (int .Values.modelServing.server.speculativeTokens) "moe_backend" "triton" }}
+            {{- if .Values.modelServing.server.speculativeDraftModel }}
+            {{- $_ := set $speculative "model" .Values.modelServing.server.speculativeDraftModel }}
+            {{- end }}
+            {{- if .Values.modelServing.server.speculativeDraftRevision }}
+            {{- $_ := set $speculative "revision" .Values.modelServing.server.speculativeDraftRevision }}
+            {{- end }}
             - --speculative-config
-            - {{ printf "{\"method\":\"mtp\",\"num_speculative_tokens\":%v,\"moe_backend\":\"triton\"}" .Values.modelServing.server.speculativeTokens | quote }}
+            - {{ toJson $speculative | quote }}
             {{- end }}
             - --load-format
             - fastsafetensors

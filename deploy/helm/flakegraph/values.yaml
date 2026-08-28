@@ -237,6 +237,15 @@ modelServing:
     # token, and accepts any multiple of that layer count. Zero disables it, in
     # which case the head is downloaded and never loaded.
     speculativeTokens: 4
+    # Which drafter proposes those tokens. "mtp" needs no download: the head
+    # travels inside the target checkpoint. "dflash" needs a separate draft
+    # model, named below, and a build that registers its architecture.
+    speculativeMethod: mtp
+    # Empty means the drafter lives in the target checkpoint. A path or a hub id
+    # names a separate one; pin its revision for the same reason the target's is
+    # pinned.
+    speculativeDraftModel: ""
+    speculativeDraftRevision: ""
     # The engine binds loopback on this port; nothing outside the pod reaches it.
     enginePort: 8001
   # Attention geometry and device memory are declared, never discovered, so the
