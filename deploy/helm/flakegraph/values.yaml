@@ -216,12 +216,13 @@ modelServing:
     gpuMemoryUtilization: 0.50
     maxModelLen: 262144
     maxNumBatchedTokens: 32768
-    # Must stay below the max_concurrent the sizing block implies, which is 25 at
-    # the utilization above. The sidecar recomputes that at startup and refuses
-    # to serve if this crosses it: an engine that runs out of KV blocks preempts
-    # a *running* request and evicts the lowest-priority one, which is batch
-    # work, mid-flight, against policy.
-    maxNumSeqs: 24
+    # Must stay below the max_concurrent the sizing block implies, which is 20 at
+    # the utilization and context above once the linear-attention state is
+    # charged. The sidecar recomputes that at startup and refuses to serve if
+    # this crosses it: an engine that runs out of KV blocks preempts a *running*
+    # request and evicts the lowest-priority one, which is batch work,
+    # mid-flight, against policy.
+    maxNumSeqs: 16
     # Matches the reference checkpoint, which is quantized with
     # compressed-tensors. NVIDIA's own NVFP4 builds use "modelopt" instead, and
     # naming the wrong one is a startup failure rather than a silent fallback.
@@ -241,13 +242,20 @@ modelServing:
   # Attention geometry and device memory are declared, never discovered, so the
   # same manifests are correct on a cluster this chart has never seen. Defaults
   # describe the reference checkpoint: 4 KV heads, head_dim 256, and 16 full
-  # attention layers (64 layers at full_attention_interval 4). The remaining
-  # layers are linear-attention and hold no KV cache; their state, activations,
-  # CUDA graphs, and allocator slack are what overheadGiB covers.
+  # attention layers (64 layers at full_attention_interval 4). The remaining 48
+  # are linear-attention layers, and they are not free: each holds a fixed
+  # recurrent state per sequence that vLLM pages beside the KV cache. The engine
+  # confirms it at startup by raising the attention block size until the
+  # attention page is at least as large as the mamba page. That cost does not
+  # scale with context, so it is charged per sequence; prefix caching makes the
+  # engine hold two slots per request rather than one.
   sizing:
     kvHeads: 4
     headDim: 256
     attentionLayers: 16
+    recurrentLayers: 48
+    recurrentStateBytesPerLayer: 3207168
+    recurrentStateSlotsPerSequence: 2
     weightsGiB: 21.81
     deviceMemoryGiB: 119.2
     overheadGiB: 12.0

@@ -66,7 +66,7 @@
 
 {{/* Describe the attention shape that sets KV cost per token, as sidecar JSON. */}}
 {{- define "flakegraph.modelServingGeometry" -}}
-{{- printf "{\"kv_heads\":%v,\"head_dim\":%v,\"attention_layers\":%v,\"kv_cache_dtype\":\"%s\",\"weights_bytes\":%v}" .Values.modelServing.sizing.kvHeads .Values.modelServing.sizing.headDim .Values.modelServing.sizing.attentionLayers .Values.modelServing.server.kvCacheDtype (mulf .Values.modelServing.sizing.weightsGiB 1073741824 | int64) -}}
+{{- printf "{\"kv_heads\":%v,\"head_dim\":%v,\"attention_layers\":%v,\"recurrent_layers\":%v,\"recurrent_state_bytes_per_layer\":%v,\"recurrent_state_slots_per_sequence\":%v,\"kv_cache_dtype\":\"%s\",\"weights_bytes\":%v}" .Values.modelServing.sizing.kvHeads .Values.modelServing.sizing.headDim .Values.modelServing.sizing.attentionLayers .Values.modelServing.sizing.recurrentLayers .Values.modelServing.sizing.recurrentStateBytesPerLayer .Values.modelServing.sizing.recurrentStateSlotsPerSequence .Values.modelServing.server.kvCacheDtype (mulf .Values.modelServing.sizing.weightsGiB 1073741824 | int64) -}}
 {{- end -}}
 
 {{/* Describe the memory an engine may spend, as sidecar JSON. */}}

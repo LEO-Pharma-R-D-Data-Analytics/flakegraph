@@ -1166,6 +1166,13 @@ def serving_sizing(
     device_memory_gib: Annotated[float, typer.Option("--device-memory-gib")],
     max_num_seqs: Annotated[int, typer.Option("--max-num-seqs")],
     kv_cache_dtype: Annotated[str, typer.Option("--kv-cache-dtype")] = "fp8",
+    recurrent_layers: Annotated[int, typer.Option("--recurrent-layers")] = 0,
+    recurrent_state_bytes_per_layer: Annotated[
+        int, typer.Option("--recurrent-state-bytes-per-layer")
+    ] = 0,
+    recurrent_state_slots_per_sequence: Annotated[
+        int, typer.Option("--recurrent-state-slots-per-sequence")
+    ] = 1,
     overhead_gib: Annotated[float, typer.Option("--overhead-gib")] = 12.0,
     gpu_memory_utilization: Annotated[float, typer.Option("--gpu-memory-utilization")] = 0.50,
     context_tokens: Annotated[int, typer.Option("--context-tokens")] = 32768,
@@ -1183,6 +1190,9 @@ def serving_sizing(
             attention_layers=attention_layers,
             kv_cache_dtype=kv_cache_dtype,
             weights_bytes=int(weights_gib * BYTES_PER_GIB),
+            recurrent_layers=recurrent_layers,
+            recurrent_state_bytes_per_layer=recurrent_state_bytes_per_layer,
+            recurrent_state_slots_per_sequence=recurrent_state_slots_per_sequence,
         ),
         DeviceBudget(
             device_memory_bytes=int(device_memory_gib * BYTES_PER_GIB),

@@ -417,11 +417,21 @@ the GPU, and the expected context:
 
 ```
 kv_bytes_per_token = 2 × n_kv_heads × head_dim × n_attention_layers × dtype_bytes
+recurrent_per_seq  = n_recurrent_layers × state_bytes_per_layer × slots_per_seq
+bytes_per_sequence = kv_bytes_per_token × expected_context + recurrent_per_seq
 kv_budget          = (device_memory × gpu_memory_utilization) − weights − overhead
-max_concurrent     = kv_budget ÷ (kv_bytes_per_token × expected_context)
+max_concurrent     = kv_budget ÷ bytes_per_sequence
 
 set max_num_seqs  <  max_concurrent
 ```
+
+The middle line matters on a hybrid checkpoint. The reference model interleaves
+16 full-attention layers with 48 linear-attention ones, and the latter hold a
+fixed recurrent state per sequence that vLLM pages beside the KV cache — it says
+so at startup by raising the attention block size until the attention page is at
+least as large as the mamba page. That cost does not shrink with a shorter
+context, so charging only per-token bytes overstates concurrency at every
+context length.
 
 That last line is load-bearing. vLLM *does* preempt a running request when it
 cannot allocate KV blocks, and it evicts the lowest-priority victim — batch work,

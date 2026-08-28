@@ -240,11 +240,14 @@
         "sizing": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kvHeads", "headDim", "attentionLayers", "weightsGiB", "deviceMemoryGiB", "overheadGiB", "expectedContextTokens"],
+          "required": ["kvHeads", "headDim", "attentionLayers", "recurrentLayers", "recurrentStateBytesPerLayer", "recurrentStateSlotsPerSequence", "weightsGiB", "deviceMemoryGiB", "overheadGiB", "expectedContextTokens"],
           "properties": {
             "kvHeads": {"type": "integer", "minimum": 1},
             "headDim": {"type": "integer", "minimum": 1},
             "attentionLayers": {"type": "integer", "minimum": 1},
+            "recurrentLayers": {"type": "integer", "minimum": 0},
+            "recurrentStateBytesPerLayer": {"type": "integer", "minimum": 0},
+            "recurrentStateSlotsPerSequence": {"type": "integer", "minimum": 1},
             "weightsGiB": {"type": "number", "exclusiveMinimum": 0},
             "deviceMemoryGiB": {"type": "number", "exclusiveMinimum": 0},
             "overheadGiB": {"type": "number", "minimum": 0},

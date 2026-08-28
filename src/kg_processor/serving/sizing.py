@@ -35,6 +35,15 @@ class ModelGeometry(BaseModel):
     rather than discovered. ``kv_heads`` is the number of key/value heads after
     grouped-query attention, which is what the cache is sized on — not the number
     of query heads.
+
+    A hybrid checkpoint interleaves full attention with linear attention, and the
+    linear-attention layers are not free: each holds a fixed recurrent state per
+    sequence rather than a cache that grows per token. vLLM pages that state
+    alongside the KV cache and says so at startup — "Setting attention block size
+    to N tokens to ensure that attention page size is >= mamba page size". Leave
+    ``recurrent_layers`` at zero for a pure-attention model. Prefix caching makes
+    the engine hold two slots per request instead of one, which is what
+    ``recurrent_state_slots_per_sequence`` carries.
     """
 
     kv_heads: int = Field(gt=0)
@@ -42,6 +51,9 @@ class ModelGeometry(BaseModel):
     attention_layers: int = Field(gt=0)
     kv_cache_dtype: str = "fp8"
     weights_bytes: int = Field(gt=0)
+    recurrent_layers: int = Field(default=0, ge=0)
+    recurrent_state_bytes_per_layer: int = Field(default=0, ge=0)
+    recurrent_state_slots_per_sequence: int = Field(default=1, ge=1)
 
     @field_validator("kv_cache_dtype")
     @classmethod
@@ -67,6 +79,27 @@ class ModelGeometry(BaseModel):
             * KV_CACHE_DTYPE_BYTES[self.kv_cache_dtype]
         )
 
+    def recurrent_state_bytes_per_sequence(self) -> int:
+        """Return the fixed per-sequence cost of the linear-attention layers.
+
+        This does not scale with context, so it is charged once per sequence
+        rather than per token. It is zero for a model without such layers.
+        """
+
+        return (
+            self.recurrent_layers
+            * self.recurrent_state_bytes_per_layer
+            * self.recurrent_state_slots_per_sequence
+        )
+
+    def bytes_per_sequence(self, expected_context_tokens: int) -> int:
+        """Return everything one sequence costs the cache at a given context."""
+
+        return (
+            expected_context_tokens * self.kv_bytes_per_token()
+            + self.recurrent_state_bytes_per_sequence()
+        )
+
 
 class DeviceBudget(BaseModel):
     """Describe the memory an engine may spend and what it loses before the cache.
@@ -86,6 +119,8 @@ class SizingVerdict(BaseModel):
     """Report the computed limits and whether the configured limit is safe."""
 
     kv_bytes_per_token: int
+    recurrent_state_bytes_per_sequence: int
+    bytes_per_sequence: int
     kv_budget_bytes: int
     kv_cache_tokens: int
     expected_context_tokens: int
@@ -114,6 +149,8 @@ def compute_sizing(
         raise ValueError("max_num_seqs must be positive")
 
     kv_bytes_per_token = geometry.kv_bytes_per_token()
+    recurrent_bytes = geometry.recurrent_state_bytes_per_sequence()
+    bytes_per_sequence = geometry.bytes_per_sequence(expected_context_tokens)
     kv_budget_bytes = (
         int(budget.device_memory_bytes * budget.gpu_memory_utilization)
         - geometry.weights_bytes
@@ -122,6 +159,8 @@ def compute_sizing(
     if kv_budget_bytes <= 0:
         return SizingVerdict(
             kv_bytes_per_token=kv_bytes_per_token,
+            recurrent_state_bytes_per_sequence=recurrent_bytes,
+            bytes_per_sequence=bytes_per_sequence,
             kv_budget_bytes=kv_budget_bytes,
             kv_cache_tokens=0,
             expected_context_tokens=expected_context_tokens,
@@ -135,7 +174,10 @@ def compute_sizing(
         )
 
     kv_cache_tokens = kv_budget_bytes // kv_bytes_per_token
-    max_concurrent = kv_cache_tokens // expected_context_tokens
+    # Concurrency is bounded by everything a sequence costs, not by tokens
+    # alone: a hybrid model's linear-attention state is charged per sequence and
+    # does not shrink with a shorter context.
+    max_concurrent = kv_budget_bytes // bytes_per_sequence
     safe = max_num_seqs < max_concurrent
     if safe:
         detail = (
@@ -151,6 +193,8 @@ def compute_sizing(
         )
     return SizingVerdict(
         kv_bytes_per_token=kv_bytes_per_token,
+        recurrent_state_bytes_per_sequence=recurrent_bytes,
+        bytes_per_sequence=bytes_per_sequence,
         kv_budget_bytes=kv_budget_bytes,
         kv_cache_tokens=kv_cache_tokens,
         expected_context_tokens=expected_context_tokens,

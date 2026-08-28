@@ -81,6 +81,9 @@ def test_the_shipped_sequence_limit_is_one_the_sizing_formula_supports() -> None
             attention_layers=sizing["attentionLayers"],
             kv_cache_dtype=values["server"]["kvCacheDtype"],
             weights_bytes=int(sizing["weightsGiB"] * BYTES_PER_GIB),
+            recurrent_layers=sizing["recurrentLayers"],
+            recurrent_state_bytes_per_layer=sizing["recurrentStateBytesPerLayer"],
+            recurrent_state_slots_per_sequence=sizing["recurrentStateSlotsPerSequence"],
         ),
         DeviceBudget(
             device_memory_bytes=int(sizing["deviceMemoryGiB"] * BYTES_PER_GIB),
