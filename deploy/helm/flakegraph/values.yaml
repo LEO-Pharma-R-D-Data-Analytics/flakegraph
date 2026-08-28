@@ -452,6 +452,14 @@ gateway:
       batchWriteIntervalSeconds: 60
     service:
       port: 4000
+      # ClusterIP keeps the gateway reachable only from inside the cluster, which
+      # is the right default. NodePort publishes it on every node address, which
+      # also publishes the admin UI - the API and the console share this port.
+      # Set it only where reaching the gateway from outside matters more than
+      # keeping the console off the surrounding network.
+      type: ClusterIP
+      # Empty lets Kubernetes assign one from the service-node-port-range.
+      nodePort: ""
     autoscaling:
       enabled: true
       minReplicas: 2

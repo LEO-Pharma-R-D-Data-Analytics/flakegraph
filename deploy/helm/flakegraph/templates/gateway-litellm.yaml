@@ -56,7 +56,7 @@ metadata:
     {{- include "flakegraph.labels" . | nindent 4 }}
     app.kubernetes.io/component: gateway
 spec:
-  type: ClusterIP
+  type: {{ $litellm.service.type }}
   selector:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
@@ -66,6 +66,9 @@ spec:
       port: {{ $litellm.service.port }}
       targetPort: http
       protocol: TCP
+      {{- if and (eq $litellm.service.type "NodePort") $litellm.service.nodePort }}
+      nodePort: {{ $litellm.service.nodePort }}
+      {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -394,8 +394,8 @@
             "service": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["port"],
-              "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+              "required": ["port", "type", "nodePort"],
+              "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}, "type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]}, "nodePort": {"type": ["integer", "string"]}}
             },
             "autoscaling": {"$ref": "#/$defs/utilizationAutoscaling"},
             "resources": {"type": "object"}
