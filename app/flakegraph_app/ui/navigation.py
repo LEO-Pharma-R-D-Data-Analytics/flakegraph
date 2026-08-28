@@ -7,7 +7,13 @@ from pathlib import Path
 
 import streamlit as st
 from flakegraph_app.backends.base import ControlPlaneBackend
-from flakegraph_app.models import ClusterSnapshot, RunSnapshot, RuntimeMode, StorageKind
+from flakegraph_app.models import (
+    ARTIFACTS_UNAVAILABLE_STATUS,
+    ClusterSnapshot,
+    RunSnapshot,
+    RuntimeMode,
+    StorageKind,
+)
 from flakegraph_app.ui.cache_state import invalidate_run_history
 from flakegraph_app.ui.clusters import render_cluster_selector
 
@@ -635,6 +641,10 @@ def _status_icon(status: str) -> str:
         return ":material/hub:"
     if normalized in {"failed", "error"}:
         return ":material/error_outline:"
+    if normalized == ARTIFACTS_UNAVAILABLE_STATUS:
+        # Distinct from both success and failure: the graph exists, but not on
+        # this machine, so the row must not read as one that will open.
+        return ":material/cloud_off:"
     if normalized in {"cancelled", "canceled", "interrupted"}:
         return ":material/block:"
     return ":material/progress_activity:"

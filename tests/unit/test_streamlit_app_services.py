@@ -104,6 +104,7 @@ from flakegraph_app.ui.shared import (
     secret_text_input,
 )
 from streamlit.testing.v1 import AppTest
+from streamlit_app import _configured_default_runtime
 
 from kg_processor.adapters.files.common import SUPPORTED_SUFFIXES as CORE_SUPPORTED_SUFFIXES
 from kg_processor.config.provider_registry import provider_names
@@ -638,6 +639,135 @@ def test_terminal_local_status_wins_when_recorded_pid_was_recycled(
     monkeypatch.setattr("flakegraph_app.backends.local._pid_is_running", lambda _pid: True)
 
     assert LocalBackend(tmp_path, state_root).list_runs()[0].status == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("", RuntimeMode.LOCAL),
+        ("Kubernetes", RuntimeMode.KUBERNETES),
+        ("kubernetes", RuntimeMode.KUBERNETES),
+        ("Local", RuntimeMode.LOCAL),
+        ("Snowflake", RuntimeMode.LOCAL),
+        ("nonsense", RuntimeMode.LOCAL),
+    ],
+)
+def test_deployment_chooses_which_runtime_the_app_opens_on(
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str,
+    expected: RuntimeMode,
+) -> None:
+    """Let a fleet control plane open on the fleet without changing the choice.
+
+    Snowflake is never selectable this way: it is forced by being deployed inside
+    Snowflake, and configuring it elsewhere would default to a runtime that
+    cannot start.
+    """
+
+    monkeypatch.setenv("FLAKEGRAPH_APP_DEFAULT_RUNTIME", configured)
+
+    assert _configured_default_runtime() is expected
+
+
+def test_local_run_without_its_artifacts_is_listed_as_unavailable(tmp_path: Path) -> None:
+    """Do not offer a graph whose files this host does not have.
+
+    App state can outlive the machine that wrote it, and its recorded paths are
+    absolute. Reporting such a run as succeeded sends the explorer to a directory
+    that is not there and answers a click with a failure to load.
+    """
+
+    state_root = tmp_path / "state"
+    run_directory = state_root / "runs" / "run-1"
+    write_run_record(
+        run_directory,
+        {
+            "run_id": "run-1",
+            "graph_id": "graph-1",
+            "runtime": "local",
+            "status": "succeeded",
+            "storage_kind": "Local files",
+            "output_path": "/elsewhere/out/graph-1",
+        },
+    )
+
+    runs = LocalBackend(tmp_path, state_root).list_runs()
+
+    assert [run.status for run in runs] == ["unavailable"]
+    # The entry is a record of work that did happen, so it survives.
+    assert (run_directory / "run.json").is_file()
+    assert runs[0].output_path == "/elsewhere/out/graph-1"
+
+
+def test_local_run_artifacts_resolve_against_the_repository_not_the_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Keep a relative artifact path meaningful wherever the server was started."""
+
+    repository = tmp_path / "repository"
+    output = repository / "out" / "app" / "run-1"
+    output.mkdir(parents=True)
+    pd.DataFrame([{"id": "node-1", "graph_id": "graph-1"}]).to_parquet(output / "nodes.parquet")
+    pd.DataFrame(columns=["id", "source_node_id", "target_node_id"]).to_parquet(
+        output / "edges.parquet"
+    )
+    state_root = tmp_path / "state"
+    write_run_record(
+        state_root / "runs" / "run-1",
+        {
+            "run_id": "run-1",
+            "graph_id": "graph-1",
+            "runtime": "local",
+            "status": "succeeded",
+            "storage_kind": "Local files",
+            "output_path": "out/app/run-1",
+        },
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    backend = LocalBackend(repository, state_root)
+
+    runs = backend.list_runs()
+
+    assert [run.status for run in runs] == ["succeeded"]
+    assert backend.load_run_graph(runs[0]).graph_id == "graph-1"
+
+
+def test_unreachable_fleet_store_says_the_history_is_only_this_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Never pass a local catalog off as the fleet's own durable history."""
+
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "app-defaults.yaml").write_text("runtime: {}\n", encoding="utf-8")
+    state_root = tmp_path / "state"
+    write_run_record(
+        state_root / "runs" / "fleet-run",
+        {
+            "run_id": "fleet-run",
+            "graph_id": "graph-1",
+            "runtime": "kubernetes",
+            "status": "succeeded",
+        },
+    )
+    backend = KubernetesBackend(tmp_path, state_root)
+    monkeypatch.setattr(
+        KubernetesBackend,
+        "_run_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError('error: context "leo-spark" does not exist')
+        ),
+    )
+
+    runs = backend.list_runs()
+
+    assert [run.run_id for run in runs] == ["fleet-run"]
+    assert backend.listing_warning is not None
+    assert "not the fleet's" in backend.listing_warning
+    assert "leo-spark" in backend.listing_warning
 
 
 def test_kubernetes_json_commands_allow_long_submit_and_export_operations(

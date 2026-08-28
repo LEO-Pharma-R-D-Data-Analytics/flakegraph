@@ -8,7 +8,7 @@ from pathlib import Path
 
 import streamlit as st
 from flakegraph_app.backends.base import ControlPlaneBackend
-from flakegraph_app.models import RunSnapshot
+from flakegraph_app.models import ARTIFACTS_UNAVAILABLE_STATUS, RunSnapshot
 from flakegraph_app.ui.cache_state import invalidate_run_history
 from flakegraph_app.ui.consumption import render_consumption
 from flakegraph_app.ui.graph_explorer import render_graph_dataset
@@ -52,7 +52,39 @@ def render_run_workspace(
     if normalized in _ACTIVE_STATUSES:
         _render_active_run(backend, snapshot, config_path)
         return
+    if normalized == ARTIFACTS_UNAVAILABLE_STATUS:
+        _render_unavailable_run(backend, snapshot, config_path)
+        return
     _render_terminal_run(backend, snapshot, config_path)
+
+
+def _render_unavailable_run(
+    backend: ControlPlaneBackend,
+    snapshot: RunSnapshot,
+    config_path: Path | None,
+) -> None:
+    """Explain a finished graph whose files are not on this machine.
+
+    Nothing here is broken and nothing is lost: the run completed, and the entry
+    is kept rather than removed because the artifacts may still exist on the host
+    that produced them. Opening the explorer would only reach the same absent
+    directory and report it as a failure to load, so it is not offered.
+    """
+
+    _render_graph_heading(
+        backend,
+        snapshot,
+        "Graph",
+        "This graph completed, but its files are not available on this host.",
+    )
+    st.info(
+        "The graph was written to "
+        f"**{snapshot.storage_location or snapshot.output_path or 'an unrecorded location'}**, "
+        "which does not exist here. This usually means the history was carried over "
+        "from the machine that produced the graph. The entry is kept so the record "
+        "survives; copy the artifacts to that location, or rebuild the graph, to open it."
+    )
+    _render_completed_details(backend, snapshot, config_path)
 
 
 def _render_completed_run(

@@ -73,6 +73,12 @@ def review_projection(table: str, *, alias: str | None = None) -> str:
 def load_local_graph(path: Path) -> GraphDataset:
     """Load bounded review rows while retaining full local artifact counts."""
 
+    if not path.is_dir():
+        # A run catalog can outlive the machine that wrote it — app state copied
+        # between hosts carries absolute paths from the host that recorded them.
+        # Saying the directory is absent points at that, where naming the two
+        # missing files suggests a half-written graph that was never here.
+        raise ValueError(f"No graph artifact directory exists at this location: {path}")
     if not (path / "nodes.parquet").exists() or not (path / "edges.parquet").exists():
         raise ValueError(f"Graph directory must contain nodes.parquet and edges.parquet: {path}")
     run_report = _read_json(path / "run_report.json")

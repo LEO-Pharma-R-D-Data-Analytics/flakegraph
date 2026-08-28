@@ -52,6 +52,13 @@ PIPELINE_STAGE_ORDER: tuple[str, ...] = (
 # either without the renderer needing to know which runtime produced it.
 RUN_STAGE_ORDER: tuple[str, ...] = DISTRIBUTED_STAGE_ORDER + PIPELINE_STAGE_ORDER
 
+# A run that finished, whose graph files are not on this machine. It is not a
+# failure — the run succeeded — but the graph cannot be opened here, and calling
+# it "succeeded" invites the explorer to open something that is not there. It
+# lives beside the stage vocabularies because a backend decides it and the
+# navigation and workspace renderers both have to recognise it.
+ARTIFACTS_UNAVAILABLE_STATUS = "unavailable"
+
 
 class RuntimeMode(StrEnum):
     """Execution environments controlled or observed by the application."""

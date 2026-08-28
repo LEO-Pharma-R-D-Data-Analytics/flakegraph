@@ -88,6 +88,18 @@ Set `FLAKEGRAPH_APP_KUBERNETES_NAMESPACE` when FlakeGraph is installed outside
 the default `flakegraph` namespace. The namespace can also be changed directly
 from the Fleet view.
 
+Set `FLAKEGRAPH_APP_DEFAULT_RUNTIME` to `Kubernetes` where the app is served as a
+fleet's control plane rather than run beside one person's checkout. It chooses
+only which runtime is already selected when the app opens; every runtime remains
+available in the sidebar. The default is `Local`, and deploying inside Snowflake
+continues to force the Snowflake runtime regardless of this setting.
+
+A run recorded as succeeded whose local artifact directory is absent is listed as
+`unavailable` rather than offered for exploration. Copying app state between
+machines is the usual cause: the catalog records absolute output paths, so an
+entry can survive the host that wrote it. Such an entry is kept, not removed —
+the artifacts may still exist where they were written.
+
 ## Snowflake
 
 The app is intentionally Python 3.11 compatible and does not import the Python

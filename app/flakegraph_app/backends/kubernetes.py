@@ -72,6 +72,11 @@ _POSTGRES_DEFAULT_PORT = 5432
 _PORT_FORWARD_STARTUP_SECONDS = 15.0
 _KUBERNETES_SERVICE_NAMESPACE_LABELS = 2
 _KUBERNETES_DNS_MIN_LABELS = 3
+_STALE_HISTORY_WARNING = (
+    "Showing this host's own record of fleet runs, not the fleet's: {reason}. "
+    "Graphs submitted from elsewhere are missing, and the states shown may be out of date."
+)
+_STALE_HISTORY_REASON_LIMIT = 200
 
 
 class KubernetesBackend(LocalBackend):
@@ -257,6 +262,7 @@ class KubernetesBackend(LocalBackend):
     def list_runs(self, *, limit: int = 100) -> Sequence[RunSnapshot]:
         """Return durable PostgreSQL history when a fleet profile is available."""
 
+        self.listing_warning = None
         hidden = hidden_run_ids(self.state_root)
         catalog = [
             self._catalog_snapshot(
@@ -271,6 +277,9 @@ class KubernetesBackend(LocalBackend):
         ]
         config_path = self._fleet_config_path(catalog)
         if config_path is None:
+            self.listing_warning = _STALE_HISTORY_WARNING.format(
+                reason="no fleet profile could be found on this host"
+            )
             return catalog
         try:
             payload = self._run_json(
@@ -286,7 +295,13 @@ class KubernetesBackend(LocalBackend):
                     str(limit),
                 ]
             )
-        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            # Falling back keeps the sidebar populated when the fleet is briefly
+            # unreachable, but the two sources are not interchangeable: the local
+            # catalog holds only runs this host submitted, and a copied catalog
+            # may hold none that exist. Substituting one for the other without
+            # saying so presents another machine's history as this fleet's.
+            self.listing_warning = _STALE_HISTORY_WARNING.format(reason=_bounded_reason(str(exc)))
             return catalog
         records = {snapshot.run_id: snapshot for snapshot in catalog}
         return [
@@ -1754,6 +1769,17 @@ def _command_failure_message(stderr: str, stdout: str) -> str:
         if message.startswith(prefix):
             return message.removeprefix(prefix)
     return message
+
+
+def _bounded_reason(message: str) -> str:
+    """Keep one cause readable inside a sidebar notice."""
+
+    collapsed = " ".join(message.split())
+    if not collapsed:
+        return "the fleet coordination store could not be reached"
+    if len(collapsed) <= _STALE_HISTORY_REASON_LIMIT:
+        return collapsed
+    return f"{collapsed[: _STALE_HISTORY_REASON_LIMIT - 1].rstrip()}…"
 
 
 @contextmanager

@@ -30,6 +30,7 @@ REPOSITORY_ROOT = (
     else APPLICATION_ROOT
 )
 SIDEBAR_LOGO = APPLICATION_ROOT / "assets" / "flakegraph-logo.png"
+_DEFAULT_RUNTIME_ENV = "FLAKEGRAPH_APP_DEFAULT_RUNTIME"
 
 
 class _SessionState(Protocol):
@@ -75,6 +76,28 @@ def _cached_cluster(
 
     del session_cache_token, generation
     return _backend.cluster(namespace)
+
+
+def _configured_default_runtime() -> RuntimeMode:
+    """Return the runtime this deployment should open on.
+
+    A control plane installed beside a fleet is not somebody's laptop: its graphs
+    live in the fleet's coordination store, and defaulting to the local runtime
+    shows an operator a history of whatever that one host happened to run before
+    they have chosen anything. The choice stays a choice — this only decides
+    which one is already selected. Snowflake is not offered here because it is
+    forced by being deployed inside Snowflake, never by configuration.
+    """
+
+    requested = os.environ.get(_DEFAULT_RUNTIME_ENV, "").strip().casefold()
+    return next(
+        (
+            mode
+            for mode in (RuntimeMode.LOCAL, RuntimeMode.KUBERNETES)
+            if mode.value.casefold() == requested
+        ),
+        RuntimeMode.LOCAL,
+    )
 
 
 def _load_runs(
@@ -216,7 +239,9 @@ def main() -> None:
     )
     apply_theme()
     snowflake_session = active_snowflake_session()
-    default_runtime = RuntimeMode.SNOWFLAKE if snowflake_session is not None else RuntimeMode.LOCAL
+    default_runtime = (
+        RuntimeMode.SNOWFLAKE if snowflake_session is not None else _configured_default_runtime()
+    )
     # Deployed inside Snowflake, only the Snowflake runtime can work: the local
     # and Kubernetes runtimes drive work by running CLI processes against a
     # repository checkout and a kubeconfig, none of which exist in Streamlit in
@@ -247,6 +272,7 @@ def main() -> None:
         st.error(str(exc))
         return
     runs, run_list_error = _load_runs(backend, runtime)
+    listing_warning = str(getattr(backend, "listing_warning", "") or "")
     namespace, cluster, cluster_error = _load_cluster(backend, runtime)
     with st.sidebar:
         page, selected_run = render_run_navigation(
@@ -258,6 +284,10 @@ def main() -> None:
         )
         if run_list_error:
             st.warning(f"Run history is unavailable: {run_list_error}")
+        elif listing_warning:
+            # Reported only by runtimes whose listing can degrade to a lesser
+            # source; the history is shown, with what it is missing.
+            st.warning(listing_warning)
         st.divider()
         st.caption(
             "The runtime changes orchestration and storage. OCR, LLM, embedding, "

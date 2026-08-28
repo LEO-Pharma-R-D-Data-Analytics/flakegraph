@@ -16,6 +16,7 @@ from flakegraph_app.backends.base import GraphAccessDefaults
 from flakegraph_app.configuration import environment_for_request, write_run_config
 from flakegraph_app.graph_store import load_local_graph, load_snowflake_graph
 from flakegraph_app.models import (
+    ARTIFACTS_UNAVAILABLE_STATUS,
     ClusterSnapshot,
     GraphDataset,
     IngestionRequest,
@@ -51,6 +52,9 @@ class LocalBackend(GraphAccessDefaults):
 
         self.repository_root = repository_root.resolve()
         self.state_root = (state_root or repository_root / ".flakegraph" / "app").resolve()
+        # Set by runtimes whose listing can fall back to a less authoritative
+        # source; the sidebar shows it so a degraded history says so.
+        self.listing_warning: str | None = None
 
     @property
     def capabilities(self) -> frozenset[str]:
@@ -250,7 +254,21 @@ class LocalBackend(GraphAccessDefaults):
         """Load a standard local artifact directory for exploration."""
 
         _ = graph_id
-        return load_local_graph(Path(location).expanduser().resolve())
+        return load_local_graph(self.artifact_directory(location))
+
+    def artifact_directory(self, location: str) -> Path:
+        """Resolve a recorded artifact location against the repository it belongs to.
+
+        Runs record where their graph was written, and a profile may express that
+        relative to the repository rather than absolutely. Resolving it against
+        the process working directory instead would make a graph openable or not
+        depending on where the server happened to be started from.
+        """
+
+        path = Path(location).expanduser()
+        if not path.is_absolute():
+            path = self.repository_root / path
+        return path.resolve()
 
     def load_run_graph(
         self,
@@ -349,6 +367,7 @@ class LocalBackend(GraphAccessDefaults):
         )
         events = progress.events
         output_path = str(record.get("output_path") or "") or None
+        storage_kind = _storage_kind(record.get("storage_kind"))
         recorded_status = str(record.get("status") or "unknown").lower()
         if record.get("cancellation_requested_at") or recorded_status == "cancelled":
             status = "cancelled"
@@ -358,11 +377,24 @@ class LocalBackend(GraphAccessDefaults):
             status = recorded_status
         elif _pid_is_running(record.get("pid")):
             status = "running"
-        elif output_path and _graph_artifacts_exist(Path(output_path)):
+        elif output_path and _graph_artifacts_exist(self.artifact_directory(output_path)):
             # Legacy records may predate durable terminal-state persistence.
             status = "succeeded"
         else:
             status = "interrupted"
+        if (
+            status == "succeeded"
+            and not durable_runtime
+            and storage_kind == StorageKind.LOCAL
+            and output_path
+            and not _graph_artifacts_exist(self.artifact_directory(output_path))
+        ):
+            # A local run writes its graph once and never fetches it again, so an
+            # absent directory means the graph is not reachable from this host.
+            # A durable runtime is excluded deliberately: it re-exports the graph
+            # from the fleet's object store on demand, where a missing local copy
+            # is the normal state rather than a lost one.
+            status = ARTIFACTS_UNAVAILABLE_STATUS
         documents_total = (
             progress.documents_total
             if include_progress
@@ -400,7 +432,7 @@ class LocalBackend(GraphAccessDefaults):
             documents_completed=documents_completed,
             documents_failed=documents_failed,
             output_path=output_path,
-            storage_kind=_storage_kind(record.get("storage_kind")),
+            storage_kind=storage_kind,
             storage_location=(
                 str(record.get("storage_location"))
                 if record.get("storage_location")
