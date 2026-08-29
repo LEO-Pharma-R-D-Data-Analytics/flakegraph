@@ -102,6 +102,11 @@
 {{- end -}}
 
 {{/* Return the OCR shim Service and the endpoint the pipeline parses through. */}}
+{{/* The control plane is a deployed component, not a script on a node. */}}
+{{- define "flakegraph.controlPlaneName" -}}
+{{- printf "%s-app" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
 {{- define "flakegraph.ocrShimName" -}}
 {{- printf "%s-ocr" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

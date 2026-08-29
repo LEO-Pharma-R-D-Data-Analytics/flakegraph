@@ -537,6 +537,50 @@ gateway:
 # requests by priority in PostgreSQL so ordering holds across its own replicas,
 # and admits only as much as the pool can take. Tracking that capacity is what
 # makes least-loaded dispatch fall out for free.
+# The FlakeGraph control plane: the operator-facing UI that submits runs and
+# reads the fleet. It ships as part of the deployment rather than as something
+# installed on a node by hand, so a cluster that has this chart has a control
+# plane, and it can be versioned, rolled back, and put behind the same ingress
+# and identity provider as everything else.
+controlPlane:
+  enabled: true
+  service:
+    port: 8501
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# One hostname per routed service under a single domain, terminated by whatever
+# ingress controller the cluster already runs. Nothing here is specific to a
+# provider: bring a domain, a class, and a certificate.
+#
+# Host-based rather than path-based because the applications behind it assume
+# they own the root, and because an OIDC redirect URI must be a stable absolute
+# URL - which is the reason this exists at all.
+ingress:
+  enabled: false
+  className: ""
+  domain: ""
+  hosts:
+    controlPlane: flakegraph
+    gateway: llm
+    ocr: ocr
+  annotations: {}
+  tls:
+    # A Secret of type kubernetes.io/tls holding the chain and key. Empty serves
+    # plain HTTP, which no identity provider will accept a redirect to.
+    secretName: ""
+    # Defaults to every routed host. Set explicitly when the certificate covers
+    # a different set - a wildcard, for instance.
+    hosts: []
+
 documentParsing:
   enabled: true
   # The parsing pool runs the same FlakeGraph image as everything else: MinerU

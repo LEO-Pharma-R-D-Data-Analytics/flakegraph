@@ -1,11 +1,19 @@
 # Keep the container base aligned with pyproject/mypy/ruff and the local validation
 # runtime. The digest pins the otherwise mutable Python image tag.
+# Pinned deliberately: a kubectl more than one minor ahead of the API server is
+# outside the supported skew.
+ARG KG_KUBECTL_VERSION=v1.32.5
+FROM registry.k8s.io/kubectl:${KG_KUBECTL_VERSION} AS kubectl
+
 FROM python:3.14.6-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 
 ARG KG_INSTALL_MINERU=true
 ARG KG_INSTALL_TESSERACT=false
 ARG KG_INSTALL_LOCAL_EMBEDDINGS=true
 ARG KG_INSTALL_GLINER=false
+# The control plane is a component of the deployment, not a script an operator
+# runs on a node by hand, so the image can serve it like anything else.
+ARG KG_INSTALL_CONTROL_PLANE=true
 ARG KG_PRELOAD_LOCAL_EMBEDDING=true
 ARG KG_LOCAL_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG KG_LOCAL_EMBEDDING_REVISION=1110a243fdf4706b3f48f1d95db1a4f5529b4d41
@@ -71,6 +79,7 @@ RUN if [ "$KG_INSTALL_MINERU" = "true" ]; then \
         set -- "$@" --extra local-embeddings; \
     fi \
     && if [ "$KG_INSTALL_GLINER" = "true" ]; then set -- "$@" --extra extract-gliner; fi \
+    && if [ "$KG_INSTALL_CONTROL_PLANE" = "true" ]; then set -- "$@" --extra app; fi \
     && uv sync --locked --no-dev --no-editable --no-install-project "$@" \
     && if [ "$KG_INSTALL_LOCAL_EMBEDDINGS" = "true" ] \
         && [ "$KG_PRELOAD_LOCAL_EMBEDDING" = "true" ]; then \
@@ -84,8 +93,16 @@ RUN if [ "$KG_INSTALL_MINERU" = "true" ]; then \
         && rm -rf /var/lib/apt/lists/*; \
     fi
 
+# The control plane queries the fleet through kubectl rather than a client
+# library. Taken from the upstream release image rather than fetched: this base
+# carries no curl, and that image is multi-arch, so the copy is right on arm64
+# without asking what architecture we are on. COPY cannot be made conditional,
+# so this is present even when the control plane is not built in - about 50 MB.
+COPY --from=kubectl /bin/kubectl /usr/local/bin/kubectl
+
 COPY README.md /app/README.md
 COPY src /app/src
+COPY app /app/app
 
 # Installed environments are self-contained. Removing uv's wheel and source
 # cache avoids shipping several gigabytes of duplicate build inputs to every
@@ -95,6 +112,7 @@ RUN set -- \
         set -- "$@" --extra local-embeddings; \
     fi \
     && if [ "$KG_INSTALL_GLINER" = "true" ]; then set -- "$@" --extra extract-gliner; fi \
+    && if [ "$KG_INSTALL_CONTROL_PLANE" = "true" ]; then set -- "$@" --extra app; fi \
     && uv sync --locked --no-dev --no-editable "$@" \
     && uv cache clean
 

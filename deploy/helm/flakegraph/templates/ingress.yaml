@@ -1,0 +1,66 @@
+{{- if .Values.ingress.enabled }}
+{{- $ingress := .Values.ingress }}
+{{- $root := . }}
+{{- /*
+Every routed service is a host under one domain rather than a path under one
+host, because the applications behind them assume they are mounted at the root:
+Streamlit serves /_stcore, LiteLLM serves /ui and /sso/callback. Rewriting those
+prefixes is a source of breakage that a hostname avoids entirely, and an OIDC
+redirect URI has to be a stable absolute URL in any case.
+
+Hosts are derived from one `domain` so an operator supplies a single name and a
+single certificate. A wildcard certificate covers the lot; without one, list the
+hosts explicitly in `tls.hosts`.
+*/}}
+{{- $routes := list }}
+{{- if .Values.controlPlane.enabled }}
+{{- $routes = append $routes (dict "name" (include "flakegraph.controlPlaneName" .) "host" $ingress.hosts.controlPlane "port" .Values.controlPlane.service.port) }}
+{{- end }}
+{{- if .Values.gateway.enabled }}
+{{- $routes = append $routes (dict "name" (include "flakegraph.gatewayName" .) "host" $ingress.hosts.gateway "port" .Values.gateway.litellm.service.port) }}
+{{- end }}
+{{- if .Values.documentParsing.enabled }}
+{{- $routes = append $routes (dict "name" (include "flakegraph.ocrShimName" .) "host" $ingress.hosts.ocr "port" .Values.documentParsing.shim.service.port) }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "flakegraph.fullname" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+  {{- with $ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $ingress.tls.secretName }}
+  tls:
+    - secretName: {{ $ingress.tls.secretName }}
+      hosts:
+        {{- if $ingress.tls.hosts }}
+        {{- range $ingress.tls.hosts }}
+        - {{ printf "%s.%s" . $ingress.domain | quote }}
+        {{- end }}
+        {{- else }}
+        {{- range $routes }}
+        - {{ printf "%s.%s" .host $ingress.domain | quote }}
+        {{- end }}
+        {{- end }}
+  {{- end }}
+  rules:
+    {{- range $routes }}
+    - host: {{ printf "%s.%s" .host $ingress.domain | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .name }}
+                port:
+                  number: {{ .port }}
+    {{- end }}
+{{- end }}
