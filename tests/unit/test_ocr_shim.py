@@ -238,3 +238,89 @@ def test_configuration_is_read_from_the_pods_environment() -> None:
 def test_a_shim_without_a_database_url_refuses_to_be_configured() -> None:
     with pytest.raises(ValueError, match="database_url"):
         OcrShimConfig.from_env({"FLAKEGRAPH_OCR_SHIM_UPSTREAM_HOST": "mineru"})
+
+
+def test_a_parse_that_omits_a_backend_is_given_the_one_the_pool_supports() -> None:
+    """MinerU's own default is a backend this image cannot run.
+
+    The pool installs the pipeline extra only, so `hybrid-engine` fails - but not
+    before downloading a VLM, which turns a configuration mistake into several
+    wasted minutes and an opaque 409. A caller who follows MinerU's documentation
+    and omits the field should still be served.
+    """
+
+    upstream, queue = _Pool(), _RecordingQueue()
+    with _client(upstream, queue) as client:
+        response = client.post(
+            "/file_parse",
+            headers={"Authorization": "Bearer sk-chat"},
+            files={"files": ("paper.pdf", b"%PDF-1.7 body", "application/pdf")},
+            data={"return_md": "true"},
+        )
+
+    assert response.status_code == 200
+    forwarded = upstream.requests[0].content
+    assert b'name="backend"' in forwarded
+    assert b"pipeline" in forwarded
+    # The upload itself must survive the rewrite untouched.
+    assert b"%PDF-1.7 body" in forwarded
+    assert b'name="return_md"' in forwarded
+
+
+def test_a_backend_the_pool_cannot_run_is_refused_before_it_costs_anything() -> None:
+    """Refusing here is the difference between an answer and a five-minute wait."""
+
+    upstream, queue = _Pool(), _RecordingQueue()
+    with _client(upstream, queue) as client:
+        response = client.post(
+            "/file_parse",
+            headers={"Authorization": "Bearer sk-chat"},
+            files={"files": ("paper.pdf", b"%PDF-1.7 body", "application/pdf")},
+            data={"backend": "hybrid-engine"},
+        )
+
+    assert response.status_code == 400
+    assert "hybrid-engine" in response.json()["error"]
+    assert response.json()["supported_backends"] == ["pipeline"]
+    # Nothing was queued and the pool was never touched.
+    assert upstream.requests == []
+    assert queue.enqueued == []
+
+
+def test_an_explicit_supported_backend_is_left_exactly_as_the_caller_sent_it() -> None:
+    upstream, queue = _Pool(), _RecordingQueue()
+    with _client(upstream, queue) as client:
+        response = client.post(
+            "/file_parse",
+            headers={"Authorization": "Bearer sk-chat"},
+            files={"files": ("paper.pdf", b"%PDF-1.7 body", "application/pdf")},
+            data={"backend": "pipeline"},
+        )
+
+    assert response.status_code == 200
+    forwarded = upstream.requests[0].content
+    assert forwarded.count(b'name="backend"') == 1
+
+
+def test_a_file_containing_the_word_backend_is_not_mistaken_for_the_field() -> None:
+    """The field is read from each part's own headers, not searched for."""
+
+    upstream, queue = _Pool(), _RecordingQueue()
+    with _client(upstream, queue) as client:
+        response = client.post(
+            "/file_parse",
+            headers={"Authorization": "Bearer sk-chat"},
+            files={
+                "files": (
+                    "paper.pdf",
+                    b'a paper about name="backend" choices',
+                    "application/pdf",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    forwarded = upstream.requests[0].content
+    # The default was still supplied, because the document is not the field.
+    assert forwarded.count(b'name="backend"') == 2
+    assert b"pipeline" in forwarded

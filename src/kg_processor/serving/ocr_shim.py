@@ -53,6 +53,16 @@ ADMISSION_LOCK_KEY = 0x0CD5_11
 # reaches this set.
 UNAUTHENTICATED_PATHS = frozenset({"/ping", "/metrics"})
 
+# The parsing pool is built pipeline-only: the image installs mineru[pipeline],
+# which does not pull in `accelerate`. MinerU's own server default is
+# `hybrid-engine`, a VLM backend, so a caller who simply omits `backend` reaches
+# a path this image cannot run - and finds out only after the pool has spent
+# several minutes downloading a 2.3 GB model, as an opaque 409. The shim knows
+# what the pool was built for, so it settles the question here.
+PARSE_ROUTE = "/file_parse"
+SUPPORTED_PARSE_BACKENDS = frozenset({"pipeline"})
+DEFAULT_PARSE_BACKEND = "pipeline"
+
 
 class OcrShimConfig(BaseModel):
     """Configure the shim from the environment the pod provides."""
@@ -341,6 +351,31 @@ def create_app(
         priority = resolved.priority_for(consumer_class)
         request_id = str(uuid4())
         body = await request.body()
+
+        # Settle the backend before the request costs anything. Refusing here
+        # turns a several-minute download ending in an opaque 409 into an
+        # immediate answer that names the problem, and supplying the default
+        # means a caller who followed MinerU's own documentation still works.
+        if route == PARSE_ROUTE and request.method == "POST":
+            boundary = _multipart_boundary(request.headers.get("content-type", ""))
+            if boundary is not None:
+                declared = _declared_backend(body, boundary)
+                if declared is None:
+                    body = _with_default_backend(body, boundary)
+                elif declared not in SUPPORTED_PARSE_BACKENDS:
+                    supported = ", ".join(sorted(SUPPORTED_PARSE_BACKENDS))
+                    return JSONResponse(
+                        {
+                            "error": f"unsupported backend '{declared}'",
+                            "supported_backends": sorted(SUPPORTED_PARSE_BACKENDS),
+                            "detail": (
+                                "this parsing pool is built pipeline-only; "
+                                f"supported backends: {supported}"
+                            ),
+                        },
+                        status_code=400,
+                    )
+
         held: OcrQueue = request.app.state.queue
 
         await held.enqueue(request_id, priority, consumer_class)
@@ -448,6 +483,55 @@ def _presented_key(request: Request) -> str:
     if scheme.lower() != "bearer":
         return ""
     return credential.strip()
+
+
+
+def _multipart_boundary(content_type: str) -> bytes | None:
+    """Return the boundary of a multipart body, or ``None`` if it is not one."""
+
+    kind, _, parameters = content_type.partition(";")
+    if kind.strip().lower() != "multipart/form-data":
+        return None
+    for parameter in parameters.split(";"):
+        name, _, value = parameter.strip().partition("=")
+        if name.strip().lower() == "boundary":
+            return value.strip().strip('"').encode()
+    return None
+
+
+def _declared_backend(body: bytes, boundary: bytes) -> str | None:
+    """Return the ``backend`` field a multipart body declares, if it declares one.
+
+    The name is read from each part's own Content-Disposition rather than
+    searched for across the whole body, so a file that happens to contain the
+    word cannot be mistaken for the field.
+    """
+
+    for part in body.split(b"--" + boundary):
+        head, separator, value = part.partition(b"\r\n\r\n")
+        if not separator:
+            continue
+        disposition = head.lower()
+        if b'name="backend"' not in disposition:
+            continue
+        return value.rstrip(b"\r\n").decode(errors="replace").strip()
+    return None
+
+
+def _with_default_backend(body: bytes, boundary: bytes) -> bytes:
+    """Append the pool's only supported backend to a body that omitted it."""
+
+    closing = b"--" + boundary + b"--"
+    index = body.rfind(closing)
+    if index == -1:
+        return body
+    field = (
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="backend"\r\n\r\n'
+        + DEFAULT_PARSE_BACKEND.encode()
+        + b"\r\n"
+    )
+    return body[:index] + field + body[index:]
 
 
 def _forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:

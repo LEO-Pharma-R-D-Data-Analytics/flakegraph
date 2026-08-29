@@ -333,7 +333,10 @@ class OcrSettings(_SettingsModel):
     model_cache_dir: Path | None = None
     mineru_command: str = "mineru"
     mineru_method: Literal["auto", "txt", "ocr"] = "auto"
-    mineru_backend: str | None = None
+    # The parsing pool is built pipeline-only, and MinerU's own default is a
+    # VLM backend this image cannot run. Default to what works rather than to
+    # what the upstream picks.
+    mineru_backend: str | None = "pipeline"
     mineru_effort: str | None = None
     mineru_api_url: str | None = None
     mineru_api_key: str | None = None
