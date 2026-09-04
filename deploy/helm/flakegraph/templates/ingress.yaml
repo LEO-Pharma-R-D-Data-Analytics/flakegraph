@@ -14,13 +14,13 @@ hosts explicitly in `tls.hosts`.
 */}}
 {{- $routes := list }}
 {{- if .Values.controlPlane.enabled }}
-{{- $routes = append $routes (dict "name" (include "flakegraph.controlPlaneName" .) "host" $ingress.hosts.controlPlane "port" .Values.controlPlane.service.port) }}
+{{- $routes = append $routes (dict "key" "controlPlane" "name" (include "flakegraph.controlPlaneName" .) "host" $ingress.hosts.controlPlane "port" .Values.controlPlane.service.port) }}
 {{- end }}
 {{- if .Values.gateway.enabled }}
-{{- $routes = append $routes (dict "name" (include "flakegraph.gatewayName" .) "host" $ingress.hosts.gateway "port" .Values.gateway.litellm.service.port) }}
+{{- $routes = append $routes (dict "key" "gateway" "name" (include "flakegraph.gatewayName" .) "host" $ingress.hosts.gateway "port" .Values.gateway.litellm.service.port) }}
 {{- end }}
 {{- if .Values.documentParsing.enabled }}
-{{- $routes = append $routes (dict "name" (include "flakegraph.ocrShimName" .) "host" $ingress.hosts.ocr "port" .Values.documentParsing.shim.service.port) }}
+{{- $routes = append $routes (dict "key" "ocr" "name" (include "flakegraph.ocrShimName" .) "host" $ingress.hosts.ocr "port" .Values.documentParsing.shim.service.port) }}
 {{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -72,4 +72,69 @@ spec:
                 port:
                   number: {{ .port }}
     {{- end }}
+{{- /*
+A gate that asks for a browser sign-in cannot stand in front of an interface
+whose callers are programs. An SDK sent to an issuer's authorize endpoint does
+not sign in - it follows a redirect it cannot satisfy, or reports the HTML it
+was handed as a protocol error.
+
+These paths already authenticate. The gateway checks a virtual key on every
+request; the parsing shim checks its own keyring and answers 401 without one.
+Putting a second, browser-shaped challenge in front of them does not add a
+check, it removes the one that works. So they are routed by rules of their own,
+without the gate's middleware - and because these rules are longer than the `/`
+rules above, they are the ones that match.
+
+Nothing here is unauthenticated. Declaring a path that does not authenticate
+itself would be, which is why this is an explicit per-service list rather than
+a pattern.
+*/}}
+{{- $machineRoutes := list }}
+{{- range $routes }}
+{{- $paths := get ($ingress.machineApiPaths | default dict) .key | default list }}
+{{- if $paths }}
+{{- $machineRoutes = append $machineRoutes (dict "route" . "paths" $paths) }}
+{{- end }}
+{{- end }}
+{{- if $machineRoutes }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ printf "%s-machine-api" (include "flakegraph.fullname" $root) }}
+  labels:
+    {{- include "flakegraph.labels" $root | nindent 4 }}
+  {{- with $ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $ingress.tls.secretName }}
+  tls:
+    - secretName: {{ $ingress.tls.secretName }}
+      hosts:
+        {{- range $machineRoutes }}
+        - {{ printf "%s.%s" .route.host $ingress.domain | quote }}
+        {{- end }}
+  {{- end }}
+  rules:
+    {{- range $machineRoutes }}
+    - host: {{ printf "%s.%s" .route.host $ingress.domain | quote }}
+      http:
+        paths:
+          {{- $service := .route }}
+          {{- range .paths }}
+          - path: {{ . | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $service.name }}
+                port:
+                  number: {{ $service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}
 {{- end }}

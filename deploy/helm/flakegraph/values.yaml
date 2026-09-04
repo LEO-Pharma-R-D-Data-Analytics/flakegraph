@@ -598,6 +598,22 @@ ingress:
     gateway: llm
     ocr: ocr
   annotations: {}
+  # Paths whose callers are programs, not people, keyed by the service that
+  # serves them. They are routed without the gate, because every one of them
+  # already authenticates its own callers - the gateway on a virtual key, the
+  # parsing shim on its keyring - and a browser sign-in cannot be satisfied by
+  # an SDK holding a bearer token.
+  #
+  # Declare only paths that refuse an unauthenticated request. Anything listed
+  # here is reachable with whatever credential that service itself demands, and
+  # nothing else stands in front of it.
+  machineApiPaths:
+    # OpenAI- and Anthropic-compatible inference. The UI stays behind the gate.
+    gateway:
+      - /v1
+    # MinerU's parse contract, as the shim exposes it.
+    ocr:
+      - /file_parse
   # One sign-in gate in front of every routed host, rather than an identity
   # integration inside each application. Applications that cannot speak OIDC are
   # covered too, and the deployment's authentication stops being whichever

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 from flakegraph_app.ui import authentication
 
 _CHART = Path("deploy/helm/flakegraph")
@@ -102,3 +103,37 @@ def test_each_sign_in_flow_carries_its_own_csrf_nonce() -> None:
     template = _AUTH_PROXY_TEMPLATE.read_text(encoding="utf-8")
 
     assert "- --cookie-csrf-per-request=true" in template
+
+
+def test_machine_interfaces_are_routed_without_the_browser_gate() -> None:
+    """An SDK holding a bearer token cannot complete a browser sign-in.
+
+    These paths keep their own authentication - a virtual key at the gateway, a
+    keyring at the parsing shim - so routing them past the gate hands the check
+    to the layer that can actually perform it.
+    """
+
+    values = yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
+    machine_paths = values["ingress"]["machineApiPaths"]
+
+    assert machine_paths["gateway"] == ["/v1"]
+    assert machine_paths["ocr"] == ["/file_parse"]
+    # The control plane is a browser application throughout: it has no interface
+    # a program authenticates to, so nothing of it may leave the gate.
+    assert "controlPlane" not in machine_paths
+
+    template = (_CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
+    assert "machineApiPaths" in template
+    # The gate's middleware is annotated onto one Ingress; the machine-API rules
+    # are a second one precisely so they do not inherit it.
+    assert template.count("router.middlewares") == 1
+
+
+def test_the_parsing_shim_refuses_an_unauthenticated_parse() -> None:
+    """Whatever leaves the gate must still refuse a caller with no credential."""
+
+    shim = Path("src/kg_processor/serving/ocr_shim.py").read_text(encoding="utf-8")
+
+    assert 'PARSE_ROUTE = "/file_parse"' in shim
+    assert 'UNAUTHENTICATED_PATHS = frozenset({"/ping", "/metrics"})' in shim
+    assert '"error": "unauthorized"}, status_code=401' in shim
