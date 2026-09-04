@@ -13,6 +13,7 @@ into app state would put cluster admin keys somewhere nobody expects them.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -146,13 +147,13 @@ def read_catalog(state_root: Path) -> ClusterCatalog:
 
     path = state_root / _CLUSTERS_FILE
     if not path.exists():
-        return ClusterCatalog()
+        return _default_catalog()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return ClusterCatalog()
+        return _default_catalog()
     if not isinstance(payload, dict):
-        return ClusterCatalog()
+        return _default_catalog()
     clusters = [
         ClusterProfile(
             name=str(item.get("name", "")),
@@ -164,7 +165,32 @@ def read_catalog(state_root: Path) -> ClusterCatalog:
         for item in payload.get("clusters", [])
         if isinstance(item, dict) and item.get("name")
     ]
+    if not clusters:
+        return _default_catalog()
     return ClusterCatalog(clusters=clusters, selected=str(payload.get("selected") or ""))
+
+
+def _default_catalog() -> ClusterCatalog:
+    """Return the catalog to use when the operator has registered nothing.
+
+    A control plane deployed *into* the cluster it manages already knows which
+    cluster that is: kubectl reads the ServiceAccount mounted beside it, with no
+    kubeconfig and no context to choose. Requiring registration there would ask
+    the operator to name the cluster the app is already running in, and an empty
+    catalog is not recoverable from inside a pod whose state directory does not
+    survive a restart. Off-cluster, no such assumption is available and the
+    catalog stays empty until someone registers one.
+    """
+
+    if not os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return ClusterCatalog()
+    namespace = os.environ.get("FLAKEGRAPH_APP_KUBERNETES_NAMESPACE", "").strip() or "flakegraph"
+    profile = ClusterProfile(
+        name="in-cluster",
+        namespace=namespace,
+        description="The cluster this control plane is deployed in.",
+    )
+    return ClusterCatalog(clusters=[profile], selected=profile.name)
 
 
 def write_catalog(state_root: Path, catalog: ClusterCatalog) -> None:

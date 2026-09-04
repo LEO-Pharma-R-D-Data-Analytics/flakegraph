@@ -543,12 +543,7 @@ class KubernetesBackend(LocalBackend):
         namespace = _validated_fleet_namespace(namespace, self._namespace())
         target = self._cluster_target()
         with ThreadPoolExecutor(max_workers=5, thread_name_prefix="flakegraph-fleet") as pool:
-            context_future = pool.submit(
-                _kubectl_json,
-                arguments=["config", "current-context"],
-                target=target,
-                raw=True,
-            )
+            context_future = pool.submit(_current_context, target)
             nodes_future = pool.submit(
                 _kubectl_json, arguments=["get", "nodes", "-o", "json"], target=target
             )
@@ -847,6 +842,24 @@ def _queued_worker_components(snapshot: RunSnapshot) -> set[str]:
         else:
             components.add("worker-extract")
     return components
+
+
+def _current_context(target: ClusterTarget) -> str:
+    """Name the cluster kubectl is pointed at, however it was pointed there.
+
+    In a pod there is no kubeconfig and no current context: kubectl reads the
+    mounted ServiceAccount instead, and `kubectl config current-context` fails
+    with "current-context is not set" even though every other call succeeds.
+    Treating that as "not connected" reports a healthy fleet as unreachable, so
+    the in-cluster case names itself.
+    """
+
+    if running_inside_the_cluster():
+        return "in-cluster"
+    resolved = _kubectl_json(
+        target=target, arguments=["config", "current-context"], raw=True
+    )
+    return str(resolved).strip()
 
 
 def _validated_fleet_namespace(namespace: str, allowed: str) -> str:
@@ -1422,9 +1435,7 @@ def _fleet_preflight(
 
     checks: list[str] = []
     errors: list[str] = []
-    context = str(
-        _kubectl_json(target=target, arguments=["config", "current-context"], raw=True)
-    ).strip()
+    context = _current_context(target)
     nodes = _kubectl_json(target=target, arguments=["get", "nodes", "-o", "json"]).get("items", [])
     ready_nodes = sum(_node_ready(item) for item in nodes)
     _record_requirement(
@@ -1773,12 +1784,30 @@ def _fleet_database_url(namespace: str, target: ClusterTarget) -> str:
     )
 
 
+def running_inside_the_cluster() -> bool:
+    """Report whether this process is itself a pod in the cluster it manages.
+
+    The control plane runs both ways: from an operator's machine, where cluster
+    Service names do not resolve, and as a Deployment beside the workers, where
+    they do. The difference matters because reaching a Service from outside
+    needs a port forward, and a port forward needs permission to create
+    ``pods/portforward`` - which is permission to reach any port of any pod in
+    the namespace, and far more than reading a queue warrants.
+    """
+
+    return bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
+
+
 def _database_cluster_service(
     database_url: str,
     default_namespace: str,
 ) -> tuple[str, str, int] | None:
     """Identify a short or fully qualified Kubernetes PostgreSQL Service host."""
 
+    if running_inside_the_cluster():
+        # In-cluster the Service resolves directly, so forwarding it to loopback
+        # would tunnel to where we already are.
+        return None
     parsed = urlparse(database_url)
     host = parsed.hostname or ""
     if not host or host in {"localhost", "127.0.0.1", "::1"} or _ip_address(host):

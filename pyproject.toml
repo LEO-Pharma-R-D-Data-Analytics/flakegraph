@@ -63,6 +63,10 @@ distributed-spark = [
   "pyspark==4.1.2",
 ]
 app = [
+  # Streamlit's OpenID Connect support is an optional extra of its own: st.login
+  # raises StreamlitAuthError at the moment a viewer clicks sign in, not at
+  # import, so a deployment without this looks healthy until someone tries.
+  "Authlib>=1.3.2",
   "azure-identity==1.25.3",
   "scipy==1.18.0",
   "streamlit==1.52.2",

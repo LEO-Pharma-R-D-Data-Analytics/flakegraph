@@ -162,6 +162,18 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            # The control plane shells out to `uv run flakegraph`, and uv wants a
+            # cache it can write. The root filesystem is deliberately read-only,
+            # so point it at the one writable mount rather than relaxing that.
+            - name: UV_CACHE_DIR
+              value: /tmp/uv-cache
+            # The project is already installed into the image's environment, so
+            # `uv run` must use it rather than re-syncing it - which it cannot do
+            # against a read-only /opt/venv, and should not do in any case.
+            - name: UV_NO_SYNC
+              value: "1"
+            - name: XDG_CACHE_HOME
+              value: /tmp/cache
             - name: PYTHONPATH
               value: /app/app
             - name: FLAKEGRAPH_APP_KUBERNETES_NAMESPACE
