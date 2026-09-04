@@ -559,6 +559,29 @@ controlPlane:
     storageClass: ""
     # Where the app keeps that state. Must match a writable mount.
     stateRoot: /var/lib/flakegraph
+  # Who may open a connection to the application at all.
+  #
+  # This matters more than it looks. Behind a gate the application does not
+  # authenticate its callers - it reads the identity the gate established from a
+  # request header. That header is proof only for traffic that actually passed
+  # through the ingress controller; to a workload that can address the Service
+  # directly it is a field it may set to any value. Restricting the source is
+  # what makes trusting the header sound.
+  #
+  # Off by default because the correct peer is site-specific, and a policy
+  # naming the wrong one makes the application unreachable rather than
+  # unprotected. Turn it on, and name your ingress controller, wherever the
+  # cluster runs workloads that are not part of this release.
+  networkPolicy:
+    enabled: false
+    # Standard NetworkPolicy peers. Both selectors inside one entry must match.
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: traefik
   auth:
     # Refuse to serve an anonymous viewer. Off by default so a local or
     # single-operator deployment works without an issuer; turn it on wherever

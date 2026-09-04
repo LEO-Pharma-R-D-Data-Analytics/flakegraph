@@ -198,3 +198,46 @@ def test_a_bare_namespace_cannot_be_routed_past_the_gate() -> None:
 
     assert re.fullmatch(pattern, "/v1") is None
     assert re.fullmatch(pattern, "/v1/chat/completions") is not None
+
+
+def test_only_the_ingress_controller_may_reach_the_header_trusting_application() -> None:
+    """Restricting the source is what makes trusting the gate's header sound.
+
+    The application reads identity from a request header. That is proof only for
+    traffic that passed through the ingress controller; to a workload that can
+    address the Service directly it is a field it may set to anything.
+    """
+
+    template = (_CHART / "templates/control-plane-networkpolicy.yaml").read_text(encoding="utf-8")
+
+    assert "kind: NetworkPolicy" in template
+    assert "app.kubernetes.io/component: control-plane" in template
+    assert "policyTypes: [Ingress]" in template
+    assert ".Values.controlPlane.networkPolicy.from" in template
+
+    values = _load_chart_values()["controlPlane"]["networkPolicy"]
+    # Off by default: naming the wrong peer makes the application unreachable,
+    # which is a worse default than leaving the restriction to the operator.
+    assert values["enabled"] is False
+    assert values["from"], "a default peer must be shown, even while disabled"
+
+
+def _load_chart_values() -> dict:
+    return yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
+
+
+def test_the_model_preload_cannot_hang_the_build_silently() -> None:
+    """A build that stops making progress must say so, not wait indefinitely.
+
+    The accelerated Hub transfer client waits on an interception proxy rather
+    than failing, so an unbounded preload reports nothing for as long as anyone
+    is willing to wait. That cost an hour before it was recognised.
+    """
+
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "ARG KG_PRELOAD_TIMEOUT_SECONDS=" in dockerfile
+    assert 'timeout "$KG_PRELOAD_TIMEOUT_SECONDS"' in dockerfile
+    # And the failure has to explain itself, or the next person repeats the hour.
+    assert "Authority Key" in dockerfile
+    assert "KG_PRELOAD_LOCAL_EMBEDDING=false" in dockerfile

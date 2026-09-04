@@ -17,6 +17,11 @@ ARG KG_INSTALL_CONTROL_PLANE=true
 ARG KG_PRELOAD_LOCAL_EMBEDDING=true
 ARG KG_LOCAL_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG KG_LOCAL_EMBEDDING_REVISION=1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+# Bounded, because the failure this guards against does not announce itself. The
+# accelerated Hub transfer client waits on an interception proxy instead of
+# failing, so without a limit the build stops making progress and reports
+# nothing - for as long as anyone is willing to wait.
+ARG KG_PRELOAD_TIMEOUT_SECONDS=600
 ARG UV_VERSION=0.11.28
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -83,8 +88,21 @@ RUN if [ "$KG_INSTALL_MINERU" = "true" ]; then \
     && uv sync --locked --no-dev --no-editable --no-install-project "$@" \
     && if [ "$KG_INSTALL_LOCAL_EMBEDDINGS" = "true" ] \
         && [ "$KG_PRELOAD_LOCAL_EMBEDDING" = "true" ]; then \
-        /opt/venv/bin/python -c \
-          "from sentence_transformers import SentenceTransformer; SentenceTransformer('$KG_LOCAL_EMBEDDING_MODEL', revision='$KG_LOCAL_EMBEDDING_REVISION')"; \
+        timeout "$KG_PRELOAD_TIMEOUT_SECONDS" /opt/venv/bin/python -c \
+          "from sentence_transformers import SentenceTransformer; SentenceTransformer('$KG_LOCAL_EMBEDDING_MODEL', revision='$KG_LOCAL_EMBEDDING_REVISION')" \
+        || { \
+            echo "ERROR: could not fetch $KG_LOCAL_EMBEDDING_MODEL within ${KG_PRELOAD_TIMEOUT_SECONDS}s." >&2; \
+            echo "The Hub serves weights from a separate CDN host. A network that" >&2; \
+            echo "resolves that host to an interception proxy substitutes its own" >&2; \
+            echo "certificate, which a current Python rejects - and the accelerated" >&2; \
+            echo "transfer client stalls rather than reporting it. Trusting the" >&2; \
+            echo "proxy's CA is not sufficient if its chain omits the Authority Key" >&2; \
+            echo "Identifier, which strict X.509 verification requires." >&2; \
+            echo "Reach the CDN host directly, or build with" >&2; \
+            echo "--build-arg KG_PRELOAD_LOCAL_EMBEDDING=false and supply the model" >&2; \
+            echo "to the deployment instead - the fleet already mounts it." >&2; \
+            exit 1; \
+        }; \
     fi \
     && uv cache clean \
     && chown -R kgprocessor:kgprocessor /home/kgprocessor/.cache \
