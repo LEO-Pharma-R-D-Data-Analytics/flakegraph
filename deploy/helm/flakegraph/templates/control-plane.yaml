@@ -184,6 +184,10 @@ spec:
               value: Kubernetes
             - name: FLAKEGRAPH_APP_REQUIRE_SIGN_IN
               value: {{ $controlPlane.auth.required | quote }}
+            {{- if $controlPlane.persistence.enabled }}
+            - name: FLAKEGRAPH_APP_STATE_ROOT
+              value: {{ $controlPlane.persistence.stateRoot | quote }}
+            {{- end }}
             {{- with $controlPlane.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -215,6 +219,10 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if $controlPlane.persistence.enabled }}
+            - name: state
+              mountPath: {{ $controlPlane.persistence.stateRoot }}
+            {{- end }}
             {{- if $controlPlane.auth.secretName }}
             # subPath so the image's own .streamlit/config.toml survives; a
             # directory mount would hide it.
@@ -232,6 +240,11 @@ spec:
             name: {{ include "flakegraph.configMapName" . }}
         - name: tmp
           emptyDir: {}
+        {{- if $controlPlane.persistence.enabled }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "flakegraph.controlPlaneName" . }}
+        {{- end }}
         {{- if $controlPlane.auth.secretName }}
         - name: streamlit-secrets
           secret:
@@ -241,4 +254,22 @@ spec:
         {{- with $controlPlane.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+{{- if $controlPlane.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "flakegraph.controlPlaneName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with $controlPlane.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $controlPlane.persistence.size }}
+{{- end }}
 {{- end }}

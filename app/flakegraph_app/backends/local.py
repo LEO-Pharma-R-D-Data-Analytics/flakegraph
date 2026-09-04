@@ -44,14 +44,32 @@ from flakegraph_app.sources import list_azure_objects, list_local_objects, list_
 read_jsonl_events = progress_module.read_jsonl_events
 
 
+STATE_ROOT_ENVIRONMENT = "FLAKEGRAPH_APP_STATE_ROOT"
+
+
+def _configured_state_root() -> Path | None:
+    """Return the operator's chosen state directory, if they named one."""
+
+    configured = os.environ.get(STATE_ROOT_ENVIRONMENT, "").strip()
+    return Path(configured) if configured else None
+
+
 class LocalBackend(GraphAccessDefaults):
     """Run the processing engine as a supervised local CLI child process."""
 
     def __init__(self, repository_root: Path, state_root: Path | None = None) -> None:
-        """Configure command working directory and app-owned state storage."""
+        """Configure command working directory and app-owned state storage.
+
+        State defaults to a directory inside the checkout, which is right for a
+        developer running from a clone and wrong for a container, where the code
+        is on a read-only filesystem. Deployments name a writable location
+        instead; without one, hiding a run or registering a cluster fails at the
+        moment the user asks for it rather than at startup.
+        """
 
         self.repository_root = repository_root.resolve()
-        self.state_root = (state_root or repository_root / ".flakegraph" / "app").resolve()
+        configured = state_root or _configured_state_root()
+        self.state_root = (configured or repository_root / ".flakegraph" / "app").resolve()
         # Set by runtimes whose listing can fall back to a less authoritative
         # source; the sidebar shows it so a degraded history says so.
         self.listing_warning: str | None = None

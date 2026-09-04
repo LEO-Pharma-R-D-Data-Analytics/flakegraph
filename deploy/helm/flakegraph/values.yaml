@@ -548,6 +548,17 @@ controlPlane:
     port: 8501
   # Sign-in is provider-neutral: Streamlit is pointed at whatever OIDC issuer
   # the operator names, and nothing in this chart knows which one.
+  # The control plane owns a little state of its own: which runs an operator has
+  # hidden, what a graph has been renamed to, which clusters are registered. The
+  # code lives on a read-only filesystem, so this has to be somewhere writable -
+  # and somewhere that survives a restart, or hiding a run would un-hide itself
+  # the next time the pod moved.
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+    # Where the app keeps that state. Must match a writable mount.
+    stateRoot: /var/lib/flakegraph
   auth:
     # Refuse to serve an anonymous viewer. Off by default so a local or
     # single-operator deployment works without an issuer; turn it on wherever

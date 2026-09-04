@@ -455,7 +455,7 @@
     "controlPlane": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "service", "auth", "resources"],
+      "required": ["enabled", "service", "persistence", "auth", "resources"],
       "properties": {
         "enabled": {"type": "boolean"},
         "service": {
@@ -463,6 +463,17 @@
           "additionalProperties": false,
           "required": ["port"],
           "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+        },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "size", "storageClass", "stateRoot"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "size": {"type": "string", "minLength": 1},
+            "storageClass": {"type": "string"},
+            "stateRoot": {"type": "string", "minLength": 1}
+          }
         },
         "auth": {
           "type": "object",
