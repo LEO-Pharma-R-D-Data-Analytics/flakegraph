@@ -607,10 +607,23 @@ ingress:
   # Declare only paths that refuse an unauthenticated request. Anything listed
   # here is reachable with whatever credential that service itself demands, and
   # nothing else stands in front of it.
+  # Matched exactly. Do not list a prefix: the gateway's key check is declared
+  # per route rather than globally, so `/v1` is not a namespace that
+  # authenticates - it is a namespace that mostly does. Verify a path refuses an
+  # unauthenticated caller before adding it, and re-verify on an image bump.
   machineApiPaths:
-    # OpenAI- and Anthropic-compatible inference. The UI stays behind the gate.
+    # Inference only. Everything a person opens - the admin UI, model management,
+    # spend, keys - stays behind the gate, as does /v1/mcp/*, which the gateway
+    # serves to anyone. Callers must address the gateway with /v1 in the base
+    # URL; the unversioned aliases are not routed.
     gateway:
-      - /v1
+      - /v1/chat/completions
+      - /v1/completions
+      - /v1/embeddings
+      - /v1/models
+      - /v1/messages
+      - /v1/responses
+      - /v1/rerank
     # MinerU's parse contract, as the shim exposes it.
     ocr:
       - /file_parse

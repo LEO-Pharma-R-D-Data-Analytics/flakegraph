@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -122,8 +123,17 @@ def test_machine_interfaces_are_routed_without_the_browser_gate() -> None:
     values = yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
     machine_paths = values["ingress"]["machineApiPaths"]
 
-    assert machine_paths["gateway"] == ["/v1"]
+    # A namespace is never routed past the gate, only verified paths. The
+    # gateway declares its key check per route, so `/v1` contains routes that
+    # authenticate and routes that do not - `/v1/mcp/oauth/authorize` answers
+    # anyone with a credential-entry page.
+    assert "/v1" not in machine_paths["gateway"]
+    assert not any(p.startswith("/v1/mcp") for p in machine_paths["gateway"])
+    assert "/v1/chat/completions" in machine_paths["gateway"]
     assert machine_paths["ocr"] == ["/file_parse"]
+
+    # Exactly, so a path cannot admit whatever upstream later adds beside it.
+    assert "pathType: Exact" in (_CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
     # The control plane is a browser application throughout: it has no interface
     # a program authenticates to, so nothing of it may leave the gate.
     assert "controlPlane" not in machine_paths
@@ -176,3 +186,15 @@ def test_no_path_is_exempted_across_every_host_at_once() -> None:
     values = yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
 
     assert values["ingress"]["authProxy"]["skipAuthRoutes"] == []
+
+
+def test_a_bare_namespace_cannot_be_routed_past_the_gate() -> None:
+    """`/v1` is not a thing that authenticates; the paths under it are, or not."""
+
+    schema = json.loads((_CHART / "values.schema.json").read_text(encoding="utf-8"))
+    pattern = schema["properties"]["ingress"]["properties"]["machineApiPaths"]["properties"][
+        "gateway"
+    ]["items"]["pattern"]
+
+    assert re.fullmatch(pattern, "/v1") is None
+    assert re.fullmatch(pattern, "/v1/chat/completions") is not None

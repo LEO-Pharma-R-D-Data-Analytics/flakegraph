@@ -78,16 +78,18 @@ whose callers are programs. An SDK sent to an issuer's authorize endpoint does
 not sign in - it follows a redirect it cannot satisfy, or reports the HTML it
 was handed as a protocol error.
 
-These paths already authenticate. The gateway checks a virtual key on every
-request; the parsing shim checks its own keyring and answers 401 without one.
-Putting a second, browser-shaped challenge in front of them does not add a
-check, it removes the one that works. So they are routed by rules of their own,
-without the gate's middleware - and because these rules are longer than the `/`
-rules above, they are the ones that match.
+These paths already authenticate: each one checks a virtual key, or the parsing
+shim's own keyring, and answers 401 without it. Putting a second, browser-shaped
+challenge in front of them does not add a check - it removes the one that works.
+So they are routed by rules of their own, without the gate's middleware, and
+because these rules are longer than the `/` rules above they are the ones that
+match.
 
-Nothing here is unauthenticated. Declaring a path that does not authenticate
-itself would be, which is why this is an explicit per-service list rather than
-a pattern.
+Matched EXACTLY, not by prefix. The gateway does not authenticate everything
+under `/v1`: its key check is declared per route, and the build in use serves
+`/v1/mcp/oauth/authorize` to anyone. A prefix would have published that, and
+would silently publish whatever the next image adds beside it. What is safe to
+route past the gate is a path, verified one at a time - never a namespace.
 */}}
 {{- /*
 The control plane is the one routed service that does not authenticate its own
@@ -137,7 +139,7 @@ spec:
           {{- $service := .route }}
           {{- range .paths }}
           - path: {{ . | quote }}
-            pathType: Prefix
+            pathType: Exact
             backend:
               service:
                 name: {{ $service.name }}
