@@ -546,6 +546,20 @@ controlPlane:
   enabled: true
   service:
     port: 8501
+  # Sign-in is provider-neutral: Streamlit is pointed at whatever OIDC issuer
+  # the operator names, and nothing in this chart knows which one.
+  auth:
+    # Refuse to serve an anonymous viewer. Off by default so a local or
+    # single-operator deployment works without an issuer; turn it on wherever
+    # the application is reachable by more than the person who installed it.
+    required: false
+    # A Secret holding a Streamlit secrets.toml with an [auth] section:
+    # redirect_uri, cookie_secret, client_id, client_secret, server_metadata_url.
+    # Mounted read-only over the image's own file. Keeping it here rather than
+    # in the image means the credential is rotated by replacing a Secret, and
+    # survives a redeploy - a copy placed inside a running container does not.
+    secretName: ""
+    secretKey: secrets.toml
   resources:
     requests:
       cpu: 250m

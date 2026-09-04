@@ -100,9 +100,15 @@ RUN if [ "$KG_INSTALL_MINERU" = "true" ]; then \
 # so this is present even when the control plane is not built in - about 50 MB.
 COPY --from=kubectl /bin/kubectl /usr/local/bin/kubectl
 
-COPY README.md /app/README.md
-COPY src /app/src
-COPY app /app/app
+# --chown, and the chmod below, because COPY preserves the *build host's* file
+# modes. A source tree synced onto a build machine under a restrictive umask
+# produced a 0640 root-owned streamlit_app.py, which the container - running as
+# an unprivileged user - could not read, and the image failed at runtime with a
+# permission error rather than at build. What the image contains should not
+# depend on the umask of whoever last copied the tree onto the builder.
+COPY --chown=kgprocessor:kgprocessor README.md /app/README.md
+COPY --chown=kgprocessor:kgprocessor src /app/src
+COPY --chown=kgprocessor:kgprocessor app /app/app
 
 # Installed environments are self-contained. Removing uv's wheel and source
 # cache avoids shipping several gigabytes of duplicate build inputs to every
@@ -118,7 +124,11 @@ RUN set -- \
 
 # Config examples are runtime inputs for local, on-prem, and SPCS execution.
 # Test data and docs stay outside the image and are mounted or staged instead.
-COPY configs /app/configs
+COPY --chown=kgprocessor:kgprocessor configs /app/configs
+
+# Normalise read bits for the same reason: ownership alone still leaves a 0600
+# file unreadable to anything but its owner, and these are read-only inputs.
+RUN chmod -R a+rX /app/README.md /app/src /app/app /app/configs
 
 USER kgprocessor
 

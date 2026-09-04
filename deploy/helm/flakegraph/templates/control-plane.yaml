@@ -170,6 +170,8 @@ spec:
             # opens by default is the fleet, not whatever this pod ran locally.
             - name: FLAKEGRAPH_APP_DEFAULT_RUNTIME
               value: Kubernetes
+            - name: FLAKEGRAPH_APP_REQUIRE_SIGN_IN
+              value: {{ $controlPlane.auth.required | quote }}
             {{- with $controlPlane.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -201,6 +203,14 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if $controlPlane.auth.secretName }}
+            # subPath so the image's own .streamlit/config.toml survives; a
+            # directory mount would hide it.
+            - name: streamlit-secrets
+              mountPath: /app/app/.streamlit/secrets.toml
+              subPath: {{ $controlPlane.auth.secretKey }}
+              readOnly: true
+            {{- end }}
             {{- with $controlPlane.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -210,6 +220,12 @@ spec:
             name: {{ include "flakegraph.configMapName" . }}
         - name: tmp
           emptyDir: {}
+        {{- if $controlPlane.auth.secretName }}
+        - name: streamlit-secrets
+          secret:
+            secretName: {{ $controlPlane.auth.secretName }}
+            defaultMode: 0400
+        {{- end }}
         {{- with $controlPlane.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

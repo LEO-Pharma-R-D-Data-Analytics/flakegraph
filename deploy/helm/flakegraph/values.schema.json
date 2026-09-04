@@ -455,7 +455,7 @@
     "controlPlane": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "service", "resources"],
+      "required": ["enabled", "service", "auth", "resources"],
       "properties": {
         "enabled": {"type": "boolean"},
         "service": {
@@ -463,6 +463,16 @@
           "additionalProperties": false,
           "required": ["port"],
           "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+        },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "secretName", "secretKey"],
+          "properties": {
+            "required": {"type": "boolean"},
+            "secretName": {"type": "string"},
+            "secretKey": {"type": "string", "minLength": 1}
+          }
         },
         "resources": {"type": "object"},
         "extraEnv": {"type": "array"},

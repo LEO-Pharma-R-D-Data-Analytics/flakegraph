@@ -12,6 +12,11 @@ from flakegraph_app.backends import build_backend
 from flakegraph_app.backends.base import ControlPlaneBackend
 from flakegraph_app.backends.factory import active_snowflake_session
 from flakegraph_app.models import ClusterSnapshot, RunSnapshot, RuntimeMode
+from flakegraph_app.ui.authentication import (
+    AuthenticationNotConfigured,
+    render_sign_out,
+    require_sign_in,
+)
 from flakegraph_app.ui.cache_state import (
     FLEET_CACHE_GENERATION,
     RUN_HISTORY_CACHE_GENERATION,
@@ -31,6 +36,7 @@ REPOSITORY_ROOT = (
 )
 SIDEBAR_LOGO = APPLICATION_ROOT / "assets" / "flakegraph-logo.png"
 _DEFAULT_RUNTIME_ENV = "FLAKEGRAPH_APP_DEFAULT_RUNTIME"
+_REQUIRE_SIGN_IN_ENV = "FLAKEGRAPH_APP_REQUIRE_SIGN_IN"
 
 
 class _SessionState(Protocol):
@@ -238,7 +244,17 @@ def main() -> None:
         initial_sidebar_state="auto",
     )
     apply_theme()
+    # Snowflake authenticates the viewer before the app is reached, so asking
+    # again there would be a second sign-in for an identity we already hold.
     snowflake_session = active_snowflake_session()
+    if snowflake_session is None:
+        try:
+            if not require_sign_in(required=_sign_in_is_required()):
+                return
+        except AuthenticationNotConfigured as error:
+            st.error(concise_error(error))
+            return
+        render_sign_out()
     default_runtime = (
         RuntimeMode.SNOWFLAKE if snowflake_session is not None else _configured_default_runtime()
     )
@@ -301,6 +317,17 @@ def main() -> None:
         _render_ingestion_fragment(backend, runtime)
     else:
         _render_run_page(backend, selected_run)
+
+
+def _sign_in_is_required() -> bool:
+    """Report whether this deployment refuses to serve an anonymous viewer.
+
+    Off by default so a local checkout keeps working without an issuer, and set
+    by the chart wherever the application is reachable by more than its
+    operator.
+    """
+
+    return os.environ.get(_REQUIRE_SIGN_IN_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
 if __name__ == "__main__":

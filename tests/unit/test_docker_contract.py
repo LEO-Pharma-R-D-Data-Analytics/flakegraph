@@ -54,11 +54,10 @@ def test_dockerfile_installs_from_locked_uv_environment() -> None:
     dockerignore = Path(".dockerignore").read_text(encoding="utf-8").splitlines()
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
+    readme_copy = "COPY --chown=kgprocessor:kgprocessor README.md /app/README.md"
     assert "COPY pyproject.toml uv.lock /app/" in dockerfile
-    assert "COPY README.md /app/README.md" in dockerfile
-    assert dockerfile.index("--no-install-project") < dockerfile.index(
-        "COPY README.md /app/README.md"
-    )
+    assert readme_copy in dockerfile
+    assert dockerfile.index("--no-install-project") < dockerfile.index(readme_copy)
     assert "UV_PROJECT_ENVIRONMENT=/opt/venv" in dockerfile
     assert "uv sync --locked --no-dev --no-editable" in dockerfile
     assert dockerfile.count("&& uv cache clean") == 2
@@ -101,8 +100,8 @@ def test_docker_build_context_keeps_runtime_mounts_and_review_docs_out_of_image(
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
 
     assert {"data", "docs", "tests", "out", ".venv"} <= dockerignore
-    assert "COPY src /app/src" in dockerfile
-    assert "COPY configs /app/configs" in dockerfile
+    assert "COPY --chown=kgprocessor:kgprocessor src /app/src" in dockerfile
+    assert "COPY --chown=kgprocessor:kgprocessor configs /app/configs" in dockerfile
     assert "COPY data" not in dockerfile
     assert "COPY docs" not in dockerfile
     assert "COPY tests" not in dockerfile
@@ -169,3 +168,30 @@ def _docker_arg_default(dockerfile: str, name: str) -> str:
     if match is None:
         raise AssertionError(f"Dockerfile is missing ARG {name}")
     return match.group(1)
+
+
+def test_image_contents_do_not_inherit_the_build_host_file_modes() -> None:
+    """Own and normalise what is copied in, rather than trusting the builder.
+
+    COPY preserves the source tree's ownership and mode. A checkout synced onto
+    a build machine under a restrictive umask once produced a 0640 root-owned
+    entry point, which the unprivileged runtime user could not read - and the
+    image failed on first request rather than at build, on one machine and not
+    another. Whether the image works should not depend on the umask of whoever
+    last copied the tree onto the builder.
+    """
+
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+
+    copied_sources = [
+        line
+        for line in dockerfile.splitlines()
+        if line.startswith("COPY ") and "--from=" not in line and "/app/" in line
+    ]
+    assert copied_sources, "expected the image to copy application sources"
+    unowned = [line for line in copied_sources if "--chown=" not in line]
+    # The dependency layer copies only manifests, which the install step reads
+    # as root before the runtime user exists.
+    assert unowned == ["COPY pyproject.toml uv.lock /app/"], unowned
+
+    assert "chmod -R a+rX" in dockerfile
