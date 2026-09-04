@@ -184,6 +184,14 @@ spec:
               value: Kubernetes
             - name: FLAKEGRAPH_APP_REQUIRE_SIGN_IN
               value: {{ $controlPlane.auth.required | quote }}
+            {{- if and .Values.ingress.enabled .Values.ingress.authProxy.enabled }}
+            # A gate already authenticated this request, so the application
+            # reads who the viewer is instead of signing them in a second time.
+            - name: FLAKEGRAPH_APP_FORWARDED_IDENTITY_HEADER
+              value: X-Auth-Request-Email
+            - name: FLAKEGRAPH_APP_SIGN_OUT_URL
+              value: {{ printf "https://%s.%s/oauth2/sign_out" .Values.ingress.authProxy.host .Values.ingress.domain | quote }}
+            {{- end }}
             {{- if $controlPlane.persistence.enabled }}
             - name: FLAKEGRAPH_APP_STATE_ROOT
               value: {{ $controlPlane.persistence.stateRoot | quote }}

@@ -1,19 +1,30 @@
-"""Gate the application behind the identity provider, when one is configured.
+"""Establish who the viewer is, by whichever mechanism the deployment provides.
 
-Streamlit's OpenID Connect support is inert on its own: configuring ``[auth]``
-in secrets grants the application the *ability* to sign a user in, and nothing
-more. Until something calls :func:`streamlit.login`, every visitor is anonymous
-and every page is served. A deployment can therefore hold a complete, correct
-identity configuration and still be open to whoever can reach it, which is a
-worse failure than having no configuration at all - it looks protected.
+There are two, and a deployment uses one of them.
 
-This module is that call. It is deliberately provider-neutral: the application
-asks Streamlit whether a viewer is signed in, and Streamlit asks whichever
-issuer the operator named. Nothing here knows about any particular vendor.
+*The application signs the viewer in.* Streamlit's OpenID Connect support is
+inert on its own: configuring ``[auth]`` in secrets grants the application the
+*ability* to sign a user in, and nothing more. Until something calls
+:func:`streamlit.login`, every visitor is anonymous and every page is served. A
+deployment can therefore hold a complete, correct identity configuration and
+still be open to whoever can reach it, which is a worse failure than having no
+configuration at all - it looks protected. This module is that call.
+
+*A gate in front signs the viewer in.* Where a deployment puts an authenticating
+proxy ahead of every routed host, the application is never reached by an
+anonymous request, and running a second sign-in behind the first is not extra
+safety - it is a second redirect flow, with a second callback URL, that the
+viewer has to complete after already having proved who they are. So when the
+operator names a header the gate populates, this module reads the identity from
+there and does not start a flow of its own.
+
+Both are provider-neutral. The application asks Streamlit, or reads a header;
+neither path knows about any particular vendor.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, Protocol, cast
 
 import streamlit as st
@@ -22,6 +33,13 @@ AUTH_SECTION = "auth"
 # Streamlit requires these before st.login() can work. A partial section is a
 # misconfiguration worth reporting rather than quietly treating as "no auth".
 REQUIRED_AUTH_KEYS = ("redirect_uri", "cookie_secret", "client_id", "client_secret")
+
+# The header an authenticating proxy sets once it has admitted the request.
+# Naming it is how an operator states that a gate is in front; leaving it empty
+# means the application signs viewers in itself.
+FORWARDED_IDENTITY_ENVIRONMENT = "FLAKEGRAPH_APP_FORWARDED_IDENTITY_HEADER"
+# Where the gate ends a session, when it offers somewhere to do that.
+SIGN_OUT_URL_ENVIRONMENT = "FLAKEGRAPH_APP_SIGN_OUT_URL"
 
 
 class AuthenticationNotConfigured(RuntimeError):
@@ -34,13 +52,50 @@ class _User(Protocol):
     is_logged_in: bool
 
 
+def _environment_value(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
+def identity_is_delegated() -> bool:
+    """Report whether a gate in front establishes identity for this deployment."""
+
+    return bool(_environment_value(FORWARDED_IDENTITY_ENVIRONMENT))
+
+
+def forwarded_identity() -> str | None:
+    """Return the identity the gate admitted this request under, if any.
+
+    The header cannot be forged by the viewer: the gate answers every request
+    before the application sees it, and the proxy replaces these headers with
+    what the gate returned. A request that arrives without one did not come
+    through the gate at all.
+    """
+
+    header = _environment_value(FORWARDED_IDENTITY_ENVIRONMENT)
+    if not header:
+        return None
+    context = getattr(st, "context", None)
+    headers = getattr(context, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = headers.get(header)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    return str(value).strip() or None
+
+
 def identity_is_configured() -> bool:
-    """Report whether this deployment can sign a viewer in.
+    """Report whether this deployment can establish who the viewer is.
 
     Reading secrets can raise when no secrets file exists at all, which is the
     ordinary case for a local checkout, so absence is not an error here.
     """
 
+    if identity_is_delegated():
+        return True
     try:
         section = st.secrets.get(AUTH_SECTION)
     except Exception:
@@ -63,8 +118,10 @@ def _missing_auth_keys() -> tuple[str, ...]:
 
 
 def viewer_is_signed_in() -> bool:
-    """Report whether Streamlit currently holds a signed-in identity."""
+    """Report whether this request carries an established identity."""
 
+    if identity_is_delegated():
+        return forwarded_identity() is not None
     user = cast("_User | None", getattr(st, "user", None))
     return bool(user is not None and getattr(user, "is_logged_in", False))
 
@@ -76,9 +133,24 @@ def require_sign_in(*, required: bool) -> bool:
     deployment that demands identity would lock out a local checkout for no
     benefit; a configured one that does not demand it would leave the very
     protection it configured switched off. So the two are separate, and the
-    combination that matters - required, but not configured - refuses to render
+    combination that matters - required, but not established - refuses to render
     rather than falling open.
     """
+
+    if identity_is_delegated():
+        if forwarded_identity() is not None:
+            return True
+        if not required:
+            return True
+        # The gate is declared to be in front, and this request did not come
+        # through it. Sending the viewer to sign in would not help: whatever
+        # they did, they reached the application by a route the gate does not
+        # cover. Say so rather than starting a flow that cannot fix it.
+        raise AuthenticationNotConfigured(
+            "This deployment is served behind a sign-in gate, but this request "
+            f"carried no {_environment_value(FORWARDED_IDENTITY_ENVIRONMENT)} "
+            "header - it did not arrive through the gate."
+        )
 
     configured = identity_is_configured()
     if required and not configured:
@@ -112,6 +184,18 @@ def _render_sign_in(*, blocking: bool) -> None:
 def render_sign_out() -> None:
     """Offer sign-out wherever this is called, for a signed-in viewer only."""
 
+    if identity_is_delegated():
+        identity = forwarded_identity()
+        if identity is None:
+            return
+        st.sidebar.caption(f"Signed in as {identity}")
+        # The gate owns the session, so it is the only thing that can end it.
+        # Where the operator has not said where that is, showing a button that
+        # cannot sign anyone out would be worse than showing none.
+        sign_out_url = _environment_value(SIGN_OUT_URL_ENVIRONMENT)
+        if sign_out_url:
+            st.sidebar.link_button("Sign out", sign_out_url)
+        return
     if not viewer_is_signed_in():
         return
     if st.sidebar.button("Sign out"):

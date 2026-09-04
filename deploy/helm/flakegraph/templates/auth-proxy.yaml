@@ -213,11 +213,17 @@ spec:
                 name: {{ include "flakegraph.authProxyName" . }}
                 port:
                   number: 4180
+    {{- /*
+    The trailing separator is load-bearing. Traefik prefix-matches the raw
+    string, so a rule for `/oauth2` also captures `/oauth2callback` - which is
+    an application's own path, not the gate's, and routing it here sends the
+    viewer back to sign in at the moment they finish signing in.
+    */}}
     {{- range $name, $host := $ingress.hosts }}
     - host: {{ printf "%s.%s" $host $ingress.domain | quote }}
       http:
         paths:
-          - path: /oauth2
+          - path: /oauth2/
             pathType: Prefix
             backend:
               service:
