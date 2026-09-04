@@ -483,7 +483,7 @@
     "ingress": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "className", "domain", "hosts", "tls"],
+      "required": ["enabled", "className", "domain", "hosts", "authProxy", "tls"],
       "properties": {
         "enabled": {"type": "boolean"},
         "className": {"type": "string"},
@@ -499,6 +499,42 @@
           }
         },
         "annotations": {"type": "object"},
+        "authProxy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "host", "replicas", "image", "oidc", "emailDomain", "existingSecret", "clientSecretKey", "cookieSecretKey", "skipAuthRoutes", "extraArgs", "resources"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "host": {"type": "string", "minLength": 1},
+            "replicas": {"type": "integer", "minimum": 1},
+            "image": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["repository", "tag", "pullPolicy"],
+              "properties": {
+                "repository": {"type": "string", "minLength": 1},
+                "tag": {"type": "string", "minLength": 1},
+                "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+              }
+            },
+            "oidc": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["issuerUrl", "clientId"],
+              "properties": {
+                "issuerUrl": {"type": "string"},
+                "clientId": {"type": "string"}
+              }
+            },
+            "emailDomain": {"type": "string", "minLength": 1},
+            "existingSecret": {"type": "string"},
+            "clientSecretKey": {"type": "string", "minLength": 1},
+            "cookieSecretKey": {"type": "string", "minLength": 1},
+            "skipAuthRoutes": {"type": "array", "items": {"type": "string"}},
+            "extraArgs": {"type": "array"},
+            "resources": {"type": "object"}
+          }
+        },
         "tls": {
           "type": "object",
           "additionalProperties": false,

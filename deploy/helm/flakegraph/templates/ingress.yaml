@@ -28,9 +28,16 @@ metadata:
   name: {{ include "flakegraph.fullname" . }}
   labels:
     {{- include "flakegraph.labels" . | nindent 4 }}
-  {{- with $ingress.annotations }}
+  {{- if or $ingress.annotations $ingress.authProxy.enabled }}
   annotations:
+    {{- with $ingress.annotations }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if $ingress.authProxy.enabled }}
+    # Order matters: the gate answers first, and the errors middleware turns its
+    # refusal into a redirect the browser follows.
+    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-auth@kubernetescrd,%s-%s-errors@kubernetescrd" $root.Release.Namespace (include "flakegraph.authProxyName" $root) $root.Release.Namespace (include "flakegraph.authProxyName" $root) }}
+    {{- end }}
   {{- end }}
 spec:
   {{- with $ingress.className }}

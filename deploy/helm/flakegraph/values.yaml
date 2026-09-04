@@ -587,6 +587,45 @@ ingress:
     gateway: llm
     ocr: ocr
   annotations: {}
+  # One sign-in gate in front of every routed host, rather than an identity
+  # integration inside each application. Applications that cannot speak OIDC are
+  # covered too, and the deployment's authentication stops being whichever
+  # application authenticates worst.
+  authProxy:
+    enabled: false
+    # Its own hostname, so the sign-in and callback endpoints are not behind the
+    # gate they exist to open.
+    host: auth
+    replicas: 2
+    image:
+      repository: quay.io/oauth2-proxy/oauth2-proxy
+      tag: v7.14.0
+      pullPolicy: IfNotPresent
+    oidc:
+      # Any OIDC issuer. The chart neither knows nor cares which.
+      issuerUrl: ""
+      clientId: ""
+    # Restrict to one mail domain, or "*" to accept whoever the issuer admits -
+    # assignment is then the issuer's job, which is where it belongs.
+    emailDomain: "*"
+    existingSecret: ""
+    clientSecretKey: client-secret
+    cookieSecretKey: cookie-secret
+    # Paths served before sign-in. Health endpoints are probed by machines that
+    # cannot sign in, and a gate in front of a liveness probe fails the pod it
+    # is meant to protect.
+    skipAuthRoutes:
+      - ^/health$
+      - ^/ping$
+      - ^/_stcore/health$
+    extraArgs: []
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
   tls:
     # A Secret of type kubernetes.io/tls holding the chain and key. Empty serves
     # plain HTTP, which no identity provider will accept a redirect to.

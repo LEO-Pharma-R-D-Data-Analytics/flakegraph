@@ -1,0 +1,210 @@
+{{- if .Values.ingress.authProxy.enabled }}
+{{- $proxy := .Values.ingress.authProxy }}
+{{- $ingress := .Values.ingress }}
+{{- $authHost := printf "%s.%s" $proxy.host $ingress.domain }}
+{{- /*
+One gate in front of every routed service, rather than an identity integration
+per application.
+
+The alternative is each application speaking OIDC itself, which works only for
+applications that can - and leaves the ones that cannot, such as a machine API,
+with no answer at all. It also makes the weakest application's authentication
+the deployment's authentication: a proxy that keeps a password login beside its
+SSO is a bypass, and an upstream that meters authenticated users caps the whole
+deployment. A gate in front is one integration, protects whatever is behind it,
+and does not inherit either problem.
+
+Workers reach these services by their in-cluster Service names, not through the
+ingress, so nothing here is on the pipeline's path.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-proxy
+spec:
+  replicas: {{ $proxy.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: auth-proxy
+  template:
+    metadata:
+      labels:
+        {{- include "flakegraph.labels" . | nindent 8 }}
+        app.kubernetes.io/component: auth-proxy
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: auth-proxy
+          image: {{ printf "%s:%s" $proxy.image.repository $proxy.image.tag | quote }}
+          imagePullPolicy: {{ $proxy.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          args:
+            - --provider=oidc
+            # The issuer is named by the operator. Nothing here is specific to
+            # any identity provider.
+            - --oidc-issuer-url={{ $proxy.oidc.issuerUrl }}
+            - --client-id={{ $proxy.oidc.clientId }}
+            - --http-address=0.0.0.0:4180
+            - --redirect-url=https://{{ $authHost }}/oauth2/callback
+            # One cookie for the whole domain, so signing in once covers every
+            # host behind the gate rather than once per service.
+            - --cookie-domain={{ printf ".%s" $ingress.domain }}
+            - --whitelist-domain={{ printf ".%s" $ingress.domain }}
+            - --email-domain={{ $proxy.emailDomain }}
+            # Behind Traefik: trust the forwarded headers it sets, and answer
+            # /oauth2/auth rather than proxying the request itself.
+            - --reverse-proxy=true
+            - --upstream=static://202
+            - --set-xauthrequest=true
+            - --skip-provider-button=true
+            - --cookie-secure=true
+            {{- range $proxy.skipAuthRoutes }}
+            - --skip-auth-route={{ . }}
+            {{- end }}
+            {{- with $proxy.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $proxy.existingSecret }}
+                  key: {{ $proxy.clientSecretKey }}
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $proxy.existingSecret }}
+                  key: {{ $proxy.cookieSecretKey }}
+          ports:
+            - name: http
+              containerPort: 4180
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 30
+          resources:
+            {{- toYaml $proxy.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-proxy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: auth-proxy
+  ports:
+    - name: http
+      port: 4180
+      targetPort: http
+      protocol: TCP
+---
+# Ask the gate about every request. It answers 202 or 401 without the request
+# body ever reaching it.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}-auth
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+spec:
+  forwardAuth:
+    address: http://{{ include "flakegraph.authProxyName" . }}:4180/oauth2/auth
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-User
+      - X-Auth-Request-Email
+      - X-Auth-Request-Preferred-Username
+      - Set-Cookie
+---
+# A bare 401 leaves a browser showing an error rather than a sign-in page, so a
+# refusal is rewritten into a redirect the browser will follow.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}-errors
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+spec:
+  errors:
+    status:
+      - "401-403"
+    service:
+      name: {{ include "flakegraph.authProxyName" . }}
+      port: 4180
+    query: "/oauth2/sign_in?rd={url}"
+    statusRewrites:
+      "401": 302
+---
+# The sign-in and callback endpoints must reach the gate itself, and must not be
+# behind it - a gate that guards its own sign-in page cannot be signed in to.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+  {{- with $ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $ingress.tls.secretName }}
+  tls:
+    - secretName: {{ $ingress.tls.secretName }}
+      hosts:
+        - {{ $authHost | quote }}
+        {{- range $name, $host := $ingress.hosts }}
+        - {{ printf "%s.%s" $host $ingress.domain | quote }}
+        {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ $authHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "flakegraph.authProxyName" . }}
+                port:
+                  number: 4180
+    {{- range $name, $host := $ingress.hosts }}
+    - host: {{ printf "%s.%s" $host $ingress.domain | quote }}
+      http:
+        paths:
+          - path: /oauth2
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "flakegraph.authProxyName" $ }}
+                port:
+                  number: 4180
+    {{- end }}
+{{- end }}

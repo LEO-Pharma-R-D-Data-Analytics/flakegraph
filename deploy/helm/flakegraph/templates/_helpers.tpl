@@ -103,6 +103,11 @@
 
 {{/* Return the OCR shim Service and the endpoint the pipeline parses through. */}}
 {{/* The control plane is a deployed component, not a script on a node. */}}
+{{/* The single sign-in gate in front of every routed service. */}}
+{{- define "flakegraph.authProxyName" -}}
+{{- printf "%s-auth" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
 {{- define "flakegraph.controlPlaneName" -}}
 {{- printf "%s-app" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
