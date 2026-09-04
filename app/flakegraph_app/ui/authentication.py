@@ -140,12 +140,17 @@ def require_sign_in(*, required: bool) -> bool:
     if identity_is_delegated():
         if forwarded_identity() is not None:
             return True
-        if not required:
-            return True
         # The gate is declared to be in front, and this request did not come
-        # through it. Sending the viewer to sign in would not help: whatever
-        # they did, they reached the application by a route the gate does not
-        # cover. Say so rather than starting a flow that cannot fix it.
+        # through it. `required` does not apply here: it asks whether identity
+        # is demanded, and naming a gate has already answered that. Treating a
+        # missing header as "identity is optional" would serve every request
+        # that reaches this process by any route other than the gate - another
+        # pod in the namespace, a port-forward, a Service exposed by mistake -
+        # which is precisely the case the header exists to exclude.
+        #
+        # Sending the viewer to sign in would not help either: whatever they
+        # did, they arrived by a route the gate does not cover, and a flow
+        # cannot fix a route.
         raise AuthenticationNotConfigured(
             "This deployment is served behind a sign-in gate, but this request "
             f"carried no {_environment_value(FORWARDED_IDENTITY_ENVIRONMENT)} "

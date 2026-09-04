@@ -83,14 +83,19 @@ def test_a_request_that_bypassed_the_gate_is_refused(
         authentication.require_sign_in(required=True)
 
 
-def test_an_unenforced_deployment_still_serves_without_the_header(
+def test_naming_a_gate_makes_its_identity_mandatory(
     delegated: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A gate that is configured but not demanded must not lock out a checkout."""
+    """`required` cannot relax a gate: naming one already demanded identity.
+
+    The operator flag defaults to off, so honouring it here would serve every
+    request that reaches this process by any route other than the gate.
+    """
 
     monkeypatch.setattr(authentication, "st", _streamlit_stub({}))
 
-    assert authentication.require_sign_in(required=False) is True
+    with pytest.raises(authentication.AuthenticationNotConfigured):
+        authentication.require_sign_in(required=False)
 
 
 def test_each_sign_in_flow_carries_its_own_csrf_nonce() -> None:
@@ -157,3 +162,17 @@ def test_the_header_trusting_application_cannot_be_routed_past_the_gate() -> Non
     template = (_CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
     assert 'hasKey ($ingress.machineApiPaths | default dict) "controlPlane"' in template
     assert "{{- fail " in template
+
+
+def test_no_path_is_exempted_across_every_host_at_once() -> None:
+    """A path exemption cannot tell which service is serving the path.
+
+    Health endpoints are probed by the kubelet against the pod, never through
+    the ingress, so exempting them protects nothing - and `^/health$` exempted
+    for the parsing shim was also exempted for the control plane, where
+    Streamlit answers it with the application shell.
+    """
+
+    values = yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
+
+    assert values["ingress"]["authProxy"]["skipAuthRoutes"] == []

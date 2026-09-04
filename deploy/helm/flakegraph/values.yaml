@@ -638,13 +638,20 @@ ingress:
     existingSecret: ""
     clientSecretKey: client-secret
     cookieSecretKey: cookie-secret
-    # Paths served before sign-in. Health endpoints are probed by machines that
-    # cannot sign in, and a gate in front of a liveness probe fails the pod it
-    # is meant to protect.
-    skipAuthRoutes:
-      - ^/health$
-      - ^/ping$
-      - ^/_stcore/health$
+    # Paths served before sign-in, as regular expressions.
+    #
+    # Empty, and health endpoints are deliberately not here. A liveness probe is
+    # made by the kubelet against the pod's own address and never reaches the
+    # ingress, so exempting health paths protects nothing - while the exemption
+    # itself applies to every host behind the gate at once, because it matches a
+    # path with no idea which service is serving it. Exempting `^/health$` for
+    # the parsing shim also exempted it for the control plane, where that path
+    # is not a health check at all: Streamlit answers it with the application
+    # shell, unauthenticated.
+    #
+    # Prefer routing to a rule of its own over exempting a path here, the way
+    # `machineApiPaths` does: routing knows which service it is talking about.
+    skipAuthRoutes: []
     extraArgs: []
     resources:
       requests:
