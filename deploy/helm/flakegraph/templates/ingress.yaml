@@ -34,9 +34,11 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
     {{- if $ingress.authProxy.enabled }}
-    # Order matters: the gate answers first, and the errors middleware turns its
-    # refusal into a redirect the browser follows.
-    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-auth@kubernetescrd,%s-%s-errors@kubernetescrd" $root.Release.Namespace (include "flakegraph.authProxyName" $root) $root.Release.Namespace (include "flakegraph.authProxyName" $root) }}
+    # Order matters, and it is the reverse of the intuition: middlewares run
+    # outermost first, so the errors middleware has to wrap the gate in order to
+    # see its refusal and turn it into a redirect. Listed the other way round the
+    # gate still refuses, and the browser is handed a bare 401.
+    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-errors@kubernetescrd,%s-%s-auth@kubernetescrd" $root.Release.Namespace (include "flakegraph.authProxyName" $root) $root.Release.Namespace (include "flakegraph.authProxyName" $root) }}
     {{- end }}
   {{- end }}
 spec:

@@ -65,10 +65,25 @@ spec:
             # Behind Traefik: trust the forwarded headers it sets, and answer
             # /oauth2/auth rather than proxying the request itself.
             - --reverse-proxy=true
-            - --upstream=static://202
+            # No upstream: in forwardAuth the gate answers /oauth2/auth and
+            # never proxies the request, so it has nothing to forward to. A
+            # static upstream is rejected here as a fatal misconfiguration
+            # rather than ignored, and is not needed in the first place.
             - --set-xauthrequest=true
             - --skip-provider-button=true
+            # oauth2-proxy defaults to approval_prompt=force, which asks the
+            # issuer to re-consent on every sign-in. Entra refuses that here.
+            # select_account is what the application's own OIDC flow sends
+            # against this same registration, and is accepted.
+            - --prompt=select_account
             - --cookie-secure=true
+            # Keep the identity out of the cookie. An issuer that returns a large
+            # id_token pushes the session past the 4kb cookie limit, and the
+            # split cookies that follow do not survive the round trip - the user
+            # authenticates successfully and is then sent back to sign in, for
+            # ever. The gate only needs to know who the viewer is, not to carry
+            # their tokens to the upstream.
+            - --session-cookie-minimal=true
             {{- range $proxy.skipAuthRoutes }}
             - --skip-auth-route={{ . }}
             {{- end }}
@@ -132,7 +147,10 @@ metadata:
     {{- include "flakegraph.labels" . | nindent 4 }}
 spec:
   forwardAuth:
-    address: http://{{ include "flakegraph.authProxyName" . }}:4180/oauth2/auth
+    # Fully qualified: the ingress controller resolves this from its own
+    # namespace, not from the Middleware's, so a bare Service name looks up
+    # in kube-system and fails.
+    address: http://{{ include "flakegraph.authProxyName" . }}.{{ .Release.Namespace }}.svc.cluster.local:4180/oauth2/auth
     trustForwardHeader: true
     authResponseHeaders:
       - X-Auth-Request-User
