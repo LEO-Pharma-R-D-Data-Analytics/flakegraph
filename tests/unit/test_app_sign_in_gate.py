@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -137,3 +138,22 @@ def test_the_parsing_shim_refuses_an_unauthenticated_parse() -> None:
     assert 'PARSE_ROUTE = "/file_parse"' in shim
     assert 'UNAUTHENTICATED_PATHS = frozenset({"/ping", "/metrics"})' in shim
     assert '"error": "unauthorized"}, status_code=401' in shim
+
+
+def test_the_header_trusting_application_cannot_be_routed_past_the_gate() -> None:
+    """The one service that does not authenticate its own callers must not leave.
+
+    The control plane reads identity from a header the gate sets. Route it past
+    the gate and that header stops being proof of anything - it becomes a request
+    parameter any caller may set. Both the schema and the template refuse it.
+    """
+
+    schema = json.loads((_CHART / "values.schema.json").read_text(encoding="utf-8"))
+    node = schema["properties"]["ingress"]["properties"]["machineApiPaths"]
+
+    assert set(node["properties"]) == {"gateway", "ocr"}
+    assert node["additionalProperties"] is False
+
+    template = (_CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
+    assert 'hasKey ($ingress.machineApiPaths | default dict) "controlPlane"' in template
+    assert "{{- fail " in template

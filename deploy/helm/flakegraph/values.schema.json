@@ -1435,13 +1435,23 @@
         "machineApiPaths": {
           "type": "object",
           "description": "Paths routed without the sign-in gate because they authenticate their own callers, keyed by service.",
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^/"
+          "properties": {
+            "gateway": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^/"
+              }
+            },
+            "ocr": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^/"
+              }
             }
-          }
+          },
+          "additionalProperties": false
         }
       }
     },

@@ -89,6 +89,15 @@ Nothing here is unauthenticated. Declaring a path that does not authenticate
 itself would be, which is why this is an explicit per-service list rather than
 a pattern.
 */}}
+{{- /*
+The control plane is the one routed service that does not authenticate its own
+callers: it reads the identity the gate established. Route it past the gate and
+that header becomes an unauthenticated request parameter - anyone may claim to
+be anyone. Nothing else in this chart can catch that, so it is refused here.
+*/}}
+{{- if hasKey ($ingress.machineApiPaths | default dict) "controlPlane" }}
+{{- fail "ingress.machineApiPaths must not name controlPlane: the control plane authenticates by trusting the gate's identity header, so routing it past the gate would let any caller assert any identity." }}
+{{- end }}
 {{- $machineRoutes := list }}
 {{- range $routes }}
 {{- $paths := get ($ingress.machineApiPaths | default dict) .key | default list }}
