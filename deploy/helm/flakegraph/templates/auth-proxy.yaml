@@ -77,6 +77,17 @@ spec:
             # against this same registration, and is accepted.
             - --prompt=select_account
             - --cookie-secure=true
+            # A browser does not make one request per page: it makes the
+            # navigation and then the favicon, the stylesheet, the websocket.
+            # Before sign-in every one of those is refused and handed its own
+            # redirect, and with a single fixed cookie name each redirect
+            # overwrites the last one's CSRF nonce. The viewer returns from the
+            # issuer holding a nonce belonging to a favicon request, the state
+            # does not match, and the sign-in is rejected as an attack. One
+            # cookie per flow keeps each redirect's nonce with the redirect it
+            # belongs to.
+            - --cookie-csrf-per-request=true
+            - --cookie-csrf-expire=5m
             # Keep the identity out of the cookie. An issuer that returns a large
             # id_token pushes the session past the 4kb cookie limit, and the
             # split cookies that follow do not survive the round trip - the user

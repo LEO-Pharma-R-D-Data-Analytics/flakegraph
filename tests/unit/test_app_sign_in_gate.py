@@ -89,3 +89,16 @@ def test_an_unenforced_deployment_still_serves_without_the_header(
     monkeypatch.setattr(authentication, "st", _streamlit_stub({}))
 
     assert authentication.require_sign_in(required=False) is True
+
+
+def test_each_sign_in_flow_carries_its_own_csrf_nonce() -> None:
+    """Survive a browser that asks for a favicon while the viewer signs in.
+
+    With one fixed CSRF cookie name, every concurrently refused subresource
+    overwrites the navigation's nonce, and the viewer returns from the issuer
+    with a state the gate rejects as an attack.
+    """
+
+    template = _AUTH_PROXY_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "- --cookie-csrf-per-request=true" in template
