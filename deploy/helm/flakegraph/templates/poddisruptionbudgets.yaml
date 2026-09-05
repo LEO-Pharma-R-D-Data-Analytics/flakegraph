@@ -1,0 +1,37 @@
+{{- $root := . -}}
+{{- range $poolName, $pool := .Values.workers }}
+{{- if and $pool.enabled (gt (int $pool.replicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "flakegraph.fullname" $root }}-{{ $poolName }}
+  labels:
+    {{- include "flakegraph.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: worker-{{ $poolName }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $root.Chart.Name }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: worker-{{ $poolName }}
+{{- end }}
+{{- end }}
+{{- if and .Values.modelServing.enabled (gt (int .Values.modelServing.replicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "flakegraph.modelServingName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: model-serving
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: model-serving
+{{- end }}

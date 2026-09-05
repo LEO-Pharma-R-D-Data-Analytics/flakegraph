@@ -1,0 +1,131 @@
+# Generic example for a k3s fleet whose GPU-capable nodes share this label.
+# Copy this file to deploy/private/ before adding site-specific registries,
+# storage classes, endpoint names, or secret references.
+image:
+  repository: registry.example.com/flakegraph
+  tag: "0.1.0"
+
+database:
+  secretName: flakegraph-postgres-app
+  cloudNativePG:
+    enabled: true
+    clusterName: flakegraph-postgres
+    instances: 3
+    storage:
+      # Suitable starting point for corpus-scale runs. Measure the first run and
+      # expand the volume before free space falls below the documented headroom.
+      size: 100Gi
+
+providerSecret:
+  name: flakegraph-providers
+  optional: true
+  # Only credential keys cross the Secret boundary. Provider endpoints and
+  # model names remain visible and reviewable in the mounted FlakeGraph config.
+  env:
+    - name: KG_LLM_API_KEY
+      key: KG_LLM_API_KEY
+      optional: true
+    - name: KG_EMBED_API_KEY
+      key: KG_EMBED_API_KEY
+      optional: true
+
+# Use a managed S3-compatible service in production, or a separately operated
+# in-cluster object store. PostgreSQL stores metadata; payload bytes and Parquet
+# graph tables move directly through this endpoint.
+artifactStorage:
+  uri: s3://flakegraph-artifacts
+  endpointUrl: https://object-storage.example.com
+  existingSecret: flakegraph-artifacts
+
+spark:
+  enabled: true
+  image:
+    repository: registry.example.com/flakegraph-spark
+    tag: "0.1.0"
+  executorInstances: 4
+  executorCores: 4
+  executorMemory: 8g
+  executorMemoryOverhead: 8g
+  nodeSelector:
+    flakegraph.io/node-class: nvidia-spark
+
+# Run one pinned engine on each GPU node, each behind its own authenticating
+# sidecar. Consumers never address these directly: they resolve the gateway, and
+# the endpoint picker decides which replica serves each request.
+modelServing:
+  enabled: true
+  replicas: 4
+  nodeSelector:
+    flakegraph.io/node-class: nvidia-spark
+
+# The router and the gateway are cheap next to an engine, so they sit on the
+# control-plane nodes and leave GPU nodes to inference and document parsing.
+gateway:
+  litellm:
+    replicas: 2
+    autoscaling:
+      maxReplicas: 6
+  placement:
+    replicas: 2
+    autoscaling:
+      maxReplicas: 6
+
+documentParsing:
+  mineru:
+    image:
+      repository: registry.example.com/mineru-api
+      tag: "2.6.4"
+    replicas: 4
+    nodeSelector:
+      flakegraph.io/node-class: nvidia-spark
+  shim:
+    replicas: 2
+
+workers:
+  prepare:
+    # MinerU preparation is CPU-bound in the standard worker image. Four
+    # four-core workers per GB10 keep its 20 CPU cores busy while leaving room
+    # for the colocated vLLM server. Tune this ratio for other node shapes.
+    replicas: 16
+    autoscaling:
+      maxReplicas: 16
+    nodeSelector:
+      flakegraph.io/node-class: nvidia-spark
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        matchLabelKeys:
+          - pod-template-hash
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: worker-prepare
+  extract:
+    # Each worker runs two logical windows concurrently, so sixteen workers ask
+    # for thirty-two concurrent sequences against the ninety-six
+    # the four replicas expose at the shipped sequence limit. The fleet is
+    # bounded by worker CPU rather than by sequence slots here, and the headroom
+    # is what an interactive request lands in without waiting at all. Workers are
+    # no longer pinned to the engine beside them: the endpoint picker spreads the
+    # load, so a node whose own workers are idle still has its GPU fed.
+    replicas: 16
+    autoscaling:
+      maxReplicas: 16
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        # During a rolling update, spread each ReplicaSet independently. Without
+        # this key, deleting the old revision after scheduling the new one can
+        # leave the final steady-state pool unevenly distributed.
+        matchLabelKeys:
+          - pod-template-hash
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: worker-extract
+  finalize:
+    replicas: 1
+    autoscaling:
+      maxReplicas: 1
+    nodeSelector:
+      flakegraph.io/node-class: cpu-control

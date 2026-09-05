@@ -1,0 +1,245 @@
+{{- if .Values.ingress.authProxy.enabled }}
+{{- $proxy := .Values.ingress.authProxy }}
+{{- $ingress := .Values.ingress }}
+{{- $authHost := printf "%s.%s" $proxy.host $ingress.domain }}
+{{- /*
+One gate in front of every routed service, rather than an identity integration
+per application.
+
+The alternative is each application speaking OIDC itself, which works only for
+applications that can - and leaves the ones that cannot, such as a machine API,
+with no answer at all. It also makes the weakest application's authentication
+the deployment's authentication: a proxy that keeps a password login beside its
+SSO is a bypass, and an upstream that meters authenticated users caps the whole
+deployment. A gate in front is one integration, protects whatever is behind it,
+and does not inherit either problem.
+
+Workers reach these services by their in-cluster Service names, not through the
+ingress, so nothing here is on the pipeline's path.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-proxy
+spec:
+  replicas: {{ $proxy.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: auth-proxy
+  template:
+    metadata:
+      labels:
+        {{- include "flakegraph.labels" . | nindent 8 }}
+        app.kubernetes.io/component: auth-proxy
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: auth-proxy
+          image: {{ printf "%s:%s" $proxy.image.repository $proxy.image.tag | quote }}
+          imagePullPolicy: {{ $proxy.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          args:
+            - --provider=oidc
+            # The issuer is named by the operator. Nothing here is specific to
+            # any identity provider.
+            - --oidc-issuer-url={{ $proxy.oidc.issuerUrl }}
+            - --client-id={{ $proxy.oidc.clientId }}
+            - --http-address=0.0.0.0:4180
+            - --redirect-url=https://{{ $authHost }}/oauth2/callback
+            # One cookie for the whole domain, so signing in once covers every
+            # host behind the gate rather than once per service.
+            - --cookie-domain={{ printf ".%s" $ingress.domain }}
+            - --whitelist-domain={{ printf ".%s" $ingress.domain }}
+            - --email-domain={{ $proxy.emailDomain }}
+            # Behind Traefik: trust the forwarded headers it sets, and answer
+            # /oauth2/auth rather than proxying the request itself.
+            - --reverse-proxy=true
+            # No upstream: in forwardAuth the gate answers /oauth2/auth and
+            # never proxies the request, so it has nothing to forward to. A
+            # static upstream is rejected here as a fatal misconfiguration
+            # rather than ignored, and is not needed in the first place.
+            - --set-xauthrequest=true
+            - --skip-provider-button=true
+            # oauth2-proxy defaults to approval_prompt=force, which asks the
+            # issuer to re-consent on every sign-in. Entra refuses that here.
+            # select_account is what the application's own OIDC flow sends
+            # against this same registration, and is accepted.
+            - --prompt=select_account
+            - --cookie-secure=true
+            # A browser does not make one request per page: it makes the
+            # navigation and then the favicon, the stylesheet, the websocket.
+            # Before sign-in every one of those is refused and handed its own
+            # redirect, and with a single fixed cookie name each redirect
+            # overwrites the last one's CSRF nonce. The viewer returns from the
+            # issuer holding a nonce belonging to a favicon request, the state
+            # does not match, and the sign-in is rejected as an attack. One
+            # cookie per flow keeps each redirect's nonce with the redirect it
+            # belongs to.
+            - --cookie-csrf-per-request=true
+            - --cookie-csrf-expire=5m
+            # Keep the identity out of the cookie. An issuer that returns a large
+            # id_token pushes the session past the 4kb cookie limit, and the
+            # split cookies that follow do not survive the round trip - the user
+            # authenticates successfully and is then sent back to sign in, for
+            # ever. The gate only needs to know who the viewer is, not to carry
+            # their tokens to the upstream.
+            - --session-cookie-minimal=true
+            {{- range $proxy.skipAuthRoutes }}
+            - --skip-auth-route={{ . }}
+            {{- end }}
+            {{- with $proxy.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $proxy.existingSecret }}
+                  key: {{ $proxy.clientSecretKey }}
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $proxy.existingSecret }}
+                  key: {{ $proxy.cookieSecretKey }}
+          ports:
+            - name: http
+              containerPort: 4180
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 30
+          resources:
+            {{- toYaml $proxy.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-proxy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: auth-proxy
+  ports:
+    - name: http
+      port: 4180
+      targetPort: http
+      protocol: TCP
+---
+# Ask the gate about every request. It answers 202 or 401 without the request
+# body ever reaching it.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}-auth
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+spec:
+  forwardAuth:
+    # Fully qualified: the ingress controller resolves this from its own
+    # namespace, not from the Middleware's, so a bare Service name looks up
+    # in kube-system and fails.
+    address: http://{{ include "flakegraph.authProxyName" . }}.{{ .Release.Namespace }}.svc.cluster.local:4180/oauth2/auth
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-User
+      - X-Auth-Request-Email
+      - X-Auth-Request-Preferred-Username
+      - Set-Cookie
+---
+# A bare 401 leaves a browser showing an error rather than a sign-in page, so a
+# refusal is rewritten into a redirect the browser will follow.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}-errors
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+spec:
+  errors:
+    status:
+      - "401-403"
+    service:
+      name: {{ include "flakegraph.authProxyName" . }}
+      port: 4180
+    query: "/oauth2/sign_in?rd={url}"
+    statusRewrites:
+      "401": 302
+---
+# The sign-in and callback endpoints must reach the gate itself, and must not be
+# behind it - a gate that guards its own sign-in page cannot be signed in to.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "flakegraph.authProxyName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+  {{- with $ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $ingress.tls.secretName }}
+  tls:
+    - secretName: {{ $ingress.tls.secretName }}
+      hosts:
+        - {{ $authHost | quote }}
+        {{- range $name, $host := $ingress.hosts }}
+        - {{ printf "%s.%s" $host $ingress.domain | quote }}
+        {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ $authHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "flakegraph.authProxyName" . }}
+                port:
+                  number: 4180
+    {{- /*
+    The trailing separator is load-bearing. Traefik prefix-matches the raw
+    string, so a rule for `/oauth2` also captures `/oauth2callback` - which is
+    an application's own path, not the gate's, and routing it here sends the
+    viewer back to sign in at the moment they finish signing in.
+    */}}
+    {{- range $name, $host := $ingress.hosts }}
+    - host: {{ printf "%s.%s" $host $ingress.domain | quote }}
+      http:
+        paths:
+          - path: /oauth2/
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "flakegraph.authProxyName" $ }}
+                port:
+                  number: 4180
+    {{- end }}
+{{- end }}

@@ -1,0 +1,48 @@
+{{- if and .Values.modelServing.enabled .Values.modelServing.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "flakegraph.modelServingName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: model-serving
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: model-serving
+  policyTypes: [Ingress]
+  ingress:
+    # The router is the only thing that may reach the enforcement floor. The
+    # engine's own port is absent from every rule and bound to loopback besides,
+    # so nothing in the cluster can reach inference without being stamped.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: inference-router
+      ports:
+        - port: http
+          protocol: TCP
+    {{- if .Values.modelServing.kvEvents.enabled }}
+    # Cache events flow the other way: the picker subscribes so it can route on
+    # what a replica actually holds rather than on a hash of the prefix.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: inference-router
+      ports:
+        - port: kv-events
+          protocol: TCP
+        - port: kv-replay
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.modelServing.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

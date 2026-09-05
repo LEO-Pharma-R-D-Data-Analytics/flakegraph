@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-quality:
+    name: Python quality gates
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.9-bookworm@sha256:47f917f7409eacd22fc5dfb1dee634e1b55cf0c01d1a7eb701be2227a03e0641
+        env:
+          POSTGRES_DB: flakegraph
+          POSTGRES_USER: flakegraph
+          POSTGRES_PASSWORD: flakegraph
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        run: python -m pip install "uv==0.11.28"
+
+      - name: Install locked development environment
+        run: uv sync --locked --extra dev --extra distributed-spark
+
+      - name: Install locked app environment
+        run: uv sync --locked --inexact --extra app
+
+      - name: Audit runtime dependencies
+        run: |
+          uv export --locked --no-dev --no-emit-project --all-extras \
+            --output-file /tmp/flakegraph-runtime-requirements.txt
+          uvx --python 3.14 pip-audit==2.10.1 \
+            --requirement /tmp/flakegraph-runtime-requirements.txt \
+            --progress-spinner off
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Mypy
+        run: uv run mypy src/kg_processor tests
+
+      - name: Mypy app
+        run: uv run mypy --explicit-package-bases app
+
+      - name: Pytest
+        run: uv run pytest --cov=kg_processor --cov-report=term-missing
+
+      - name: App coverage
+        run: >-
+          uv run pytest tests/unit/test_streamlit_app_services.py
+          --cov=app --cov-report=term-missing --cov-fail-under=50
+
+      - name: PostgreSQL integration contract
+        env:
+          KG_TEST_POSTGRES_DSN: postgresql://flakegraph:flakegraph@localhost:5432/flakegraph
+        run: uv run pytest tests/integration/test_postgres_distributed_store.py
+
+      - name: Validate Helm chart
+        run: |
+          helm lint deploy/helm/flakegraph
+          helm template ci deploy/helm/flakegraph --set providerSecret.optional=true >/dev/null
+
+  docker-smoke:
+    name: Docker smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Build and run lightweight smoke profile
+        run: docker compose -f .github/docker-compose.smoke.yaml up --build --abort-on-container-exit --exit-code-from flakegraph flakegraph
+
+      - name: Tear down smoke profile
+        if: always()
+        run: docker compose -f .github/docker-compose.smoke.yaml down --volumes --remove-orphans
+
+  spark-image:
+    name: Spark image build and smoke
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          github.event_name == 'push' ||
+          contains(github.event.pull_request.labels.*.name, 'ci:spark-image') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Build Spark image
+        run: docker build --file Dockerfile.spark --tag flakegraph-spark:ci .
+
+      - name: Smoke Spark image
+        run: |
+          docker run --rm --entrypoint /opt/venv/bin/python flakegraph-spark:ci -c \
+            "import graphframes, kg_processor, pyspark, sentence_transformers"
+          docker run --rm --entrypoint /opt/spark/bin/spark-submit flakegraph-spark:ci --version

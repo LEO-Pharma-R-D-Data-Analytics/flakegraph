@@ -1,0 +1,927 @@
+# FlakeGraph worker image. Pin a digest in production so every architecture runs
+# the exact image that passed validation.
+image:
+  # Replace with the registry location where your release pipeline publishes
+  # the image built from this repository; FlakeGraph does not assume a vendor
+  # registry contains an official image.
+  repository: your-registry.example/flakegraph
+  tag: "latest"
+  digest: ""
+  # Always re-resolve mutable release tags. Pinning digest above still guarantees
+  # byte-identical workers while allowing registries and node caches to cooperate.
+  pullPolicy: Always
+  pullSecrets: []
+
+# A public, non-secret FlakeGraph YAML document is mounted at this path. Set
+# existingConfigMap to use a separately managed object, or provide content here.
+# For a file on disk, pass `--set-file config.content=path/to/config.yaml` to
+# Helm; values files do not resolve another YAML document by filename.
+config:
+  existingConfigMap: ""
+  key: config.yaml
+  content: |
+    runtime:
+      runtime: kubernetes
+    job:
+      graph_id: flakegraph
+    files:
+      source: local
+      input_path: /data/input
+    ocr:
+      # Born-digital PDFs are extracted in the worker; only what that cannot read
+      # is sent to the parsing pool, through the shim that holds and orders it.
+      provider: fallback
+      fallback_primary_provider: builtin_text
+      fallback_secondary_provider: mineru_api
+      mineru_api_url: ${KG_MINERU_API_URL}
+      mineru_api_key: ${KG_MINERU_API_KEY}
+    llm:
+      # vllm_local rather than openai_compatible: the adapter disables the chat
+      # template's free-form reasoning before strict JSON generation. vLLM counts
+      # that reasoning against the completion budget, so leaving it on exhausts
+      # the budget before an object is produced. The endpoint is the gateway; the
+      # engine behind it is still vLLM, which is what this selection describes.
+      provider: vllm_local
+      endpoint: ${KG_LLM_ENDPOINT}
+      model: ${KG_LLM_MODEL}
+      api_key: ${KG_LLM_API_KEY}
+    embedding:
+      provider: openai_compatible
+      endpoint: ${KG_EMBED_ENDPOINT}
+      model: ${KG_EMBED_MODEL}
+      api_key: ${KG_EMBED_API_KEY}
+    writer:
+      provider: local_artifacts
+      output_path: /data/output
+    cache:
+      provider: none
+
+# Optional ontology content is mounted independently from the processing config.
+# This keeps one config portable between a submitter checkout and container paths.
+# Pass `--set-file ontology.content=path/to/ontology.yaml`, or reference a ConfigMap
+# that already contains `ontology.key`.
+ontology:
+  existingConfigMap: ""
+  key: ontology.yaml
+  content: ""
+
+# The database secret must expose a PostgreSQL URI under the selected key. A
+# CloudNativePG application secret uses `uri`, which is the default below.
+database:
+  secretName: flakegraph-postgres-app
+  secretKey: uri
+  # A Helm hook applies FlakeGraph's idempotent coordination schema before the
+  # release is considered ready. This avoids relying on an autoscaled worker to
+  # create the PostgreSQL view that KEDA itself needs to discover worker demand.
+  bootstrap:
+    enabled: true
+    activeDeadlineSeconds: 900
+    backoffLimit: 8
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+  cloudNativePG:
+    enabled: false
+    clusterName: flakegraph-postgres
+    instances: 3
+    # Covers the documented 20-node worker ceilings, KEDA polling, Spark drivers,
+    # and operator access without running against PostgreSQL's 100-session default.
+    maxConnections: 300
+    database: flakegraph
+    owner: flakegraph
+    storage:
+      # A 250,000-document corpus can produce several million durable tasks and
+      # artifact references before retention. Leave room for indexes, retries,
+      # autovacuum, and one overlapping graph version; smaller installations may
+      # override this when CloudNativePG is explicitly enabled.
+      size: 100Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    nodeSelector: {}
+    tolerations: []
+
+# Provider credentials belong in one operator-managed Secret. Provider endpoints,
+# models, and other non-secret behavior remain in FlakeGraph configuration so an
+# unrelated Secret key cannot silently replace a reviewed processing profile.
+# Map each permitted key explicitly; never put credential values in Helm values.
+providerSecret:
+  name: flakegraph-providers
+  optional: false
+  env:
+    - name: KG_LLM_API_KEY
+      key: KG_LLM_API_KEY
+      optional: true
+    - name: KG_EMBED_API_KEY
+      key: KG_EMBED_API_KEY
+      optional: true
+    - name: KG_SNOWFLAKE_PASSWORD
+      key: KG_SNOWFLAKE_PASSWORD
+      optional: true
+    - name: KG_SNOWFLAKE_OAUTH_TOKEN
+      key: KG_SNOWFLAKE_OAUTH_TOKEN
+      optional: true
+
+# Shared object storage is the distributed data plane. PostgreSQL retains task
+# metadata and checksums; workers and Spark executors transfer payloads directly.
+artifactStorage:
+  uri: ""
+  endpointUrl: ""
+  existingSecret: ""
+  accessKeyKey: access-key-id
+  secretKeyKey: secret-access-key
+  region: us-east-1
+
+# Spark finalization is opt-in unless artifact storage is configured by an
+# environment-specific values file. The image is built with Dockerfile.spark.
+spark:
+  enabled: false
+  image:
+    repository: your-registry.example/flakegraph-spark
+    tag: "latest"
+    digest: ""
+    pullPolicy: Always
+  master: k8s://https://kubernetes.default.svc
+  executorInstances: 4
+  executorCores: 4
+  executorMemory: 8g
+  # Covers Python workers, local embedding models, and native libraries outside
+  # the JVM heap. The default deliberately matches the heap because Spark's
+  # conventional 10% overhead is insufficient for Python ML inference.
+  executorMemoryOverhead: 8g
+  nodeSelector: {}
+  topologyKey: kubernetes.io/hostname
+  executorPodSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 185
+    runAsGroup: 185
+    seccompProfile:
+      type: RuntimeDefault
+  executorContainerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+  serviceAccount:
+    # The empty chart-managed name resolves to <release>-flakegraph-spark.
+    # Set create=false with a name to bind an account managed outside this chart.
+    create: true
+    name: ""
+  # Deprecated exact-name alias retained for existing external values files.
+  serviceAccountName: ""
+
+# Optional local model serving. When enabled, the chart runs one pinned engine
+# per replica behind an authenticating sidecar, and the gateway places traffic
+# across them. Embeddings remain independently configurable because a generative
+# model is not an embedding model. One persistent model cache and GPU belong to
+# each replica.
+modelServing:
+  enabled: false
+  runtime: vllm
+  replicas: 1
+  # vLLM mainline, not NVIDIA's fork. The fork stopped at 0.21 and never
+  # registered DFlash2DraftModel, so the drafter below cannot load on it. The
+  # digest is the linux/arm64 manifest of vllm/vllm-openai:v0.28.0; pinning the
+  # per-architecture manifest rather than the multi-arch index keeps the pull
+  # from silently resolving to a different build on a mixed-architecture node.
+  image:
+    repository: vllm/vllm-openai
+    tag: "v0.28.0"
+    digest: sha256:2a7cde230b59f3ce6cab33dd245ba6bee41aa87b38c9fe84f966ff24016813ce
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  model:
+    name: unsloth/Qwen3.8-27B-NVFP4
+    # Pin the Hugging Face commit so model weights, tokenizer, and bundled chat
+    # template cannot change underneath an otherwise identical deployment.
+    revision: 9e3d73c76eddb75f795cc24ccfbc5affe41c66bd
+  # Public models work without a token. Configure an existing Secret to raise
+  # Hub rate limits or access an operator-approved gated/private replacement.
+  huggingFaceTokenSecret:
+    name: ""
+    key: HF_TOKEN
+    optional: true
+  server:
+    tensorParallelSize: 1
+    # On a unified-memory part this is not a share of a separate pool: the
+    # engine's allocation competes with the operating system, the kubelet, the
+    # workers, and any Spark executor. Seven tenths has starved sshd and the
+    # cluster API on GB10 hardware and taken the node off the network for hours.
+    # Half is the measured safe ceiling there. A node doing nothing but
+    # inference can go higher — raise the sequence limit below with it, and
+    # confirm with `flakegraph serving sizing` before deploying.
+    gpuMemoryUtilization: 0.50
+    maxModelLen: 262144
+    maxNumBatchedTokens: 32768
+    # Must stay below the max_concurrent the sizing block implies, which is 18 at
+    # the utilization and context above once the linear-attention state and the
+    # resident drafter are charged. The sidecar recomputes that at startup and
+    # refuses to serve if this crosses it: an engine that runs out of KV blocks
+    # preempts a *running* request and evicts the lowest-priority one, which is
+    # batch work, mid-flight, against policy.
+    maxNumSeqs: 16
+    # Matches the reference checkpoint, which is quantized with
+    # compressed-tensors. NVIDIA's own NVFP4 builds use "modelopt" instead, and
+    # naming the wrong one is a startup failure rather than a silent fallback.
+    # Empty means: read the scheme from the checkpoint.
+    quantization: compressed-tensors
+    kvCacheDtype: fp8
+    attentionBackend: flashinfer
+    moeBackend: marlin
+    # Which loader reads the weights off the volume. Empty means the engine's
+    # own default. "fastsafetensors" buys nothing here: it wants GPUDirect
+    # Storage, GB10 does not offer it, and the loader warns that it is falling
+    # back to the ordinary read path rather than failing.
+    loadFormat: ""
+    # The reference checkpoint is a vision-language model and this fleet serves
+    # it text-only. Both keys below exist to stop the engine reserving encoder
+    # memory for modalities no request will use.
+    skipMultimodalProfiling: true
+    limitMultimodalPerPrompt:
+      image: 0
+      video: 0
+    # Decode here is bound by weight bandwidth, so one token per pass through
+    # ~19 GB of weights is the ceiling a drafter exists to break. DFlash2
+    # proposes a block of eight at a time; measured on one GB10, that decodes a
+    # code prompt at 46.1 tok/s against 27.2 for the checkpoint's own MTP head
+    # at four, and prose at 20.5 against 18.9. The gap is acceptance: code
+    # accepts 0.59 of the drafted tokens, prose 0.19. Zero disables speculation.
+    speculativeTokens: 8
+    # Which drafter proposes those tokens. "mtp" needs no download: the head
+    # travels inside the target checkpoint. "dflash" needs a separate draft
+    # model, named below, and a build that registers its architecture — vLLM
+    # mainline does, NVIDIA's fork does not.
+    speculativeMethod: dflash
+    # Empty means the drafter lives in the target checkpoint. A path or a hub id
+    # names a separate one. Pin the revision when this is a hub id, for the same
+    # reason the target's is pinned; leave it empty when this is a filesystem
+    # path, which has no Hub commit for a revision to refer to.
+    speculativeDraftModel: /models/dflash2
+    speculativeDraftRevision: ""
+    # The MoE kernel the drafter itself uses. Empty omits the key, which is what
+    # a dense draft model wants: DFlash2 has no experts to route. It only means
+    # anything for a drafter that is itself a mixture of experts, such as the
+    # target checkpoint's own MTP head.
+    speculativeMoeBackend: ""
+    # The engine binds loopback on this port; nothing outside the pod reaches it.
+    enginePort: 8001
+  # Attention geometry and device memory are declared, never discovered, so the
+  # same manifests are correct on a cluster this chart has never seen. Defaults
+  # describe the reference checkpoint: 4 KV heads, head_dim 256, and 16 full
+  # attention layers (64 layers at full_attention_interval 4). The remaining 48
+  # are linear-attention layers, and they are not free: each holds a fixed
+  # recurrent state per sequence that vLLM pages beside the KV cache. The engine
+  # confirms it at startup by raising the attention block size until the
+  # attention page is at least as large as the mamba page. That cost does not
+  # scale with context, so it is charged per sequence; prefix caching makes the
+  # engine hold two slots per request rather than one.
+  sizing:
+    kvHeads: 4
+    headDim: 256
+    attentionLayers: 16
+    recurrentLayers: 48
+    recurrentStateBytesPerLayer: 3207168
+    recurrentStateSlotsPerSequence: 2
+    # What the engine reports as "Model loading took" — the target checkpoint
+    # and the resident draft model together, not the target alone. The drafter
+    # occupies device memory for the whole life of the process, so leaving it
+    # out understates the weights by its own size and overstates how many
+    # sequences the KV budget can hold.
+    weightsGiB: 24.24
+    deviceMemoryGiB: 119.2
+    overheadGiB: 12.0
+    expectedContextTokens: 32768
+  # Publishing KV-cache events lets the endpoint picker route on what a replica
+  # actually holds. With this off it falls back to hashing prefixes instead.
+  kvEvents:
+    enabled: true
+    port: 5557
+    replayPort: 5558
+  # The enforcement floor. Its Secret maps bearer keys to consumer classes; the
+  # bands are the values stamped for each class. Lower is served first, so an
+  # unstamped request would arrive at the *highest* priority — which is why the
+  # sidecar stamps unconditionally and an unknown class resolves to the largest
+  # band here.
+  sidecar:
+    keySecret:
+      name: flakegraph-serving-keys
+      key: serving-keys.json
+    bands:
+      interactive: 0
+      dev: 10
+      batch: 100
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "2"
+        memory: 512Mi
+  service:
+    port: 8000
+  # The engine downloads its own weights, so a site that terminates TLS on its
+  # egress has to give this pod the same trust store the workers already get.
+  # Without it the Hub's metadata resolves and the weight transfer fails
+  # certificate verification, which reads as a stalled download rather than an
+  # error. Mount the bundle here and point the standard variables at it.
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  # Defence in depth behind the loopback bind. Only the router may reach the
+  # sidecar, so nothing in the cluster can route around the gateway's metering.
+  # Some CNIs enforce this against kubelet probe traffic as well; where they do,
+  # add the node range through extraIngress rather than disabling the policy.
+  networkPolicy:
+    enabled: true
+    extraIngress: []
+  persistence:
+    enabled: true
+    size: 40Gi
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+  runtimeClassName: nvidia
+  startupTimeoutSeconds: 3600
+  terminationGracePeriodSeconds: 120
+  nodeSelector: {}
+  tolerations: []
+  topologyKey: kubernetes.io/hostname
+  resources:
+    requests:
+      cpu: "2"
+      memory: 32Gi
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "8"
+      memory: 110Gi
+      nvidia.com/gpu: "1"
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+
+# Every consumer takes one path to inference: LiteLLM for governance, then Envoy
+# and the endpoint picker for placement, then the sidecar that stamps priority at
+# the pod. Consumers resolve a single URL and never learn the topology behind it,
+# so the placement layer can be replaced without any of them changing.
+gateway:
+  enabled: true
+  # Virtual keys, budgets, spend, rate limits, and model access. Priority class is
+  # expressed as *which alias a key may call*: each alias presents a different
+  # upstream key, and the sidecar stamps the band that key maps to. Nothing is
+  # injected into the request body, so a caller cannot name its own band.
+  litellm:
+    image:
+      repository: ghcr.io/berriai/litellm
+      # Not the newest stable: v1.83.14's arm64 manifest carries amd64 layers,
+      # so it fails to exec at all on an arm64 node. This is the newest that
+      # runs on both architectures.
+      tag: "main-v1.83.10-stable"
+      digest: sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76
+      pullPolicy: IfNotPresent
+      pullSecrets: []
+    # LiteLLM fetches a model-cost map over TLS at startup. Where egress is
+    # intercepted it falls back to a stale bundled copy rather than failing, so
+    # a site with its own trust store should hand it over here.
+    extraEnv: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    # The upstream image runs as root with a root-owned /app, and on startup it
+    # applies Prisma migrations and unpacks its own UI — both writes inside the
+    # image. Under this chart's usual non-root, read-only-root defaults it exits
+    # during startup instead of degrading. These are the narrowest settings that
+    # let it run; a site that needs non-root has to rebuild the image.
+    podSecurityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false
+      capabilities:
+        drop: [ALL]
+    replicas: 2
+    aliases:
+      interactive: llm-interactive
+      dev: llm-dev
+      batch: llm-batch
+    # LiteLLM owns its own schema in the shared database. It must not be pointed
+    # at FlakeGraph's: its migration tool treats a non-empty schema as an
+    # existing production database, writes a baseline, and marks it applied
+    # without creating a single table — after which every key operation fails
+    # on a missing table rather than on a missing migration.
+    #
+    # Appended verbatim to the URI in database.secretName, so a URI that already
+    # carries a query string needs "&schema=..." here instead.
+    databaseUrlSuffix: "?schema=litellm"
+    # One operator-managed Secret holds the virtual keys handed to consumers.
+    # The batch key is what the worker pools mount.
+    virtualKeySecret:
+      name: flakegraph-gateway-keys
+      batchKey: LITELLM_VIRTUAL_KEY_BATCH
+      masterKey: LITELLM_MASTER_KEY
+      saltKey: LITELLM_SALT_KEY
+    # The upstream keys LiteLLM presents to the sidecar, one per class.
+    upstreamKeySecret:
+      name: flakegraph-serving-keys
+      interactiveKey: SIDECAR_KEY_INTERACTIVE
+      devKey: SIDECAR_KEY_DEV
+      batchKey: SIDECAR_KEY_BATCH
+    # Metering writes a row per request. Batch traffic makes that millions of
+    # rows, so spend updates are batched off the request path from the start
+    # rather than tuned after the first pipeline run melts the database.
+    spendLogging:
+      enabled: true
+      batchWriteIntervalSeconds: 60
+    service:
+      port: 4000
+      # ClusterIP keeps the gateway reachable only from inside the cluster, which
+      # is the right default. NodePort publishes it on every node address, which
+      # also publishes the admin UI - the API and the console share this port.
+      # Set it only where reaching the gateway from outside matters more than
+      # keeping the console off the surrounding network.
+      type: ClusterIP
+      # Empty lets Kubernetes assign one from the service-node-port-range.
+      nodePort: ""
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 12
+      targetCpuUtilizationPercentage: 70
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 2Gi
+  # Placement. The endpoint picker is an ext_proc server rather than a proxy, so
+  # it runs beside Envoy: Envoy terminates the connection, the picker names a
+  # replica in x-gateway-destination-endpoint, and an ORIGINAL_DST cluster routes
+  # there. They share a pod so that hop stays on loopback.
+  #
+  # The picker selects engine pods by label rather than through a custom
+  # resource, which keeps this chart installable on a cluster with no Gateway
+  # API Inference Extension CRDs — the common case for a repo deployed somewhere
+  # we do not run.
+  placement:
+    replicas: 2
+    service:
+      port: 8000
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 12
+      targetCpuUtilizationPercentage: 70
+    envoy:
+      image:
+        repository: docker.io/envoyproxy/envoy
+        tag: "distroless-v1.33.2"
+        digest: sha256:85500e28ed088ec39ff0adc1be3d358a8ad062926aaa62c36b28bde00919e4e8
+        pullPolicy: IfNotPresent
+      adminPort: 19000
+      readyPort: 19001
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: "4"
+          memory: 2Gi
+    endpointPicker:
+      image:
+        repository: ghcr.io/llm-d/llm-d-router-endpoint-picker
+        tag: "v0.10.0"
+        digest: sha256:2e516fa1310da7be59b82beb1445362139597d6d553ef04d546716abe3aaaa70
+        pullPolicy: IfNotPresent
+      extProcPort: 9002
+      grpcHealthPort: 9003
+      metricsPort: 9090
+      # An unreachable picker means no destination header, so passing traffic
+      # through would fail anyway. Refusing loudly beats routing blindly.
+      failOpen: false
+      # Relative weights over the picker's default scorers. Prefix affinity leads
+      # because a replica that already holds the prefix skips recomputing it.
+      scorerWeights:
+        queue: 2
+        kvCacheUtilization: 2
+        prefixCache: 3
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "4"
+          memory: 4Gi
+
+# The document plane. MinerU answers 409 when it is busy and FlakeGraph's HTTP
+# transport does not retry, so something has to absorb backpressure or documents
+# simply fail. The shim holds the work instead: it authenticates, orders waiting
+# requests by priority in PostgreSQL so ordering holds across its own replicas,
+# and admits only as much as the pool can take. Tracking that capacity is what
+# makes least-loaded dispatch fall out for free.
+# The FlakeGraph control plane: the operator-facing UI that submits runs and
+# reads the fleet. It ships as part of the deployment rather than as something
+# installed on a node by hand, so a cluster that has this chart has a control
+# plane, and it can be versioned, rolled back, and put behind the same ingress
+# and identity provider as everything else.
+controlPlane:
+  enabled: true
+  service:
+    port: 8501
+  # Sign-in is provider-neutral: Streamlit is pointed at whatever OIDC issuer
+  # the operator names, and nothing in this chart knows which one.
+  # The control plane owns a little state of its own: which runs an operator has
+  # hidden, what a graph has been renamed to, which clusters are registered. The
+  # code lives on a read-only filesystem, so this has to be somewhere writable -
+  # and somewhere that survives a restart, or hiding a run would un-hide itself
+  # the next time the pod moved.
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+    # Where the app keeps that state. Must match a writable mount.
+    stateRoot: /var/lib/flakegraph
+  # Who may open a connection to the application at all.
+  #
+  # This matters more than it looks. Behind a gate the application does not
+  # authenticate its callers - it reads the identity the gate established from a
+  # request header. That header is proof only for traffic that actually passed
+  # through the ingress controller; to a workload that can address the Service
+  # directly it is a field it may set to any value. Restricting the source is
+  # what makes trusting the header sound.
+  #
+  # Off by default because the correct peer is site-specific, and a policy
+  # naming the wrong one makes the application unreachable rather than
+  # unprotected. Turn it on, and name your ingress controller, wherever the
+  # cluster runs workloads that are not part of this release.
+  networkPolicy:
+    enabled: false
+    # Standard NetworkPolicy peers. Both selectors inside one entry must match.
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: traefik
+  auth:
+    # Refuse to serve an anonymous viewer. Off by default so a local or
+    # single-operator deployment works without an issuer; turn it on wherever
+    # the application is reachable by more than the person who installed it.
+    required: false
+    # A Secret holding a Streamlit secrets.toml with an [auth] section:
+    # redirect_uri, cookie_secret, client_id, client_secret, server_metadata_url.
+    # Mounted read-only over the image's own file. Keeping it here rather than
+    # in the image means the credential is rotated by replacing a Secret, and
+    # survives a redeploy - a copy placed inside a running container does not.
+    secretName: ""
+    secretKey: secrets.toml
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# One hostname per routed service under a single domain, terminated by whatever
+# ingress controller the cluster already runs. Nothing here is specific to a
+# provider: bring a domain, a class, and a certificate.
+#
+# Host-based rather than path-based because the applications behind it assume
+# they own the root, and because an OIDC redirect URI must be a stable absolute
+# URL - which is the reason this exists at all.
+ingress:
+  enabled: false
+  className: ""
+  domain: ""
+  hosts:
+    controlPlane: flakegraph
+    gateway: llm
+    ocr: ocr
+  annotations: {}
+  # Paths whose callers are programs, not people, keyed by the service that
+  # serves them. They are routed without the gate, because every one of them
+  # already authenticates its own callers - the gateway on a virtual key, the
+  # parsing shim on its keyring - and a browser sign-in cannot be satisfied by
+  # an SDK holding a bearer token.
+  #
+  # Declare only paths that refuse an unauthenticated request. Anything listed
+  # here is reachable with whatever credential that service itself demands, and
+  # nothing else stands in front of it.
+  # Matched exactly. Do not list a prefix: the gateway's key check is declared
+  # per route rather than globally, so `/v1` is not a namespace that
+  # authenticates - it is a namespace that mostly does. Verify a path refuses an
+  # unauthenticated caller before adding it, and re-verify on an image bump.
+  machineApiPaths:
+    # Inference only. Everything a person opens - the admin UI, model management,
+    # spend, keys - stays behind the gate, as does /v1/mcp/*, which the gateway
+    # serves to anyone. Callers must address the gateway with /v1 in the base
+    # URL; the unversioned aliases are not routed.
+    gateway:
+      - /v1/chat/completions
+      - /v1/completions
+      - /v1/embeddings
+      - /v1/models
+      - /v1/messages
+      - /v1/responses
+      - /v1/rerank
+    # MinerU's parse contract, as the shim exposes it.
+    ocr:
+      - /file_parse
+  # One sign-in gate in front of every routed host, rather than an identity
+  # integration inside each application. Applications that cannot speak OIDC are
+  # covered too, and the deployment's authentication stops being whichever
+  # application authenticates worst.
+  authProxy:
+    enabled: false
+    # Its own hostname, so the sign-in and callback endpoints are not behind the
+    # gate they exist to open.
+    host: auth
+    replicas: 2
+    image:
+      repository: quay.io/oauth2-proxy/oauth2-proxy
+      tag: v7.14.0
+      pullPolicy: IfNotPresent
+    oidc:
+      # Any OIDC issuer. The chart neither knows nor cares which.
+      issuerUrl: ""
+      clientId: ""
+    # Restrict to one mail domain, or "*" to accept whoever the issuer admits -
+    # assignment is then the issuer's job, which is where it belongs.
+    emailDomain: "*"
+    existingSecret: ""
+    clientSecretKey: client-secret
+    cookieSecretKey: cookie-secret
+    # Paths served before sign-in, as regular expressions.
+    #
+    # Empty, and health endpoints are deliberately not here. A liveness probe is
+    # made by the kubelet against the pod's own address and never reaches the
+    # ingress, so exempting health paths protects nothing - while the exemption
+    # itself applies to every host behind the gate at once, because it matches a
+    # path with no idea which service is serving it. Exempting `^/health$` for
+    # the parsing shim also exempted it for the control plane, where that path
+    # is not a health check at all: Streamlit answers it with the application
+    # shell, unauthenticated.
+    #
+    # Prefer routing to a rule of its own over exempting a path here, the way
+    # `machineApiPaths` does: routing knows which service it is talking about.
+    skipAuthRoutes: []
+    extraArgs: []
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  tls:
+    # A Secret of type kubernetes.io/tls holding the chain and key. Empty serves
+    # plain HTTP, which no identity provider will accept a redirect to.
+    secretName: ""
+    # Defaults to every routed host. Set explicitly when the certificate covers
+    # a different set - a wildcard, for instance.
+    hosts: []
+
+documentParsing:
+  enabled: true
+  # The parsing pool runs the same FlakeGraph image as everything else: MinerU
+  # is already installed in it and ships a `mineru-api` entry point, so there is
+  # no second image to build, pin, or keep on the right architecture.
+  mineru:
+    replicas: 2
+    # MinerU defaults to three. The shim never admits more than this per replica.
+    maxConcurrentRequests: 8
+    # Where MinerU fetches its layout and OCR weights on first use. Sites whose
+    # egress is TLS-intercepted may have to use "modelscope": interception can
+    # present a certificate that fails the strict X.509 checks Python 3.13 turns
+    # on by default, and the Hub redirects large files to a host that is often
+    # intercepted even when its own domain is not.
+    modelSource: huggingface
+    # MinerU downloads models on first use, so a site that terminates TLS on
+    # egress has to hand this pool its trust store as well.
+    extraEnv: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    service:
+      port: 8080
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 16
+      targetCpuUtilizationPercentage: 70
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: ""
+      accessModes: [ReadWriteOnce]
+    nodeSelector: {}
+    tolerations: []
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        cpu: "8"
+        memory: 24Gi
+  shim:
+    replicas: 2
+    # The same class-to-band vocabulary as inference, so one key means one thing
+    # on both planes. Lower is served first here as well.
+    keySecret:
+      name: flakegraph-ocr-keys
+      key: ocr-keys.json
+      batchKey: KG_MINERU_API_KEY
+    bands:
+      interactive: 0
+      dev: 10
+      batch: 100
+    queuePollIntervalSeconds: 0.5
+    requestTimeoutSeconds: 3600
+    service:
+      port: 8080
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      targetCpuUtilizationPercentage: 70
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: "2"
+        memory: 1Gi
+
+# Preparation, extraction, and final graph resolution have different resource
+# profiles, so each role keeps an independently scalable worker pool.
+workers:
+  prepare:
+    enabled: true
+    replicas: 1
+    autoscaling:
+      minReplicas: 0
+      maxReplicas: 8
+      targetTasksPerReplica: 1
+    stages: [prepare_document]
+    resources:
+      requests:
+        cpu: "1"
+        memory: 4Gi
+      limits:
+        cpu: "4"
+        memory: 16Gi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  extract:
+    enabled: true
+    replicas: 1
+    autoscaling:
+      minReplicas: 0
+      maxReplicas: 32
+      targetTasksPerReplica: 1
+    stages:
+      - extract_document_context
+      - extract_entity_window
+      - compact_entity_inventory
+      - extract_relation_window
+      - compact_document
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        cpu: "8"
+        memory: 32Gi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  finalize:
+    enabled: true
+    replicas: 1
+    autoscaling:
+      minReplicas: 0
+      maxReplicas: 1
+      targetTasksPerReplica: 1
+    stages: [finalize_graph]
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        cpu: "8"
+        memory: 32Gi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+
+# KEDA counts dependency-ready or actively leased tasks only up to each pool's
+# maximum useful demand. The bounded query avoids repeatedly scanning millions
+# of queued rows while still scaling each Deployment to its configured maximum.
+# Drained pools reach zero, releasing node capacity before Spark executors start.
+autoscaling:
+  enabled: true
+  pollingIntervalSeconds: 5
+  cooldownPeriodSeconds: 30
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+    behavior: currentReplicasIfHigher
+  scaleUp:
+    stabilizationWindowSeconds: 0
+    podsPerPeriod: 16
+    periodSeconds: 15
+  scaleDown:
+    stabilizationWindowSeconds: 30
+    percentPerPeriod: 100
+    periodSeconds: 15
+
+# The chart-created priorities preserve the shared planes, let Spark preempt an
+# idle worker during autoscaler convergence, and keep ordinary workers below all
+# of them.
+#
+# The serving plane sits *above* the workers deliberately. It is the path every
+# consumer takes, so leaving it at the default priority means scaling the queue
+# preempts the gateway those same workers are trying to reach — the pods come
+# back, but every in-flight request fails with a refused connection first, and
+# the cause looks like a network fault rather than a scheduling decision.
+scheduling:
+  priorityClasses:
+    enabled: true
+    workerValue: 800000
+    sparkValue: 900000
+    servingValue: 950000
+    modelValue: 1000000
+
+distributed:
+  # Workers renew long-running work every minute. A five-minute lease bounds
+  # hard-node-loss recovery without imposing a maximum OCR or Spark duration.
+  leaseSeconds: 300
+  pollIntervalSeconds: 1
+  retryDelaySeconds: 15
+
+# Input/output claims are optional because Azure Blob, Snowflake, and PostgreSQL
+# artifact flows do not need shared filesystems. Local input must be readable by
+# the submitter; workers receive source bytes through the artifact store.
+storage:
+  input:
+    existingClaim: ""
+    readOnly: true
+  output:
+    existingClaim: ""
+  cache:
+    existingClaim: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# Scale-down may select a pod that is still finishing an OCR request. Give the
+# signal-aware worker longer than the default one-hour OCR timeout to drain.
+terminationGracePeriodSeconds: 3900
+revisionHistoryLimit: 3
+priorityClassName: ""
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
