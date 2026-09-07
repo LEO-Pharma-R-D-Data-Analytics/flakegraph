@@ -689,9 +689,8 @@ def test_scheduling_priorities_preserve_models_and_release_workers_for_spark() -
         _PLACEMENT_TEMPLATE,
         _DOCUMENT_PARSING_TEMPLATE,
     ):
-        assert (
-            'include "flakegraph.servingPriorityClassName"'
-            in template_path.read_text(encoding="utf-8")
+        assert 'include "flakegraph.servingPriorityClassName"' in template_path.read_text(
+            encoding="utf-8"
         )
     assert 'include "flakegraph.workerPriorityClassName"' in worker_template
     assert 'include "flakegraph.sparkPriorityClassName"' in spark_template
@@ -770,3 +769,45 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     value = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert isinstance(value, dict)
     return value
+
+
+def test_a_draft_model_path_must_have_somewhere_to_come_from() -> None:
+    """Naming a path is not obtaining the file at it.
+
+    A replica scheduled onto a node where nobody placed the draft model starts,
+    fails to load, and crash-loops with an error about an invalid repository id -
+    which reads like a typo rather than a missing artifact. The chart refuses to
+    render that, and can seed the volume itself.
+    """
+
+    values = _load_yaml(_VALUES)["modelServing"]["server"]
+    seed = values["draftModelSeed"]
+
+    # The shipped default names a path, so it must also say where it comes from.
+    assert values["speculativeDraftModel"].startswith("/")
+    assert seed["image"] == ""
+    assert seed["providedExternally"] is False
+
+    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+    # Refuses to render a path nothing supplies...
+    assert '{{- fail (printf "modelServing.server.speculativeDraftModel is the path' in template
+    # ...and seeds the volume when an image carries the model.
+    assert "name: seed-draft-model" in template
+    assert 'mv "$target.partial" "$target"' in template, "the copy must be atomic"
+
+
+def test_the_draft_model_seed_is_constrained_by_the_schema() -> None:
+    """An operator mistyping this should hear about it at install, not at load."""
+
+    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    seed = schema["properties"]["modelServing"]["properties"]["server"]["properties"][
+        "draftModelSeed"
+    ]
+
+    assert seed["additionalProperties"] is False
+    assert set(seed["properties"]) == {
+        "image",
+        "pullPolicy",
+        "sourcePath",
+        "providedExternally",
+    }

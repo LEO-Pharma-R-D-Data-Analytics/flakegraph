@@ -1,4 +1,17 @@
 {{- if .Values.modelServing.enabled }}
+{{- $spec := .Values.modelServing.server }}
+{{- $seed := $spec.draftModelSeed }}
+{{- /*
+A draft model given as a path is only a promise that something else put it
+there. When nothing has, the engine fails at load time with a message about an
+invalid repository id, which sends the reader looking for a typo. Catch it here,
+where the remedies can be named.
+*/}}
+{{- if and (gt (int $spec.speculativeTokens) 0) (hasPrefix "/" ($spec.speculativeDraftModel | default "")) }}
+{{- if and (not $seed.image) (not $seed.providedExternally) }}
+{{- fail (printf "modelServing.server.speculativeDraftModel is the path %s, but nothing supplies it. Set modelServing.server.draftModelSeed.image to an image carrying the model, or draftModelSeed.providedExternally=true if a mount does. A Hub id needs neither." $spec.speculativeDraftModel) }}
+{{- end }}
+{{- end }}
 {{- if ne .Values.modelServing.runtime "vllm" }}
 {{- fail "modelServing.runtime must be vllm" }}
 {{- end }}
@@ -114,6 +127,36 @@ spec:
                   app.kubernetes.io/instance: {{ .Release.Name }}
                   app.kubernetes.io/component: model-serving
               topologyKey: {{ .Values.modelServing.topologyKey }}
+      {{- if and (gt (int $spec.speculativeTokens) 0) (hasPrefix "/" ($spec.speculativeDraftModel | default "")) $seed.image }}
+      # Seed the draft model into this replica's own volume before the engine
+      # looks for it. Idempotent, so a restart costs nothing and a replica that
+      # already holds the model does not copy it again.
+      initContainers:
+        - name: seed-draft-model
+          image: {{ $seed.image | quote }}
+          imagePullPolicy: {{ $seed.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              target="{{ $spec.speculativeDraftModel }}"
+              if [ -e "$target" ]; then
+                echo "draft model already present at $target"
+                exit 0
+              fi
+              echo "seeding draft model from {{ $seed.sourcePath }} to $target"
+              mkdir -p "$(dirname "$target")"
+              rm -rf "$target.partial"
+              cp -r "{{ $seed.sourcePath }}" "$target.partial"
+              # Renamed last, so an interrupted copy is never mistaken for a
+              # complete one by the engine or by the next run of this container.
+              mv "$target.partial" "$target"
+          securityContext:
+            {{- toYaml .Values.modelServing.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      {{- end }}
       containers:
         # The sidecar owns the only exposed port. It authenticates the caller,
         # maps the key to a consumer class, strips any client-supplied priority,

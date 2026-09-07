@@ -620,6 +620,25 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 65535
+            },
+            "draftModelSeed": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string"
+                },
+                "pullPolicy": {
+                  "type": "string"
+                },
+                "sourcePath": {
+                  "type": "string",
+                  "pattern": "^/"
+                },
+                "providedExternally": {
+                  "type": "boolean"
+                }
+              }
             }
           }
         },

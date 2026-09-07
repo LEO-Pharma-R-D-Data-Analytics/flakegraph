@@ -266,6 +266,24 @@ modelServing:
     # path, which has no Hub commit for a revision to refer to.
     speculativeDraftModel: /models/dflash2
     speculativeDraftRevision: ""
+    # A draft model named as a filesystem path has to *get* onto that filesystem.
+    # Naming it is not obtaining it: a replica scheduled onto a node where nobody
+    # has placed the file starts, fails to load, and crash-loops with an error
+    # about an invalid repository id - which reads like a typo rather than a
+    # missing artifact. So the chart declares where the model comes from, and
+    # refuses to render when a path is named with no way to satisfy it.
+    draftModelSeed:
+      # An image whose filesystem carries the draft model. Each replica copies it
+      # into its own volume before the engine starts, so a new node needs nothing
+      # placed on it by hand.
+      image: ""
+      pullPolicy: IfNotPresent
+      # Where the model sits inside that image.
+      sourcePath: /dflash2
+      # Set instead when the model arrives some other way - a shared mount, a
+      # prebaked node image. Saying so is how the chart tells "provided by other
+      # means" apart from "nobody has provided it".
+      providedExternally: false
     # The MoE kernel the drafter itself uses. Empty omits the key, which is what
     # a dense draft model wants: DFlash2 has no experts to route. It only means
     # anything for a drafter that is itself a mixture of experts, such as the
