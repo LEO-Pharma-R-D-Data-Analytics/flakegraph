@@ -68,8 +68,11 @@ def test_model_serving_defaults_are_pinned_and_resource_bounded() -> None:
     # Served text-only, so the vision tower must neither be profiled nor
     # reachable. Profiling it reserves activation memory for an encoder no
     # request will use, which is memory the KV cache does not get.
-    assert values["server"]["skipMultimodalProfiling"] is True
-    assert values["server"]["limitMultimodalPerPrompt"] == {"image": 0, "video": 0}
+    # The checkpoint is a vision-language model, so it serves images. Video is
+    # off: nothing consumes it, and it would reserve far more encoder memory.
+    assert values["server"]["skipMultimodalProfiling"] is False
+    assert values["server"]["limitMultimodalPerPrompt"]["image"] > 0
+    assert values["server"]["limitMultimodalPerPrompt"]["video"] == 0
 
 
 def test_a_local_draft_checkpoint_is_not_pinned_to_a_hub_revision() -> None:

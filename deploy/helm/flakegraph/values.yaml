@@ -227,7 +227,10 @@ modelServing:
     # refuses to serve if this crosses it: an engine that runs out of KV blocks
     # preempts a *running* request and evicts the lowest-priority one, which is
     # batch work, mid-flight, against policy.
-    maxNumSeqs: 16
+    # Halved from the figure the sizing block implies, because that block does
+    # not charge the vision encoder's reservation against the device budget and
+    # this default now serves images.
+    maxNumSeqs: 8
     # Matches the reference checkpoint, which is quantized with
     # compressed-tensors. NVIDIA's own NVFP4 builds use "modelopt" instead, and
     # naming the wrong one is a startup failure rather than a silent fallback.
@@ -241,12 +244,22 @@ modelServing:
     # Storage, GB10 does not offer it, and the loader warns that it is falling
     # back to the ordinary read path rather than failing.
     loadFormat: ""
-    # The reference checkpoint is a vision-language model and this fleet serves
-    # it text-only. Both keys below exist to stop the engine reserving encoder
-    # memory for modalities no request will use.
-    skipMultimodalProfiling: true
+    # The reference checkpoint is a vision-language model, and refusing its own
+    # modality surprises whoever pastes a screenshot into a chat. So images are
+    # served, and the encoder's memory is profiled and reserved for them.
+    #
+    # It is not free: the vision tower's weights and its peak activations come
+    # out of the same device budget as the KV cache, so enabling this buys image
+    # input with concurrent sequences. The sizing block below does not model the
+    # encoder's reservation - it accounts for weights, KV and recurrent state
+    # only - so maxNumSeqs is set with margin rather than at the figure that
+    # block implies, and the sidecar's startup check remains the real guard.
+    #
+    # Video stays off. Nothing in this system consumes it, and a video request
+    # would reserve considerably more encoder memory than an image one.
+    skipMultimodalProfiling: false
     limitMultimodalPerPrompt:
-      image: 0
+      image: 2
       video: 0
     # Decode here is bound by weight bandwidth, so one token per pass through
     # ~19 GB of weights is the ceiling a drafter exists to break. DFlash2
