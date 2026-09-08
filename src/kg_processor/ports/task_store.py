@@ -66,6 +66,15 @@ class TaskStore(Protocol):
         """
         ...
 
+    def record_served_configuration(self, stages: set[TaskStage], config_digest: str) -> None:
+        """Record which configuration this fleet serves, for each stage it claims.
+
+        A worker only claims a run carrying its own digest, so demand for a run
+        nobody serves can never be met. Recording this lets the autoscaling signal
+        ask for workers only where a worker could actually take the work.
+        """
+        ...
+
     def heartbeat(self, task_id: str, worker_id: str, lease_duration: timedelta) -> None:
         """Extend a running task lease only when the caller still owns it."""
         ...

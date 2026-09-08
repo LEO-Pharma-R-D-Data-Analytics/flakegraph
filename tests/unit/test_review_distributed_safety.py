@@ -256,3 +256,42 @@ def test_fenced_publication_contract_describes_the_fence_its_stores_implement() 
     assert "generation" in contract
     assert "attempt" in contract
     assert "FOR UPDATE" not in implementation
+
+
+def test_demand_excludes_work_no_worker_can_claim() -> None:
+    """Asking for workers to do unclaimable work holds a pool at its ceiling.
+
+    A worker claims only a run carrying its own configuration digest, so runs
+    created under a superseded configuration can never be claimed. The demand
+    view had no digest predicate and went on counting them, which held a
+    KEDA-driven pool at its maximum for twelve days against work nobody could
+    take.
+    """
+
+    statements = "\n".join(_SCHEMA_STATEMENTS)
+
+    assert "CREATE TABLE IF NOT EXISTS flakegraph_worker_fleet" in statements
+    assert "FROM flakegraph_worker_fleet AS fleet" in statements
+    assert "fleet.config_digest <> run.config_digest" in statements
+    # Expressed as NOT EXISTS, so a stage with no recorded fleet is still
+    # counted and a first install can scale from zero before a worker has run.
+    assert "AND NOT EXISTS (" in statements
+
+
+def test_the_served_configuration_does_not_expire() -> None:
+    """A liveness window here would break scaling up from zero.
+
+    The view asks what this fleet serves, not who is alive. Expiring the record
+    would erase the answer exactly when a pool has scaled to zero, which is the
+    moment the demand signal has to be right.
+    """
+
+    fleet = next(
+        statement
+        for statement in _SCHEMA_STATEMENTS
+        if "CREATE TABLE IF NOT EXISTS flakegraph_worker_fleet" in statement
+    )
+
+    assert "stage TEXT PRIMARY KEY" in fleet
+    assert "config_digest TEXT NOT NULL" in fleet
+    assert "INTERVAL" not in fleet

@@ -519,6 +519,24 @@ class PostgresDistributedStore:
             if updated is None:
                 raise ValueError("run must be planning with a non-empty task graph")
 
+    def record_served_configuration(self, stages: set[TaskStage], config_digest: str) -> None:
+        """Declare this fleet's configuration for every stage it claims."""
+
+        if not stages:
+            return
+        with self._connection() as connection:
+            for stage in sorted(stage.value for stage in stages):
+                connection.execute(
+                    """
+                    INSERT INTO flakegraph_worker_fleet (stage, config_digest)
+                    VALUES (%s, %s)
+                    ON CONFLICT (stage) DO UPDATE
+                    SET config_digest = EXCLUDED.config_digest,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (stage, config_digest),
+                )
+
     def claim_task(
         self,
         worker_id: str,
@@ -2681,6 +2699,25 @@ _SCHEMA_STATEMENTS = (
     ON flakegraph_artifact (run_id, kind)
     """,
     """
+    -- What configuration the fleet actually serves, per stage.
+    --
+    -- A worker only claims tasks whose run carries its own configuration digest,
+    -- so a run created under a configuration nobody serves any more can never be
+    -- claimed. Without this table the demand view cannot tell the difference, and
+    -- goes on asking for workers to do work none of them is able to take - which
+    -- holds an autoscaled pool at its ceiling indefinitely.
+    --
+    -- Written by workers at startup rather than on a heartbeat, and never expired,
+    -- because the question is "what does this fleet serve", not "who is alive".
+    -- Expiring it would erase the answer exactly when a pool has scaled to zero,
+    -- which is when the demand signal has to work.
+    CREATE TABLE IF NOT EXISTS flakegraph_worker_fleet (
+        stage TEXT PRIMARY KEY,
+        config_digest TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
     -- The view gained a priority_band column, and a replace cannot rename or
     -- reorder an existing view's output.
     DROP VIEW IF EXISTS flakegraph_worker_demand
@@ -2696,6 +2733,15 @@ _SCHEMA_STATEMENTS = (
         FROM flakegraph_task AS task
         JOIN flakegraph_run AS run ON run.id = task.run_id
         WHERE run.status IN ('queued', 'running')
+          -- Only work some worker could take. A stage with no recorded fleet is
+          -- counted, so a first install can still scale up from zero before any
+          -- worker has ever run.
+          AND NOT EXISTS (
+              SELECT 1
+              FROM flakegraph_worker_fleet AS fleet
+              WHERE fleet.stage = task.stage
+                AND fleet.config_digest <> run.config_digest
+          )
           AND (
               task.status = 'running'
               OR (

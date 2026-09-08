@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -96,6 +97,9 @@ class TaskExecution:
     barrier_task_id: str | None = None
 
 
+logger = logging.getLogger(__name__)
+
+
 class DistributedWorker:
     """Execute eligible durable tasks sequentially in one worker process.
 
@@ -130,6 +134,28 @@ class DistributedWorker:
         self.manifest_publisher = manifest_publisher
         self.lease_duration = timedelta(seconds=settings.distributed.lease_seconds)
         self.retry_delay = timedelta(seconds=settings.distributed.retry_delay_seconds)
+        self._declared_configuration = False
+
+    def _declare_served_configuration(self) -> None:
+        """Record what this fleet serves, once per process.
+
+        Only a run carrying this digest can be claimed here, so the autoscaling
+        signal needs to know the digest in order to stop asking for workers to do
+        work no worker is able to take. Declared once rather than per poll: it
+        cannot change without restarting the process.
+        """
+
+        if self._declared_configuration:
+            return
+        try:
+            self.task_store.record_served_configuration(
+                self.stages, distributed_processing_config_digest(self.settings)
+            )
+        except Exception:
+            # Losing this costs an accurate demand signal, not the ability to
+            # work, so a worker that cannot record it still claims tasks.
+            logger.warning("Could not record the served configuration", exc_info=True)
+        self._declared_configuration = True
 
     def process_one(self) -> WorkerIteration:
         """Claim and execute at most one task, returning immediately when none is ready."""
@@ -137,6 +163,7 @@ class DistributedWorker:
         publication = self._process_one_publication()
         if publication is not None:
             return publication
+        self._declare_served_configuration()
         lease = self.task_store.claim_task(
             self.worker_id,
             self.stages,
