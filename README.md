@@ -110,7 +110,11 @@ The same processing semantics are available in three runtimes:
 | Snowflake | Snowflake-native providers and graph storage | Stages, Cortex, Snowflake tables, optional SPCS container |
 
 For a Kubernetes fleet, use the Helm chart and
-[Kubernetes deployment guide](docs/kubernetes-fleet.md). For Snowflake objects,
+[Kubernetes deployment guide](docs/kubernetes-fleet.md). The chart also
+publishes the control plane, the model gateway, and the document-parsing shim
+as hostnames on one domain behind a single sign-in gate; the API paths that
+programs call keep their own key checks and are routed past it, so an SDK
+holding a key is never asked for a browser session. For Snowflake objects,
 grants, and deployment SQL, see [Snowflake setup](docs/snowflake-setup.md).
 
 ## Docker

@@ -37,6 +37,8 @@ flowchart LR
 | LiteLLM gateway: keys, budgets, spend, model access | FlakeGraph Helm chart |
 | Envoy and the endpoint picker: prefix-aware placement | FlakeGraph Helm chart |
 | OCR shim and the `mineru-api` pool | FlakeGraph Helm chart |
+| Control plane, routed hostnames, and the sign-in gate | FlakeGraph Helm chart |
+| Ingress controller, DNS records, and certificates | Cluster administrator |
 | PostgreSQL | Managed service or optional CloudNativePG cluster |
 | S3-compatible storage | External managed or self-hosted service |
 | Embedding and external model services | Selected provider deployment |
@@ -175,8 +177,16 @@ Use capability labels rather than hostnames in public values files:
 
 ```bash
 kubectl label node <gpu-node> flakegraph.io/node-class=nvidia-spark
+kubectl label node <gpu-node> nvidia.com/gpu.present=true
 kubectl label node <cpu-node> flakegraph.io/node-class=cpu-control
 ```
+
+The second label is not decoration. The device plugin selects nodes with
+`nvidia.com/gpu.present=true`, so a GPU node missing it stays Ready, reports no
+allocatable GPU, and takes model pods nowhere. K3s can set both at registration
+through `node-label`, which is what `bootstrap-node.sh` passes for an agent,
+but that only takes effect the first time a node registers; a node already in
+the cluster has to be labelled through the API as above.
 
 ### Scripted Bring-Up For NVIDIA DGX Spark Nodes
 
@@ -196,6 +206,13 @@ second control-plane node — a decision that cannot be revisited later without
 rebuilding the cluster. Further nodes take `--role agent`. It is idempotent, so
 re-running it verifies a node rather than disturbing it.
 
+All of that is per node rather than per fleet, which is easy to miss until the
+fleet gains its second machine. Stage the k3s binary onto each new host for as
+long as the release-asset host stays intercepted, and lay down the site's root
+CA and `/etc/rancher/k3s/registries.yaml` before the node registers — otherwise
+it joins Ready, accepts pods, and fails its first pull from the registry every
+other node reaches.
+
 Two traps it exists to handle:
 
 **A CIS-hardened image may blacklist `overlay`.** Containers cannot run without
@@ -211,7 +228,10 @@ redirect to the proxy's own page. Install the roots before concluding that a hos
 is blocked. Containers carry their own trust stores and need the certificate
 copied in separately, and Python is affected worse than most: `curl` verifies
 against the system store while `httpx` and `requests` verify against `certifi`,
-so the same URL succeeds under one and fails under the other.
+so the same URL succeeds under one and fails under the other. Which hosts are
+intercepted also changes without anything in the fleet changing, so re-test a
+download that used to fail rather than carrying an old verdict forward into a
+mirror nobody needs any more.
 
 ## Build Images
 
@@ -443,15 +463,56 @@ Check a configuration before deploying it:
 
 ```bash
 flakegraph serving sizing --kv-heads 4 --head-dim 256 --attention-layers 16 \
-  --weights-gib 21.81 --device-memory-gib 119.2 --max-num-seqs 24
+  --recurrent-layers 48 --recurrent-state-bytes-per-layer 3207168 \
+  --recurrent-state-slots-per-sequence 2 \
+  --weights-gib 24.24 --device-memory-gib 119.2 --max-num-seqs 8
 ```
+
+`--weights-gib` is what the engine reports as "Model loading took", which is
+the target checkpoint and any resident drafter together rather than the target
+alone. Leaving the drafter out understates the weights by its own size and
+overstates how many sequences the KV budget holds.
 
 The default profile serves `unsloth/Qwen3.8-27B-NVFP4` at a pinned revision with
 an FP8 KV cache, FlashInfer attention, Marlin MoE, chunked prefill, prefix
-caching, and asynchronous scheduling. Speculative decoding is off: it conflicts
-with `--async-scheduling` and forfeits much of the reusable prefix on
-hybrid-cache models. Set `modelServing.server.speculativeTokens` above zero only
-behind a benchmark on the hardware you are deploying to.
+caching, and asynchronous scheduling.
+
+Decode on this hardware is bound by weight bandwidth rather than arithmetic, so
+the profile also drafts: `speculativeMethod: dflash` proposes a block of eight
+tokens at a time from a separate draft model, and asynchronous scheduling stays
+on with it — vLLM keeps async scheduling for every Eagle-family method. The
+measured fleet accepts about half of the drafted tokens, for a mean acceptance
+length near five, but the rate is strongly workload-dependent: on one GB10 the
+same drafter accepted roughly three fifths of its proposals on code and a fifth
+on prose. Change the method or the block size only behind a benchmark on the
+hardware you are deploying to, and remember that the drafter is resident for
+the life of the process, so its weights belong in
+`modelServing.sizing.weightsGiB`.
+
+A drafter named as a filesystem path has to *get* onto that filesystem, and
+naming it is not obtaining it: a replica scheduled onto a node where nobody
+placed the file starts, fails to load, and crash-loops with an error about an
+invalid repository id — which reads like a typo rather than a missing artifact.
+So the chart declares where the model comes from.
+`modelServing.server.draftModelSeed.image` names an image whose filesystem
+carries it; an init container copies it into each replica's own volume before
+the engine starts, writing a `.partial` name and renaming it, so an interrupted
+copy is never mistaken for a complete one. `draftModelSeed.providedExternally`
+says a shared mount or a prebaked node image supplies it instead. A path with
+neither is refused when the chart renders, rather than on the first node that
+happens not to have the file.
+
+The reference checkpoint is a vision-language model, and the profile serves
+that modality rather than refusing it: `limitMultimodalPerPrompt` admits two
+images per prompt, encoder profiling is left on so the memory is reserved up
+front instead of discovered mid-request, and video stays at zero because
+nothing here consumes it and a video request would reserve considerably more.
+Image input is not free — the vision tower's weights and peak activations come
+out of the same device budget as the KV cache, and the sizing block above
+models weights, KV, and recurrent state but not the encoder's reservation. Its
+implied concurrency is therefore optimistic once images are on. Set
+`maxNumSeqs` with margin below that figure and let the sidecar's startup check
+remain the real guard.
 
 `gpuMemoryUtilization` defaults to `0.50`. On a unified-memory part the same
 physical pool holds the operating system, the kubelet, workers, Spark executors,
@@ -526,6 +587,65 @@ kubectl -n flakegraph exec flakegraph-flakegraph-vllm-0 -c sidecar -- \
 Change one image, model revision, context limit, or concurrency control at a
 time and run a gold-set canary before promotion.
 
+## Access
+
+A fleet is reached by hostname, not by port. `ingress.enabled` publishes one
+hostname per routed service under a single `ingress.domain` — the control
+plane, the LiteLLM gateway, and the OCR shim — terminated by whatever ingress
+controller the cluster already runs. Host-based rather than path-based, because
+each application assumes it owns the root and because an OIDC redirect URI has
+to be a stable absolute URL. A NodePort still reaches a Service from inside the
+cluster's own network and remains useful while bringing a fleet up, but its
+number is reassigned whenever the Service is recreated, and the hostname is
+not.
+
+`ingress.authProxy` puts one sign-in gate in front of the browser-facing hosts
+rather than an identity integration inside each application, so a deployment's
+authentication stops being whichever application authenticates worst, and an
+application that cannot speak OIDC is covered too. The gate keeps a hostname of
+its own, so the sign-in and callback endpoints are not behind the gate they
+exist to open. Its cookie spans the domain: one sign-in covers every host under
+it, and `/oauth2/sign_out` on the gate's own host ends that session everywhere.
+
+Behind the gate the control plane does not authenticate its callers a second
+time. It reads the identity the gate established from `X-Auth-Request-Email`,
+which is proof only for traffic that actually passed through the ingress
+controller — to any workload that can address the Service directly it is a
+header it may set to whatever it likes. `controlPlane.networkPolicy` is what
+makes trusting it sound: enable it, name the ingress controller as the only
+permitted peer, and confirm by forging the header from a pod that should not be
+able to reach the application at all. It is off by default because the correct
+peer is site-specific and a policy naming the wrong one leaves the application
+unreachable rather than unprotected.
+
+### Callers that are programs
+
+A caller holding an API key cannot satisfy a browser sign-in, so the paths
+those callers use are routed past the gate and left to the key check each
+service already performs: `ingress.machineApiPaths.gateway` for inference and
+`ingress.machineApiPaths.ocr` for `/file_parse`. Every path listed there
+refuses an unauthenticated request with 401 on its own; nothing else stands in
+front of it.
+
+They are matched exactly, and that is the point rather than an implementation
+detail. The gateway declares its key check per route rather than globally, so
+`/v1` is not a namespace that authenticates — it is a namespace that mostly
+does. Routing the prefix would have published whatever else the build serves
+under it: this one answers `/v1/mcp/oauth/authorize` to anyone, which is an
+unauthenticated credential-entry page, an open redirector, and a signing oracle
+for the master key. Callers therefore carry `/v1` in the base URL, unversioned
+aliases stay behind the gate, and a path is added only after it has been
+observed refusing an unauthenticated caller — and observed again on the next
+image bump.
+
+```bash
+# A machine path answers its own key check rather than a sign-in redirect.
+curl -so /dev/null -w '%{http_code}\n' "https://llm.$DOMAIN/v1/models"
+
+# Everything else meets the gate: this must not return the application.
+curl -sI "https://llm.$DOMAIN/ui" | grep -i '^location:'
+```
+
 ## Submit And Export
 
 From an environment that can reach PostgreSQL and the configured source:
@@ -578,6 +698,14 @@ separately while observing queue depth, generation throughput, GPU utilization,
 and memory. Context and compaction tasks use less model concurrency, so KEDA may
 temporarily schedule below the ceiling without leaving sustained extraction work
 idle.
+
+On the reference fleet that arithmetic stays small enough to state plainly: two
+GPU nodes, one replica each, a sequence limit of four apiece, so eight
+concurrent sequences fleet-wide. With the vision encoder reserved, the engine
+there reports a KV cache of 352,065 tokens and a maximum concurrency of 5.37x
+at a 64k context per request, and the limit of four sits just under it. The
+figure to size against is the one the engine reports after profiling, not the
+one the sizing block implies before it.
 
 Spark finalization scales with executor instances and cores. The finalization
 coordinator remains one leased task, but graph rows stay partitioned across

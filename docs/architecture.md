@@ -54,6 +54,18 @@ detail an operator may swap.
 Hold these and the gateway, the placement layer, the engine, and the queue
 backend all become replaceable without any consumer changing.
 
+Those invariants describe a consumer that holds a key. People do not, so a
+deployment publishes its services as hostnames under one domain behind a single
+sign-in gate, and the applications behind it stop implementing identity one at
+a time. The two audiences reach the same fleet by different routes: a browser
+is sent to the gate, while the exact API paths that already authenticate their
+own callers are routed past it, because an SDK holding a bearer token cannot
+satisfy a browser sign-in. What the gate establishes then travels as a request
+header, which is proof only for traffic that reached the application through
+the ingress controller — so the control plane may read that identity in place
+of authenticating its own callers only where a policy restricts who can open a
+connection to it at all.
+
 Note that the two planes order priority in opposite directions, and the
 difference is not cosmetic. The serving bands follow vLLM, where a **lower**
 value is served first and a missing value therefore means *highest* priority.
