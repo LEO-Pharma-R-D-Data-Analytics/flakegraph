@@ -291,8 +291,14 @@ spec:
             {{- if .Values.modelServing.kvEvents.enabled }}
             # Publishing cache events lets the endpoint picker route on what each
             # replica actually holds rather than on a hash of the prefix.
+            # The topic is not decoration. The picker subscribes with the ZMQ
+            # prefix filter "kv@" and reads the model name out of
+            # kv@<pod>@<model> to seed the block-hash chain it matches against.
+            # vLLM's own default is the empty topic, which that filter discards -
+            # so omitting this publishes events to nobody, and the picker goes on
+            # scoring prefixes by estimate while appearing to be configured.
             - --kv-events-config
-            - {{ printf "{\"enable_kv_cache_events\":true,\"publisher\":\"zmq\",\"endpoint\":\"tcp://*:%v\",\"replay_endpoint\":\"tcp://*:%v\"}" .Values.modelServing.kvEvents.port .Values.modelServing.kvEvents.replayPort | quote }}
+            - {{ printf "{\"enable_kv_cache_events\":true,\"publisher\":\"zmq\",\"endpoint\":\"tcp://*:%v\",\"replay_endpoint\":\"tcp://*:%v\",\"topic\":\"kv@$(POD_IP):%v@%s\"}" .Values.modelServing.kvEvents.port .Values.modelServing.kvEvents.replayPort .Values.modelServing.kvEvents.port .Values.modelServing.model.name | quote }}
             {{- end }}
             {{- if gt (int .Values.modelServing.server.speculativeTokens) 0 }}
             # Compatible with --async-scheduling: config/vllm.py admits every
@@ -326,6 +332,14 @@ spec:
             - qwen3_xml
             - --enable-auto-tool-choice
           env:
+            {{- if .Values.modelServing.kvEvents.enabled }}
+            # The cache-event topic carries this, so the picker can tell
+            # which replica an event came from.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- end }}
             - name: HOME
               value: /tmp/vllm-home
             - name: HF_HOME

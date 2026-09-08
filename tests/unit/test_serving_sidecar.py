@@ -153,6 +153,11 @@ def test_probe_and_scoring_paths_stay_reachable_without_a_key() -> None:
     with _client(upstream) as client:
         assert client.get("/health").status_code == 200
         assert client.get("/metrics").status_code == 200
+        # The picker renders prompts to the engine's own token ids so it can tell
+        # which replica holds a prefix. No key, because nothing is generated and
+        # a stamped band would be meaningless on a call the scheduler never sees.
+        assert client.post("/v1/chat/completions/render", json={}).status_code != 401
+        assert client.post("/v1/completions/render", json={}).status_code != 401
 
 
 def test_adapter_management_is_refused_outright() -> None:

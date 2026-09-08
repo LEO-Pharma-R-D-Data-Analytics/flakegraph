@@ -814,3 +814,42 @@ def test_the_draft_model_seed_is_constrained_by_the_schema() -> None:
         "sourcePath",
         "providedExternally",
     }
+
+
+def test_cache_events_are_published_on_a_topic_the_picker_subscribes_to() -> None:
+    """Publishing on the default empty topic reaches nobody.
+
+    The picker subscribes with the ZMQ prefix filter "kv@" and parses the model
+    name out of ``kv@<pod>@<model>``. vLLM's own default topic is the empty
+    string, which that filter discards - so a deployment can look configured,
+    publish continuously, and have every event dropped before it is read.
+    """
+
+    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert '\\"topic\\":\\"kv@$(POD_IP):' in template
+    # The topic interpolates POD_IP, which Kubernetes expands into args only when
+    # the same container declares it.
+    assert "fieldPath: status.podIP" in template
+
+
+def test_exact_prefix_routing_names_its_producer_and_matches_block_size() -> None:
+    """Both halves are silent when wrong, so both are pinned here.
+
+    A prefix-cache-scorer with no producer named gets the approximate producer
+    auto-created underneath it, and reports confident scores about a cache it has
+    never seen. A block size that disagrees with the engine's hashes differently
+    sized blocks, which agree about nothing.
+    """
+
+    placement = (_CHART / "templates/gateway-placement.yaml").read_text(encoding="utf-8")
+    values = _load_yaml(_VALUES)["modelServing"]
+
+    assert "prefixMatchInfoProducerName: precise-prefix-cache-producer" in placement
+    assert "type: token-producer" in placement
+    assert "type: endpoint-notification-source" in placement
+    # Without this wiring the producer never opens a subscriber to any pod.
+    assert "pluginRef: endpoint-notification-source" in placement
+
+    # vLLM's default block size is 16; the picker must hash the same width.
+    assert values["kvEvents"]["blockSizeTokens"] == 16

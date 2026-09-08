@@ -201,12 +201,60 @@ data:
     plugins:
       - type: queue-scorer
       - type: kv-cache-utilization-scorer
+      {{- if .Values.modelServing.kvEvents.enabled }}
+      # Turning a prompt into the engine's own token ids. The byte-packing
+      # fallback the picker would otherwise invent cannot match, because what it
+      # is compared against is real token ids carried in the cache events - so
+      # without a true tokenizer the index matches nothing and every score is a
+      # tie. Rendering is served by the engines themselves, unauthenticated
+      # because it allocates nothing and generates nothing.
+      - type: token-producer
+        parameters:
+          modelName: {{ .Values.modelServing.model.name | quote }}
+          vllm:
+            url: {{ printf "http://%s:%v" (include "flakegraph.modelServingName" .) (.Values.modelServing.service.port | int) | quote }}
+      # Pod add/remove drives one ZMQ subscriber per replica; without this source
+      # the producer never dials anybody.
+      - type: endpoint-notification-source
+      - type: precise-prefix-cache-producer
+        parameters:
+          tokenProcessorConfig:
+            # Must equal the engine's block size, or the hashes describe
+            # differently sized blocks and nothing lines up.
+            blockSizeTokens: {{ .Values.modelServing.kvEvents.blockSizeTokens }}
+          kvEventsConfig:
+            topicFilter: "kv@"
+            discoverPods: true
+            podDiscoveryConfig:
+              socketPort: {{ .Values.modelServing.kvEvents.port }}
+              replaySocketPort: {{ .Values.modelServing.kvEvents.replayPort }}
+          indexerConfig:
+            kvBlockIndexConfig:
+              enableMetrics: true
       - type: prefix-cache-scorer
+        parameters:
+          # Naming the producer is the whole switch. Left out, the data layer
+          # quietly auto-creates the approximate producer and the scorer reports
+          # confident numbers about a cache it has never observed.
+          prefixMatchInfoProducerName: precise-prefix-cache-producer
+      {{- else }}
+      - type: prefix-cache-scorer
+      {{- end }}
       - type: metrics-data-source
         parameters:
           scheme: "http"
           path: "/metrics"
       - type: core-metrics-extractor
+    dataLayer:
+      sources:
+        - pluginRef: metrics-data-source
+          extractors:
+            - pluginRef: core-metrics-extractor
+        {{- if .Values.modelServing.kvEvents.enabled }}
+        - pluginRef: endpoint-notification-source
+          extractors:
+            - pluginRef: precise-prefix-cache-producer
+        {{- end }}
     schedulingProfiles:
       - name: default
         plugins:

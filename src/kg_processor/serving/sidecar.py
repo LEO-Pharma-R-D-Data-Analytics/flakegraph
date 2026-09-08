@@ -43,10 +43,27 @@ from kg_processor.serving.sizing import (
 
 logger = logging.getLogger(__name__)
 
-# Read-only and carrying no inference. The kubelet probes the first and the
-# endpoint picker scores replicas on the second, and both reach the pod before
-# any consumer holds a key.
-UNAUTHENTICATED_PATHS = frozenset({"/health", "/ping", "/metrics"})
+# Read-only and carrying no inference. The kubelet probes the health routes and
+# the endpoint picker scores replicas on the metrics one, and both reach the pod
+# before any consumer holds a key.
+#
+# The render routes are here for the same reason and with the same limit. The
+# picker has to turn a prompt into the engine's own token ids to know which
+# replica already holds that prefix - an estimate cannot match, because the
+# comparison is against real token ids in the cache events. Rendering allocates
+# no KV blocks, runs no forward pass and returns no completion: it is the
+# tokenizer, reachable only from whatever the network policy admits to this
+# port, which is the picker. Guarding it with a key would mean stamping a
+# priority band onto a call that never reaches the scheduler.
+UNAUTHENTICATED_PATHS = frozenset(
+    {
+        "/health",
+        "/ping",
+        "/metrics",
+        "/v1/chat/completions/render",
+        "/v1/completions/render",
+    }
+)
 
 # Adapter management mutates what the pod serves. The platform pins one model per
 # pod, so these are refused here rather than guarded by a key nobody should hold.
