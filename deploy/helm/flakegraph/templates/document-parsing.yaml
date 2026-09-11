@@ -67,6 +67,17 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # Soft, unlike the engines' anti-affinity: a parsing replica the fleet
+      # cannot place alone is still worth running.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: {{ $mineru.topologyKey }}
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: document-parsing
       containers:
         - name: mineru
           image: {{ include "flakegraph.image" . }}

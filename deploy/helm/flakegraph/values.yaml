@@ -774,6 +774,10 @@ documentParsing:
       accessModes: [ReadWriteOnce]
     nodeSelector: {}
     tolerations: []
+    # Parsing replicas hold no GPU, so nothing forces them apart the way it
+    # does the engines. Spread them one per host where possible; a fleet
+    # with fewer hosts than replicas still schedules, it just doubles up.
+    topologyKey: kubernetes.io/hostname
     resources:
       requests:
         cpu: "2"

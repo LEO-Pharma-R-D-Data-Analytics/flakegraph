@@ -502,6 +502,15 @@ says a shared mount or a prebaked node image supplies it instead. A path with
 neither is refused when the chart renders, rather than on the first node that
 happens not to have the file.
 
+Build that image with the modes stated in the Dockerfile, not inherited from
+the build context: `COPY --chmod=644 <draft-dir> /dflash2`. `COPY` keeps
+whatever modes the build host's umask produced, and the init container runs as
+the same unprivileged user as the engine, so a context staged under a
+restrictive umask yields an image whose files root can read and the copy
+cannot. That failure is invisible on any replica that already holds the model
+— the init container finds it and exits before touching the image — and
+appears only on the first node that needs seeding.
+
 The reference checkpoint is a vision-language model, and the profile serves
 that modality rather than refusing it: `limitMultimodalPerPrompt` admits two
 images per prompt, encoder profiling is left on so the memory is reserved up

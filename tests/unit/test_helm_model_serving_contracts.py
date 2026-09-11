@@ -316,6 +316,31 @@ def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
     assert template.count('include "flakegraph.image"') == 2
 
 
+def test_document_parsing_replicas_spread_across_hosts_without_requiring_it() -> None:
+    """One parser per host where the fleet allows it, and still schedulable where not.
+
+    The engines are forced apart by their GPU request; a parsing replica holds
+    no GPU, so without a constraint four of them can land on one host and leave
+    three idle. The constraint is soft on purpose: a pool larger than the fleet
+    doubles up rather than pending forever.
+    """
+
+    template = _DOCUMENT_PARSING_TEMPLATE.read_text(encoding="utf-8")
+    values = _load_yaml(_VALUES)["documentParsing"]["mineru"]
+
+    statefulset = template.split("kind: StatefulSet", maxsplit=1)[1].split("kind: ", maxsplit=1)[0]
+    assert "topologySpreadConstraints:" in statefulset
+    assert "maxSkew: 1" in statefulset
+    assert "whenUnsatisfiable: ScheduleAnyway" in statefulset
+    assert "topologyKey: {{ $mineru.topologyKey }}" in statefulset
+    spread = statefulset.split("topologySpreadConstraints:", maxsplit=1)[1]
+    assert "app.kubernetes.io/component: document-parsing" in spread
+    assert values["topologyKey"] == "kubernetes.io/hostname"
+    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    mineru = schema["properties"]["documentParsing"]["properties"]["mineru"]
+    assert "topologyKey" in mineru["required"]
+
+
 def test_spark_executor_spreading_degrades_gracefully() -> None:
     """Prefer fleet-wide placement without deadlocking finalization on node loss."""
 

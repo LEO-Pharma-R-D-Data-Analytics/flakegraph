@@ -1517,6 +1517,7 @@
             "persistence",
             "nodeSelector",
             "tolerations",
+            "topologyKey",
             "resources",
             "extraEnv",
             "extraVolumes",
@@ -1616,6 +1617,10 @@
               "items": {
                 "type": "object"
               }
+            },
+            "topologyKey": {
+              "type": "string",
+              "minLength": 1
             },
             "resources": {
               "type": "object"
