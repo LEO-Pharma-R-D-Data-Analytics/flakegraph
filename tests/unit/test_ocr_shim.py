@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from psycopg_pool import AsyncConnectionPool
 
+from kg_processor.serving import ocr_shim
 from kg_processor.serving.ocr_shim import OcrShimConfig, UpstreamPool, create_app
 from kg_processor.serving.priority import ConsumerKeyring
 
@@ -324,3 +327,44 @@ def test_a_file_containing_the_word_backend_is_not_mistaken_for_the_field() -> N
     # The default was still supplied, because the document is not the field.
     assert forwarded.count(b'name="backend"') == 2
     assert b"pipeline" in forwarded
+
+
+def test_the_queue_pool_checks_a_connection_before_handing_it_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection the server killed while idle is replaced, not served.
+
+    Without a checkout check the pool returns the dead connection and the
+    request that draws it fails with the server's termination message - once,
+    and for nothing the caller did.
+    """
+
+    captured: dict[str, Any] = {}
+
+    class _RecordingPool:
+        check_connection = AsyncConnectionPool.check_connection
+
+        def __init__(self, conninfo: str, **kwargs: Any) -> None:
+            captured["conninfo"] = conninfo
+            captured.update(kwargs)
+
+        async def __aenter__(self) -> _RecordingPool:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(ocr_shim, "AsyncConnectionPool", _RecordingPool)
+    app = create_app(
+        OcrShimConfig(
+            database_url="postgresql://queue.invalid/flakegraph", upstream_host="mineru.invalid"
+        ),
+        keyring=KEYRING,
+        transport=httpx.MockTransport(_Pool().handler),
+        upstreams=_pool(("10.0.0.1",), 1),
+    )
+    with TestClient(app):
+        pass
+
+    assert captured["conninfo"] == "postgresql://queue.invalid/flakegraph"
+    assert captured["check"] is AsyncConnectionPool.check_connection

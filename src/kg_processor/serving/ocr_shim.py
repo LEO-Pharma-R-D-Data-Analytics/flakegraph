@@ -314,6 +314,13 @@ def create_app(
                 min_size=1,
                 max_size=8,
                 open=False,
+                # A connection can die while it sits idle in the pool - a
+                # server restart, a failover, an operator terminating backends -
+                # and the pool does not notice on its own: it hands the dead
+                # connection out and the request that receives it fails, once,
+                # for a reason that has nothing to do with the request. Checking
+                # at checkout costs a round trip and turns that into a reconnect.
+                check=AsyncConnectionPool.check_connection,
                 kwargs={"row_factory": dict_row, "autocommit": True},
             ) as connections:
                 app.state.queue = OcrQueue(connections, _owner_id(), config.stale_after_seconds)
@@ -483,7 +490,6 @@ def _presented_key(request: Request) -> str:
     if scheme.lower() != "bearer":
         return ""
     return credential.strip()
-
 
 
 def _multipart_boundary(content_type: str) -> bytes | None:
