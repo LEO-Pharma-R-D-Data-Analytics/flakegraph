@@ -681,6 +681,9 @@ ingress:
       - /v1/embeddings
       - /v1/models
       - /v1/messages
+      # Anthropic-format clients size their context with this before sending;
+      # key-checked like /v1/messages (verified 401 without one).
+      - /v1/messages/count_tokens
       - /v1/responses
       - /v1/rerank
     # MinerU's parse contract, as the shim exposes it.
