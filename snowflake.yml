@@ -1,0 +1,37 @@
+definition_version: 2
+# Account-neutral defaults. Override per account without editing this file:
+#   snow streamlit deploy --env query_warehouse=YOUR_WH
+env:
+  query_warehouse: COMPUTE_WH
+entities:
+  flakegraph_app:
+    type: streamlit
+    identifier: FLAKEGRAPH_APP
+    title: FlakeGraph
+    comment: Ingest documents, monitor processing, and explore knowledge graphs.
+    stage: FLAKEGRAPH_APP_STAGE
+    query_warehouse: <% ctx.env.query_warehouse %>
+    # Snowflake resolves both the environment and the main file from the root of
+    # the deployed version. Preserving the repository's app/ prefix put them one
+    # level down, where the environment was ignored entirely and the main file
+    # was reported missing as '/tmp/appRoot/streamlit_app.py'. The application
+    # already expects to find its package, assets, and configs beside it at one
+    # deployment root, so the tree is flattened here rather than in the code.
+    main_file: app/streamlit_app.py
+    artifacts:
+      - src: app/streamlit_app.py
+        dest: ./
+      - src: app/flakegraph_app/*.py
+        dest: flakegraph_app/
+      - src: app/flakegraph_app/backends/*.py
+        dest: flakegraph_app/backends/
+      - src: app/flakegraph_app/ui/*.py
+        dest: flakegraph_app/ui/
+      - src: app/assets/*
+        dest: assets/
+      - src: app/environment.yml
+        dest: ./
+      - src: configs/app-defaults.yaml
+        dest: configs/
+      - src: configs/ontologies/general.yaml
+        dest: configs/ontologies/

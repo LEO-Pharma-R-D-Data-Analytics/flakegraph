@@ -1,0 +1,79 @@
+{
+  "name": "repeated_relation",
+  "description": "Repeated grounded relation observations across chunks merge into one canonical edge with evidence from both chunks.",
+  "input": {
+    "filename": "golden.txt",
+    "text": "Alice Smith works at Acme Corp. Alice Smith works at Acme Corp.\n"
+  },
+  "settings": {
+    "chunk_token_size": 6,
+    "chunk_token_overlap": 0
+  },
+  "expected": {
+    "run_id": "run_f40fcf7a218d021e3854baabc48df8e7",
+    "ordered_chunk_hash": "15e787b69c0b0103f35fbf756ac31be23090cac3e3dc012186b86f43c6357e5a",
+    "counts": {
+      "chunks_created": 2,
+      "blocks_created": 1,
+      "assets_created": 0,
+      "entities_extracted": 4,
+      "entities_after_filter": 4,
+      "relations_extracted": 2,
+      "relations_after_filter": 2,
+      "nodes_created": 2,
+      "edges_created": 1,
+      "evidence_created": 6,
+      "communities_created": 1
+    },
+    "nodes": {
+      "Acme Corp": {
+        "primary_type": "ORGANIZATION",
+        "source_chunk_count": 2,
+        "entity_source_mention_count": 2
+      },
+      "Alice Smith": {
+        "primary_type": "PERSON",
+        "source_chunk_count": 2,
+        "entity_source_mention_count": 2
+      }
+    },
+    "edge": {
+      "source": "Alice Smith",
+      "target": "Acme Corp",
+      "relation_type": "related_to",
+      "weight": 2.0,
+      "source_chunk_count": 2
+    },
+    "evidence": {
+      "total": 6,
+      "node": 4,
+      "edge": 2,
+      "quotes": [
+        "Acme Corp",
+        "Alice Smith",
+        "Alice Smith works at Acme Corp."
+      ]
+    },
+    "merge_decision_actions": {
+      "aggregated": 1,
+      "created": 1,
+      "merged": 2
+    },
+    "merge_decision_reasons": {
+      "canonical_edge_created": 1,
+      "entity_observations_merged": 2,
+      "relation_evidence_aggregated": 1
+    },
+    "dedupe": {
+      "entity_reduction": 2,
+      "relation_reduction": 1
+    },
+    "community": {
+      "member_names": [
+        "Acme Corp",
+        "Alice Smith"
+      ],
+      "finding_count": 1
+    }
+  }
+}

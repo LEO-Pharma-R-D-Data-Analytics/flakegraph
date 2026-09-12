@@ -1,0 +1,277 @@
+# Generic processing profile used by the Streamlit control plane and Kubernetes
+# workers. The app replaces runtime, source, run identity, provider selections,
+# writer, and cache settings with the values selected in the ingestion form.
+runtime:
+  runtime: kubernetes
+files:
+  # The app replaces this with the selected upload, path, stage, blob prefix, or
+  # bucket. A neutral root keeps direct profile loading independent of samples.
+  source: local
+  input_path: data
+  include_globs:
+    - "**/*"
+ocr:
+  # Preserve coherent embedded text and invoke MinerU only for scans or malformed
+  # text layers. This gives mixed corpora robust OCR without paying its cost for
+  # every document.
+  provider: fallback
+  fallback_primary_provider: builtin_text
+  fallback_secondary_provider: mineru_internal
+  fallback_min_characters_per_page: 80
+  fallback_max_sparse_page_ratio: 0.2
+  fallback_max_unbroken_text_ratio: 0.5
+  fallback_max_fragmented_text_ratio: 0.15
+  mineru_method: ocr
+  mineru_backend: pipeline
+  timeout_seconds: 3600
+llm:
+  # These loopback defaults work for a local server. Kubernetes replaces them
+  # with its chart-managed Service endpoint and immutable model identity.
+  provider: vllm_local
+  endpoint: http://localhost:8000/v1
+  model: unsloth/Qwen3.8-27B-NVFP4
+embedding:
+  # Keep graph vectors independent from the generative model server so either
+  # provider can be replaced without coupling their model inventories.
+  provider: sentence_transformers
+  model: sentence-transformers/all-MiniLM-L6-v2
+  dimension: 384
+  batch_size: 32
+ontology:
+  # Domain datasets can select a stricter ontology, while ordinary app runs use
+  # this evidence-grounded vocabulary without inheriting benchmark assumptions.
+  profile_path: configs/ontologies/general.yaml
+extractors:
+  entity_provider: llm
+  relation_provider: llm
+  verifier_provider: llm
+writer:
+  provider: local_artifacts
+  output_path: out/app
+cache:
+  # Distributed workers must not depend on node-local cache affinity. The app
+  # changes this to a local or Snowflake cache for those respective runtimes.
+  provider: none
+consumption:
+  # Snowflake bills Cortex in AI credits, and one credit's dollar value is a
+  # property of the account's contract rather than of the model, so every model
+  # below prices itself from this one number.
+  #
+  # LEO's contracted rate. Every cost this application reports is this number
+  # multiplied by metered usage, so it is the one figure to revisit when the
+  # contract is renegotiated.
+  usd_per_credit: 3.5
+  # What a local run would have cost had it been sent to Snowflake instead.
+  # Avoided cost is meaningless without a stated alternative, and this is the
+  # model the hosted runtime uses by default, so it is the honest comparison.
+  local_reference: snowflake_cortex:mistral-large2
+  # AI credits per unit, transcribed from Snowflake's Service Consumption Table
+  # effective 7 August 2026: Table 6(a) for the AI_COMPLETE and AI_EMBED
+  # functions this pipeline calls, and Table 6(g) for AI_PARSE_DOCUMENT.
+  #
+  # Table 6(c) quotes lower figures for several of the same models. It prices
+  # the Cortex Inference REST API, which is a different service; the adapters
+  # here issue AI_COMPLETE as SQL, so 6(a) is the table that applies.
+  #
+  # Every model Snowflake currently serves is listed, not only the ones this
+  # deployment uses. The model is a free-text field in the UI, and an unlisted
+  # model would be reported as an unpriced call rather than as spend.
+  #
+  # Rates are recorded as credits rather than pre-multiplied dollars, so
+  # correcting usd_per_credit above reprices every model at once.
+  rates:
+    # Text generation, AI_COMPLETE. Input and output are billed at
+    # different rates for every model that distinguishes them.
+    snowflake_cortex:claude-4-sonnet:
+      prompt_credits_per_million: 1.80
+      completion_credits_per_million: 9.00
+    snowflake_cortex:claude-fable-5:
+      prompt_credits_per_million: 6.00
+      completion_credits_per_million: 30.00
+    snowflake_cortex:claude-haiku-4-5:
+      prompt_credits_per_million: 0.60
+      completion_credits_per_million: 3.00
+    snowflake_cortex:claude-opus-4-5:
+      prompt_credits_per_million: 3.00
+      completion_credits_per_million: 15.00
+    snowflake_cortex:claude-opus-4-6:
+      prompt_credits_per_million: 3.00
+      completion_credits_per_million: 15.00
+    snowflake_cortex:claude-opus-4-7:
+      prompt_credits_per_million: 3.00
+      completion_credits_per_million: 15.00
+    snowflake_cortex:claude-opus-4-8:
+      prompt_credits_per_million: 3.00
+      completion_credits_per_million: 15.00
+    snowflake_cortex:claude-opus-5:
+      prompt_credits_per_million: 3.00
+      completion_credits_per_million: 15.00
+    snowflake_cortex:claude-sonnet-4-5:
+      prompt_credits_per_million: 1.80
+      completion_credits_per_million: 9.00
+    snowflake_cortex:claude-sonnet-4-6:
+      prompt_credits_per_million: 1.80
+      completion_credits_per_million: 9.00
+    snowflake_cortex:claude-sonnet-5:
+      prompt_credits_per_million: 1.20
+      completion_credits_per_million: 6.00
+    snowflake_cortex:gemini-2-5-flash:
+      prompt_credits_per_million: 0.18
+      completion_credits_per_million: 1.50
+    snowflake_cortex:gemini-2-5-flash-lite:
+      prompt_credits_per_million: 0.06
+      completion_credits_per_million: 0.24
+    snowflake_cortex:gemini-3.1-flash-lite:
+      prompt_credits_per_million: 0.15
+      completion_credits_per_million: 0.90
+    snowflake_cortex:gemini-3.1-pro:
+      prompt_credits_per_million: 1.20
+      completion_credits_per_million: 7.20
+    snowflake_cortex:gemini-3.1-pro-long-context:
+      prompt_credits_per_million: 2.40
+      completion_credits_per_million: 10.80
+    snowflake_cortex:gemini-3.5-flash:
+      prompt_credits_per_million: 0.90
+      completion_credits_per_million: 5.40
+    snowflake_cortex:gemma-4-26b-a4b:
+      prompt_credits_per_million: 0.078
+      completion_credits_per_million: 0.24
+    snowflake_cortex:gemma-4-31b:
+      prompt_credits_per_million: 0.084
+      completion_credits_per_million: 0.24
+    snowflake_cortex:gemma-4-e2b:
+      prompt_credits_per_million: 0.024
+      completion_credits_per_million: 0.048
+    snowflake_cortex:grok-4.20:
+      prompt_credits_per_million: 0.75
+      completion_credits_per_million: 1.50
+    snowflake_cortex:grok-4.20-long-context:
+      prompt_credits_per_million: 1.50
+      completion_credits_per_million: 3.00
+    snowflake_cortex:grok-4.3:
+      prompt_credits_per_million: 0.75
+      completion_credits_per_million: 1.50
+    snowflake_cortex:grok-4.3-long-context:
+      prompt_credits_per_million: 1.50
+      completion_credits_per_million: 3.00
+    snowflake_cortex:llama3.1-70b:
+      prompt_credits_per_million: 0.432
+      completion_credits_per_million: 0.432
+    snowflake_cortex:llama3.1-8b:
+      prompt_credits_per_million: 0.132
+      completion_credits_per_million: 0.132
+    snowflake_cortex:llama3.3-70b:
+      prompt_credits_per_million: 0.432
+      completion_credits_per_million: 0.432
+    snowflake_cortex:llama4-maverick:
+      prompt_credits_per_million: 0.144
+      completion_credits_per_million: 0.582
+    snowflake_cortex:ministral-3-8b:
+      prompt_credits_per_million: 0.09
+      completion_credits_per_million: 0.09
+    snowflake_cortex:mistral-large2:
+      prompt_credits_per_million: 1.20
+      completion_credits_per_million: 3.60
+    snowflake_cortex:mistral-large3:
+      prompt_credits_per_million: 0.30
+      completion_credits_per_million: 0.90
+    snowflake_cortex:mistral-7b:
+      prompt_credits_per_million: 0.09
+      completion_credits_per_million: 0.12
+    snowflake_cortex:mixtral-8x7b:
+      prompt_credits_per_million: 0.27
+      completion_credits_per_million: 0.42
+    snowflake_cortex:openai-gpt-4.1:
+      prompt_credits_per_million: 1.20
+      completion_credits_per_million: 4.80
+    snowflake_cortex:openai-gpt-5:
+      prompt_credits_per_million: 0.75
+      completion_credits_per_million: 6.00
+    snowflake_cortex:openai-gpt-5-mini:
+      prompt_credits_per_million: 0.15
+      completion_credits_per_million: 1.20
+    snowflake_cortex:openai-gpt-5-nano:
+      prompt_credits_per_million: 0.033
+      completion_credits_per_million: 0.24
+    snowflake_cortex:openai-gpt-5.1:
+      prompt_credits_per_million: 0.75
+      completion_credits_per_million: 6.00
+    snowflake_cortex:openai-gpt-5.2:
+      prompt_credits_per_million: 1.05
+      completion_credits_per_million: 8.40
+    snowflake_cortex:openai-gpt-5.4:
+      prompt_credits_per_million: 1.50
+      completion_credits_per_million: 9.00
+    snowflake_cortex:openai-gpt-5.4-long-context:
+      prompt_credits_per_million: 3.00
+      completion_credits_per_million: 13.50
+    snowflake_cortex:openai-gpt-5.4-mini:
+      prompt_credits_per_million: 0.45
+      completion_credits_per_million: 2.70
+    snowflake_cortex:openai-gpt-5.4-nano:
+      prompt_credits_per_million: 0.12
+      completion_credits_per_million: 0.75
+    snowflake_cortex:openai-gpt-5.5:
+      prompt_credits_per_million: 3.00
+      completion_credits_per_million: 18.00
+    snowflake_cortex:openai-gpt-5.5-long-context:
+      prompt_credits_per_million: 6.00
+      completion_credits_per_million: 27.00
+    snowflake_cortex:openai-gpt-5.6-luna:
+      prompt_credits_per_million: 0.60
+      completion_credits_per_million: 3.60
+    snowflake_cortex:openai-gpt-5.6-sol:
+      prompt_credits_per_million: 3.00
+      completion_credits_per_million: 18.00
+    snowflake_cortex:openai-gpt-5.6-terra:
+      prompt_credits_per_million: 1.50
+      completion_credits_per_million: 9.00
+    snowflake_cortex:pixtral-large:
+      prompt_credits_per_million: 1.20
+      completion_credits_per_million: 3.60
+    snowflake_cortex:qwen3-32b:
+      prompt_credits_per_million: 0.09
+      completion_credits_per_million: 0.36
+    snowflake_cortex:qwen3-next-80b-a3b:
+      prompt_credits_per_million: 0.09
+      completion_credits_per_million: 0.72
+    snowflake_cortex:qwen3-vl-235b-a22b:
+      prompt_credits_per_million: 0.32
+      completion_credits_per_million: 1.60
+    # Legacy models Snowflake still serves, billed at one rate for both
+    # directions.
+    snowflake_cortex:llama3-70b:
+      prompt_credits_per_million: 1.21
+      completion_credits_per_million: 1.21
+    snowflake_cortex:llama3-8b:
+      prompt_credits_per_million: 0.19
+      completion_credits_per_million: 0.19
+    # Embeddings, AI_EMBED. Only the submitted text is billed; an
+    # embedding call has no output tokens.
+    snowflake_cortex:voyage-multimodal-3:
+      prompt_credits_per_million: 0.06
+    snowflake_cortex:multilingual-e5-large:
+      prompt_credits_per_million: 0.05
+    snowflake_cortex:nv-embed-qa-4:
+      prompt_credits_per_million: 0.05
+    snowflake_cortex:snowflake-arctic-embed-l-v2.0:
+      prompt_credits_per_million: 0.05
+    snowflake_cortex:voyage-multilingual-2:
+      prompt_credits_per_million: 0.07
+    snowflake_cortex:e5-base-v2:
+      prompt_credits_per_million: 0.03
+    snowflake_cortex:snowflake-arctic-embed-m:
+      prompt_credits_per_million: 0.03
+    snowflake_cortex:snowflake-arctic-embed-m-v1.5:
+      prompt_credits_per_million: 0.03
+    # AI_PARSE_DOCUMENT bills per page, and its two modes differ by more than
+    # five times, so the pipeline records which one ran. Rates are AI credits
+    # per 1,000 pages in Table 6(g), divided out to the per-page figure.
+    snowflake_cortex:snowflake_cortex-layout:
+      credits_per_page: 0.00366
+    snowflake_cortex:snowflake_cortex-ocr:
+      credits_per_page: 0.00068
+    # Graphs parsed before the mode was recorded carry the bare provider name.
+    # They ran under the OCR default, which is what this prices them at.
+    snowflake_cortex:snowflake_cortex:
+      credits_per_page: 0.00068
