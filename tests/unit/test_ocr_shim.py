@@ -499,16 +499,34 @@ def test_queue_depth_is_read_across_the_whole_fleet_at_scrape_time() -> None:
     with _client(_Pool(), queue) as client:
         exposition = client.get("/metrics").text
 
+    # Every class the keyring knows is present in every status, at zero when
+    # the queue holds nothing of it: a class with no work must read as empty,
+    # not as missing.
     assert _samples(exposition, "flakegraph_ocr_queue_depth") == {
+        (("consumer_class", "interactive"), ("status", "waiting")): 1,
+        (("consumer_class", "interactive"), ("status", "dispatched")): 0,
+        (("consumer_class", "dev"), ("status", "waiting")): 0,
+        (("consumer_class", "dev"), ("status", "dispatched")): 0,
         (("consumer_class", "batch"), ("status", "waiting")): 3,
         (("consumer_class", "batch"), ("status", "dispatched")): 2,
-        (("consumer_class", "interactive"), ("status", "waiting")): 1,
     }
     # Only what is still waiting has an age worth alerting on.
     assert _samples(exposition, "flakegraph_ocr_oldest_waiting_seconds") == {
-        (("consumer_class", "batch"),): 42.5,
         (("consumer_class", "interactive"),): 0.5,
+        (("consumer_class", "dev"),): 0.0,
+        (("consumer_class", "batch"),): 42.5,
     }
+
+
+def test_an_empty_queue_reads_as_zero_for_every_class() -> None:
+    queue = OcrQueue(_FakeConnectionPool([]), "shim-a", 60.0)
+    with _client(_Pool(), queue) as client:
+        exposition = client.get("/metrics").text
+
+    depth = _samples(exposition, "flakegraph_ocr_queue_depth")
+    assert set(depth.values()) == {0}
+    assert {labels[0][1] for labels in depth} == {"interactive", "dev", "batch"}
+    assert set(_samples(exposition, "flakegraph_ocr_oldest_waiting_seconds").values()) == {0.0}
 
 
 def test_a_scrape_survives_the_queue_database_being_unreachable(

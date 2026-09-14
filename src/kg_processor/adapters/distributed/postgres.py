@@ -56,7 +56,7 @@ _ARTIFACT_READ_PARALLELISM = 8
 _ARTIFACT_DELETE_BATCH_SIZE = 1_000
 _INITIAL_TASK_COPY_BATCH_SIZE = 2_000
 _MAX_RUN_LIST_LIMIT = 500
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 _EXHAUSTED_TASK_RECOVERY_GRACE_SECONDS = 300
 _POSTGRES_SESSION_OPTIONS = " ".join(
     (
@@ -2792,5 +2792,30 @@ _SCHEMA_STATEMENTS = (
     """
     COMMENT ON VIEW flakegraph_worker_demand IS
     'Autoscaling demand: ready tasks, active leases, and pending graph publications.'
+    """,
+    # PostgreSQL's own monitoring role may read the queue's state - what is
+    # queued, running, failed, and how long it has waited - so a metrics
+    # exporter can turn it into series without holding the owner's credential.
+    # The grants name columns rather than tables: a task row also carries its
+    # payload and its last error, and a monitor needs neither.
+    """
+    GRANT SELECT (
+        id, run_id, stage, status, priority, attempts, max_attempts,
+        remaining_dependencies, available_at, lease_expires_at, lease_owner,
+        started_at, completed_at, created_at, updated_at
+    ) ON flakegraph_task TO pg_monitor
+    """,
+    """
+    GRANT SELECT (id, graph_id, status, created_at, updated_at)
+    ON flakegraph_run TO pg_monitor
+    """,
+    """
+    GRANT SELECT (
+        generation, id, run_id, status, attempts, max_attempts, available_at,
+        lease_owner, lease_expires_at, completed_at, created_at, updated_at
+    ) ON flakegraph_publication TO pg_monitor
+    """,
+    """
+    GRANT SELECT ON flakegraph_worker_demand TO pg_monitor
     """,
 )

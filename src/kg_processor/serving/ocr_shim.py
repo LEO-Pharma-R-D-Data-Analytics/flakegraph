@@ -63,6 +63,9 @@ ADMISSION_LOCK_KEY = 0x0CD5_11
 # before the catch-all; ``/metrics`` stays listed so a probe with another
 # method is answered the same way ``/ping`` is, rather than asked for a key.
 UNAUTHENTICATED_PATHS = frozenset({"/ping", "/metrics"})
+# The two states a queued request can be in, as the queue table's CHECK
+# constraint spells them.
+QUEUE_STATUSES = ("waiting", "dispatched")
 
 # The parsing pool is built pipeline-only: the image installs mineru[pipeline],
 # which does not pull in `accelerate`. MinerU's own server default is
@@ -359,11 +362,17 @@ class _QueueDepthCollector(Collector):
     the async handler before rendering and this collector only reads what it
     left. When that query failed there is nothing to read, and the series are
     absent rather than reporting a stale or invented depth.
+
+    An empty queue is the other case, and it must not look like a failed one:
+    the aggregate returns no rows, so every class the keyring knows is written
+    out at zero. A panel then draws a flat line rather than "no data", and an
+    alert on the oldest wait has a value to compare.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, consumer_classes: Iterable[str]) -> None:
         """Start with nothing fetched, which exposes no depth series at all."""
 
+        self._consumer_classes = tuple(consumer_classes)
         self.snapshot: list[QueueDepth] | None = None
 
     def collect(self) -> Iterable[Metric]:
@@ -381,10 +390,15 @@ class _QueueDepthCollector(Collector):
             "Age of the longest-waiting request not yet dispatched.",
             labels=["consumer_class"],
         )
-        for row in self.snapshot:
-            depth.add_metric([row.consumer_class, row.status], row.depth)
-            if row.status == "waiting":
-                oldest.add_metric([row.consumer_class], row.oldest_seconds)
+        depths = {(row.consumer_class, row.status): row for row in self.snapshot}
+        classes = dict.fromkeys(self._consumer_classes)
+        classes.update(dict.fromkeys(row.consumer_class for row in self.snapshot))
+        for consumer_class in classes:
+            for status in QUEUE_STATUSES:
+                row = depths.get((consumer_class, status))
+                depth.add_metric([consumer_class, status], row.depth if row else 0)
+            waiting = depths.get((consumer_class, "waiting"))
+            oldest.add_metric([consumer_class], waiting.oldest_seconds if waiting else 0.0)
         return [depth, oldest]
 
 
@@ -434,7 +448,7 @@ class OcrShimMetrics:
     the Python runtime collectors into a scrape that has no use for them.
     """
 
-    def __init__(self, upstreams: UpstreamPool) -> None:
+    def __init__(self, upstreams: UpstreamPool, consumer_classes: Iterable[str]) -> None:
         """Register every series up front so an idle shim still exposes them."""
 
         self.registry = CollectorRegistry()
@@ -458,7 +472,7 @@ class OcrShimMetrics:
             buckets=PARSE_DURATION_BUCKETS,
             registry=self.registry,
         )
-        self._depth = _QueueDepthCollector()
+        self._depth = _QueueDepthCollector(consumer_classes)
         self.registry.register(self._depth)
         self.registry.register(_UpstreamPoolCollector(upstreams))
 
@@ -541,7 +555,7 @@ def create_app(
     )
     app.state.keyring = resolved
     app.state.upstreams = pool_view
-    metrics = OcrShimMetrics(pool_view)
+    metrics = OcrShimMetrics(pool_view, resolved.bands)
     app.state.metrics = metrics
 
     @app.get("/health")
