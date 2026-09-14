@@ -82,9 +82,8 @@ add_repo nvdp https://nvidia.github.io/k8s-device-plugin
 add_repo kedacore https://kedacore.github.io/charts
 add_repo cnpg https://cloudnative-pg.github.io/charts
 add_repo minio https://charts.min.io/
-add_repo prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update >/dev/null
-ok "nvdp, kedacore, cnpg, minio, prometheus-community"
+ok "nvdp, kedacore, cnpg, minio"
 
 # ---------------------------------------------------------------------------
 step "GPU scheduling"
@@ -180,6 +179,9 @@ step "Monitoring"
 # dashboards and rules itself; this step only installs the stack, configured
 # by monitoring-values.yaml beside this script.
 monitoring_version="91.2.2"
+# The same detour the PostgreSQL operator takes: the community repository
+# index points at GitHub's release-asset host, which this network intercepts.
+monitoring_chart="oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack"
 
 if ! kubectl -n "$namespace" get secret flakegraph-grafana-admin >/dev/null 2>&1; then
   # People sign in through the SSO proxy; this credential is for Grafana's
@@ -197,12 +199,12 @@ fi
 # the two in step; server-side apply with --force-conflicts is what the chart
 # documents, because the Kubernetes CRD objects are too large for the
 # client-side last-applied annotation.
-helm show crds prometheus-community/kube-prometheus-stack --version "$monitoring_version" \
+helm show crds "$monitoring_chart" --version "$monitoring_version" \
   | kubectl apply --server-side --force-conflicts -f - >/dev/null
 ok "prometheus operator CRDs applied"
 
 # The key `grafana.ini` contains a dot, hence the escaped form in --set.
-helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+helm upgrade --install monitoring "$monitoring_chart" \
   --namespace "$namespace" \
   --version "$monitoring_version" \
   --values "$monitoring_values" \
