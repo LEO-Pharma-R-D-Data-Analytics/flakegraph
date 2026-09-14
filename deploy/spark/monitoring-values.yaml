@@ -256,7 +256,14 @@ kubeStateMetrics:
 # The nodes carry no taints, so the node exporter's default toleration
 # (NoSchedule, any key) is enough; add explicit tolerations here if a node
 # ever gains one.
-prometheus-node-exporter: {}
+prometheus-node-exporter:
+  extraArgs:
+    # The GB10's cppc_cpufreq driver measures a core's current frequency on
+    # demand through firmware counters, and on the agent nodes that read
+    # stalls indefinitely. Twenty cores, a scrape every fifteen seconds, and
+    # the exporter's forty-request cap fills within minutes, after which every
+    # scrape is a 503. Nothing here needs CPU frequency.
+    - --no-collector.cpufreq
 
 # ---------------------------------------------------------------------------
 # Alertmanager
