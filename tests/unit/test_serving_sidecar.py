@@ -431,7 +431,7 @@ def test_a_scrape_relays_the_engines_series_ahead_of_the_sidecars_own() -> None:
     assert (
         _sample(
             response.text,
-            "flakegraph_sidecar_build_info_info",
+            "flakegraph_sidecar_build_info",
             version=kg_processor.__version__,
         )
         == 1

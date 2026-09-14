@@ -231,7 +231,7 @@ class SidecarMetrics:
             registry=self.registry,
         )
         Info(
-            "flakegraph_sidecar_build_info",
+            "flakegraph_sidecar_build",
             "Version of the FlakeGraph package serving this sidecar.",
             registry=self.registry,
         ).info({"version": __version__})
