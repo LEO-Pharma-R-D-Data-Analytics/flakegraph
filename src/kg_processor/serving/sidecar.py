@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,9 +30,19 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    Info,
+    generate_latest,
+)
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from kg_processor import __version__
 from kg_processor.serving.priority import ConsumerKeyring, load_keyring
 from kg_processor.serving.sizing import (
     BYTES_PER_GIB,
@@ -83,6 +94,27 @@ STAMPED_PATHS = frozenset(
 
 PRIORITY_FIELD = "priority"
 PRIORITY_HEADERS = frozenset({"x-vllm-priority", "x-flakegraph-priority"})
+
+# Metric labels have to stay a small fixed vocabulary: a label per key, request
+# or free-form path would grow a series per value and eventually take the
+# Prometheus server down with it. Paths collapse onto this set, everything else
+# is ``other``, and a request that presented no usable key is one class.
+ROUTE_LABELS: Mapping[str, str] = {
+    "/v1/chat/completions": "chat_completions",
+    "/v1/completions": "completions",
+    "/v1/embeddings": "embeddings",
+    "/v1/messages": "messages",
+    "/v1/responses": "responses",
+    "/v1/models": "models",
+}
+OTHER_ROUTE_LABEL = "other"
+UNAUTHENTICATED_CLASS = "unauthenticated"
+# A generation call can legitimately run for minutes, which the default buckets
+# (topping out at ten seconds) would flatten into one bin.
+REQUEST_DURATION_BUCKETS = (0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300, 600)
+# A scrape has its own deadline on the Prometheus side, and an engine that has
+# stopped answering must not hold the sidecar's own series hostage to it.
+SCRAPE_TIMEOUT_SECONDS = 5.0
 
 # Headers that describe one connection and must not be relayed onto another.
 HOP_BY_HOP_HEADERS = frozenset(
@@ -160,6 +192,109 @@ class SidecarConfig(BaseModel):
         )
 
 
+class SidecarMetrics:
+    """Own the series this process adds on top of the engine's.
+
+    Each application gets its own registry rather than the process-wide default.
+    The default one also carries the Python runtime collectors, and the engine
+    already exports those under the same names - emitting them twice in one
+    scrape body would make Prometheus reject the whole scrape.
+    """
+
+    def __init__(self) -> None:
+        """Register every series up front so an idle sidecar still exposes them."""
+
+        self.registry = CollectorRegistry()
+        self.requests = Counter(
+            "flakegraph_sidecar_requests_total",
+            "Requests answered by the sidecar, by the status the caller received.",
+            ["consumer_class", "route", "status"],
+            registry=self.registry,
+        )
+        self.duration = Histogram(
+            "flakegraph_sidecar_request_duration_seconds",
+            "Time from receiving a request to sending its last byte.",
+            ["consumer_class", "route"],
+            buckets=REQUEST_DURATION_BUCKETS,
+            registry=self.registry,
+        )
+        self.in_flight = Gauge(
+            "flakegraph_sidecar_requests_in_flight",
+            "Requests received whose last byte has not yet been sent.",
+            ["consumer_class"],
+            registry=self.registry,
+        )
+        self.priority_stamped = Counter(
+            "flakegraph_sidecar_priority_stamped_total",
+            "Generation requests stamped with each priority band.",
+            ["consumer_class", "priority"],
+            registry=self.registry,
+        )
+        Info(
+            "flakegraph_sidecar_build_info",
+            "Version of the FlakeGraph package serving this sidecar.",
+            registry=self.registry,
+        ).info({"version": __version__})
+
+    def render(self) -> bytes:
+        """Serialise the sidecar's own series in the text exposition format."""
+
+        return generate_latest(self.registry)
+
+
+class _Accounting:
+    """Close one request's metrics exactly once, when its last byte has left.
+
+    On a streamed completion the headers leave long before the body, so the
+    observation is attached to the stream rather than to the handler returning.
+    """
+
+    def __init__(self, metrics: SidecarMetrics, consumer_class: str, route: str) -> None:
+        """Mark the request as in flight from the moment it was received."""
+
+        self._metrics = metrics
+        self._consumer_class = consumer_class
+        self._route = ROUTE_LABELS.get(route, OTHER_ROUTE_LABEL)
+        self._started = time.perf_counter()
+        self._closed = False
+        metrics.in_flight.labels(consumer_class).inc()
+
+    def close(self, response: Response) -> Response:
+        """Record a response that is complete the moment it is returned."""
+
+        self._record(response.status_code)
+        return response
+
+    def abandon(self) -> None:
+        """Record a request the handler gave up on before any response was built.
+
+        Starlette answers an escaped exception with a 500, so that is the status
+        the caller saw. Recording it here is what keeps the in-flight gauge from
+        drifting upward by one for every engine timeout.
+        """
+
+        self._record(500)
+
+    async def stream(self, chunks: AsyncIterator[bytes], status_code: int) -> AsyncIterator[bytes]:
+        """Relay a body and record the request once the relay stops, however it stops."""
+
+        try:
+            async for chunk in chunks:
+                yield chunk
+        finally:
+            self._record(status_code)
+
+    def _record(self, status_code: int) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._metrics.in_flight.labels(self._consumer_class).dec()
+        self._metrics.requests.labels(self._consumer_class, self._route, str(status_code)).inc()
+        self._metrics.duration.labels(self._consumer_class, self._route).observe(
+            time.perf_counter() - self._started
+        )
+
+
 def create_app(
     config: SidecarConfig,
     keyring: ConsumerKeyring | None = None,
@@ -203,6 +338,8 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.keyring = resolved
+    metrics = SidecarMetrics()
+    app.state.metrics = metrics
 
     @app.api_route(
         "/{path:path}",
@@ -213,18 +350,37 @@ def create_app(
 
         route = f"/{path}"
         if route in REFUSED_PATHS:
-            return JSONResponse({"error": "adapter management is disabled"}, status_code=404)
+            refused = _Accounting(metrics, UNAUTHENTICATED_CLASS, route)
+            return refused.close(
+                JSONResponse({"error": "adapter management is disabled"}, status_code=404)
+            )
 
+        if route == "/metrics":
+            return await _scrape(request.app.state.client, metrics)
         body = await request.body()
+        # Probe and scoring traffic is not measured. The kubelet and the picker
+        # call these paths many times a second, which would bury the consumer
+        # series in a volume of requests that never reach the scheduler.
         if route in UNAUTHENTICATED_PATHS:
-            return await _relay(request, route, body)
+            return await _relay(request, route, body, None)
 
         consumer_class = resolved.classify(_presented_key(request))
         if consumer_class is None:
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return await _relay(request, route, _stamped_body(body, route, resolved, consumer_class))
+            rejected = _Accounting(metrics, UNAUTHENTICATED_CLASS, route)
+            return rejected.close(JSONResponse({"error": "unauthorized"}, status_code=401))
 
-    async def _relay(request: Request, route: str, body: bytes) -> Response:
+        accounting = _Accounting(metrics, consumer_class, route)
+        stamped, priority = _stamped_body(body, route, resolved, consumer_class)
+        if priority is not None:
+            metrics.priority_stamped.labels(consumer_class, str(priority)).inc()
+        return await _relay(request, route, stamped, accounting)
+
+    async def _relay(
+        request: Request,
+        route: str,
+        body: bytes,
+        accounting: _Accounting | None,
+    ) -> Response:
         """Stream the upstream response back without buffering the whole body."""
 
         client: httpx.AsyncClient = request.app.state.client
@@ -243,15 +399,47 @@ def create_app(
             # probing this path throughout. Report it as a bad gateway so the
             # probe reads "not ready" instead of the process logging a stack
             # trace per second until the engine appears.
-            return JSONResponse({"error": "engine unavailable"}, status_code=502)
+            unavailable = JSONResponse({"error": "engine unavailable"}, status_code=502)
+            return accounting.close(unavailable) if accounting is not None else unavailable
+        except BaseException:
+            if accounting is not None:
+                accounting.abandon()
+            raise
+        chunks = response.aiter_raw()
+        if accounting is not None:
+            chunks = accounting.stream(chunks, response.status_code)
         return StreamingResponse(
-            response.aiter_raw(),
+            chunks,
             status_code=response.status_code,
             headers=_relayed_headers(response.headers),
             background=BackgroundTask(response.aclose),
         )
 
     return app
+
+
+async def _scrape(client: httpx.AsyncClient, metrics: SidecarMetrics) -> Response:
+    """Answer one scrape with the engine's series followed by the sidecar's.
+
+    The engine's are the ones worth having, so they are relayed rather than
+    replaced - but the sidecar's are appended even when the engine cannot be
+    reached, because "the sidecar is up" must not read as "down" for the whole
+    of a cold start. The scraper's own headers are deliberately not forwarded:
+    an ``Accept`` asking for OpenMetrics would make the engine terminate its
+    body with ``# EOF``, after which nothing may follow.
+    """
+
+    own = metrics.render()
+    try:
+        upstream = await client.get("/metrics", timeout=SCRAPE_TIMEOUT_SECONDS)
+    except httpx.HTTPError:
+        return Response(own, media_type=CONTENT_TYPE_LATEST)
+    if not upstream.is_success:
+        return Response(own, media_type=CONTENT_TYPE_LATEST)
+    engine = upstream.content
+    if engine and not engine.endswith(b"\n"):
+        engine += b"\n"
+    return Response(engine + own, media_type=CONTENT_TYPE_LATEST)
 
 
 def run(config: SidecarConfig | None = None) -> None:
@@ -281,25 +469,28 @@ def _stamped_body(
     route: str,
     keyring: ConsumerKeyring,
     consumer_class: str,
-) -> bytes:
+) -> tuple[bytes, int | None]:
     """Remove any client priority and stamp the server's band for this class.
 
-    A body that is not a JSON object is relayed untouched. It cannot carry a
-    priority field, so there is nothing to strip and nothing to forge.
+    Returns the body to relay and the band stamped into it, or ``None`` when
+    none was. A body that is not a JSON object is relayed untouched. It cannot
+    carry a priority field, so there is nothing to strip and nothing to forge.
     """
 
     if not body:
-        return body
+        return body, None
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
-        return body
+        return body, None
     if not isinstance(payload, dict):
-        return body
+        return body, None
     payload.pop(PRIORITY_FIELD, None)
+    priority: int | None = None
     if route in STAMPED_PATHS:
-        payload[PRIORITY_FIELD] = keyring.priority_for(consumer_class)
-    return json.dumps(payload).encode("utf-8")
+        priority = keyring.priority_for(consumer_class)
+        payload[PRIORITY_FIELD] = priority
+    return json.dumps(payload).encode("utf-8"), priority
 
 
 def _forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:

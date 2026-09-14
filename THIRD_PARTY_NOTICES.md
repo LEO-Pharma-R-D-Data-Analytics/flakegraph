@@ -72,6 +72,11 @@ system packages in that artifact.
   carry their upstream licenses and notices into any image you redistribute.
   Sources: https://github.com/fastapi/fastapi/blob/master/LICENSE and
   https://github.com/encode/uvicorn/blob/master/LICENSE.md
+- `prometheus-client` renders the metrics the inference sidecar and the OCR
+  shim expose for scraping. It is Apache-2.0 licensed and is installed as an
+  ordinary Python dependency into the FlakeGraph image, so it carries its
+  upstream license and notice into any image you redistribute. Source:
+  https://github.com/prometheus/client_python/blob/master/LICENSE
 - `boto3`, `botocore`, and their transitive AWS SDK dependencies provide the
   S3-compatible artifact adapter. They are installed as ordinary Python
   dependencies and retain their upstream Apache-2.0 licenses and notices.

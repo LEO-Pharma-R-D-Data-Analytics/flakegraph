@@ -27,16 +27,26 @@ import json
 import logging
 import os
 import socket
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    generate_latest,
+)
+from prometheus_client.core import GaugeMetricFamily, Metric
+from prometheus_client.registry import Collector
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
@@ -49,8 +59,9 @@ logger = logging.getLogger(__name__)
 # Every admission decision is made under this lock, so counting the busy pool and
 # claiming a slot cannot interleave between replicas and overshoot capacity.
 ADMISSION_LOCK_KEY = 0x0CD5_11
-# ``/health`` has its own route, declared before the catch-all, so it never
-# reaches this set.
+# ``/health`` and a scrape of ``/metrics`` have their own routes, declared
+# before the catch-all; ``/metrics`` stays listed so a probe with another
+# method is answered the same way ``/ping`` is, rather than asked for a key.
 UNAUTHENTICATED_PATHS = frozenset({"/ping", "/metrics"})
 
 # The parsing pool is built pipeline-only: the image installs mineru[pipeline],
@@ -62,6 +73,23 @@ UNAUTHENTICATED_PATHS = frozenset({"/ping", "/metrics"})
 PARSE_ROUTE = "/file_parse"
 SUPPORTED_PARSE_BACKENDS = frozenset({"pipeline"})
 DEFAULT_PARSE_BACKEND = "pipeline"
+
+# Metric labels stay a small fixed vocabulary. Consumer classes come from the
+# band configuration, replicas from DNS, and every other value is one of the
+# constants below - never a key, a request id or a file name, each of which
+# would mint a series per value.
+UNAUTHENTICATED_CLASS = "unauthenticated"
+OUTCOME_SUCCEEDED = "succeeded"
+OUTCOME_UPSTREAM_ERROR = "upstream_error"
+OUTCOME_UPSTREAM_TIMEOUT = "upstream_timeout"
+OUTCOME_REJECTED = "rejected"
+OUTCOME_CLIENT_GONE = "client_gone"
+OUTCOME_QUEUE_ERROR = "queue_error"
+# A document can legitimately wait many minutes behind a batch run, and a parse
+# of a long scan takes minutes of its own; the default buckets stop at ten
+# seconds and would flatten both into one bin.
+QUEUE_WAIT_BUCKETS = (0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800)
+PARSE_DURATION_BUCKETS = (1, 2, 5, 10, 20, 30, 60, 120, 300, 600)
 
 
 class OcrShimConfig(BaseModel):
@@ -162,6 +190,18 @@ class UpstreamPool:
         """Return how many requests the whole pool can hold right now."""
 
         return len(self._endpoints) * self._capacity_per_replica
+
+    @property
+    def capacity_per_replica(self) -> int:
+        """Return the load one replica accepts before it starts answering 409."""
+
+        return self._capacity_per_replica
+
+    @property
+    def in_flight(self) -> dict[str, int]:
+        """Return how many requests this process has dispatched to each replica."""
+
+        return dict(self._in_flight)
 
     def acquire(self) -> str | None:
         """Claim the least-loaded replica, or ``None`` when every one is full."""
@@ -276,6 +316,171 @@ class OcrQueue:
                 "DELETE FROM flakegraph_ocr_request WHERE id = %s", (request_id,)
             )
 
+    async def depth(self) -> list[QueueDepth]:
+        """Count what every shim replica is holding, by class and status.
+
+        One aggregate over the whole table rather than this replica's rows: the
+        queue is shared, so the depth that matters to an operator is the fleet's.
+        """
+
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT consumer_class, status, count(*) AS depth,
+                       EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - min(created_at)) AS oldest_seconds
+                FROM flakegraph_ocr_request
+                GROUP BY consumer_class, status
+                """
+            )
+            return [
+                QueueDepth(
+                    str(row["consumer_class"]),
+                    str(row["status"]),
+                    int(row["depth"]),
+                    float(row["oldest_seconds"]),
+                )
+                for row in await cursor.fetchall()
+            ]
+
+
+class QueueDepth(NamedTuple):
+    """One row of the fleet-wide queue aggregate."""
+
+    consumer_class: str
+    status: str
+    depth: int
+    oldest_seconds: float
+
+
+class _QueueDepthCollector(Collector):
+    """Expose the last queue aggregate the scrape handler managed to fetch.
+
+    Collection is synchronous and the database pool is not, so the query runs in
+    the async handler before rendering and this collector only reads what it
+    left. When that query failed there is nothing to read, and the series are
+    absent rather than reporting a stale or invented depth.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing fetched, which exposes no depth series at all."""
+
+        self.snapshot: list[QueueDepth] | None = None
+
+    def collect(self) -> Iterable[Metric]:
+        """Render the snapshot as gauges, one series per class and status."""
+
+        if self.snapshot is None:
+            return []
+        depth = GaugeMetricFamily(
+            "flakegraph_ocr_queue_depth",
+            "Requests held in the shared queue across every shim replica.",
+            labels=["consumer_class", "status"],
+        )
+        oldest = GaugeMetricFamily(
+            "flakegraph_ocr_oldest_waiting_seconds",
+            "Age of the longest-waiting request not yet dispatched.",
+            labels=["consumer_class"],
+        )
+        for row in self.snapshot:
+            depth.add_metric([row.consumer_class, row.status], row.depth)
+            if row.status == "waiting":
+                oldest.add_metric([row.consumer_class], row.oldest_seconds)
+        return [depth, oldest]
+
+
+class _UpstreamPoolCollector(Collector):
+    """Read the dispatch bookkeeping the pool already keeps, at scrape time.
+
+    Admission control has to know how loaded each replica is, so the pool holds
+    exactly the numbers a saturation panel needs and nothing has to be counted
+    twice.
+    """
+
+    def __init__(self, upstreams: UpstreamPool) -> None:
+        """Hold the pool whose state is reported."""
+
+        self._upstreams = upstreams
+
+    def collect(self) -> Iterable[Metric]:
+        """Report per-replica load and capacity alongside the replica count."""
+
+        in_flight = GaugeMetricFamily(
+            "flakegraph_ocr_in_flight",
+            "Parses this shim replica currently has dispatched to each parsing replica.",
+            labels=["replica"],
+        )
+        capacity = GaugeMetricFamily(
+            "flakegraph_ocr_replica_capacity",
+            "Concurrent parses the shim allows each parsing replica.",
+            labels=["replica"],
+        )
+        load = self._upstreams.in_flight
+        for address, count in load.items():
+            in_flight.add_metric([address], count)
+            capacity.add_metric([address], self._upstreams.capacity_per_replica)
+        replicas = GaugeMetricFamily(
+            "flakegraph_ocr_upstream_replicas",
+            "Parsing replicas the shim currently resolves.",
+            value=len(load),
+        )
+        return [in_flight, capacity, replicas]
+
+
+class OcrShimMetrics:
+    """Own the series one shim process exposes.
+
+    Each application gets its own registry rather than the process-wide default,
+    which would refuse a second application in the same process and would drag
+    the Python runtime collectors into a scrape that has no use for them.
+    """
+
+    def __init__(self, upstreams: UpstreamPool) -> None:
+        """Register every series up front so an idle shim still exposes them."""
+
+        self.registry = CollectorRegistry()
+        self.requests = Counter(
+            "flakegraph_ocr_requests_total",
+            "Requests answered by the shim, by how they ended.",
+            ["consumer_class", "outcome"],
+            registry=self.registry,
+        )
+        self.queue_wait = Histogram(
+            "flakegraph_ocr_queue_wait_seconds",
+            "Time a request was held from being queued to being dispatched.",
+            ["consumer_class"],
+            buckets=QUEUE_WAIT_BUCKETS,
+            registry=self.registry,
+        )
+        self.parse_duration = Histogram(
+            "flakegraph_ocr_parse_duration_seconds",
+            "Time from dispatching a parse to receiving the last byte of its answer.",
+            ["replica"],
+            buckets=PARSE_DURATION_BUCKETS,
+            registry=self.registry,
+        )
+        self._depth = _QueueDepthCollector()
+        self.registry.register(self._depth)
+        self.registry.register(_UpstreamPoolCollector(upstreams))
+
+    async def refresh_depth(self, queue: OcrQueue) -> None:
+        """Fetch the fleet-wide queue aggregate, or expose none if that fails.
+
+        A scrape must not fail because the queue database blinked: everything
+        this process knows on its own is still worth having, and a gap in the
+        depth series is itself the signal that the database was unreachable.
+        """
+
+        try:
+            self._depth.snapshot = await queue.depth()
+        except Exception:
+            logger.warning("queue depth is unavailable for this scrape", exc_info=True)
+            self._depth.snapshot = None
+
+    def render(self) -> Response:
+        """Serialise every series in the text exposition format."""
+
+        return Response(generate_latest(self.registry), media_type=CONTENT_TYPE_LATEST)
+
 
 def create_app(
     config: OcrShimConfig,
@@ -336,12 +541,22 @@ def create_app(
     )
     app.state.keyring = resolved
     app.state.upstreams = pool_view
+    metrics = OcrShimMetrics(pool_view)
+    app.state.metrics = metrics
 
     @app.get("/health")
     async def health() -> JSONResponse:
         """Report readiness without touching the parsing pool."""
 
         return JSONResponse({"status": "ok", "replicas": len(await pool_view.refresh())})
+
+    @app.get("/metrics")
+    async def scrape(request: Request) -> Response:
+        """Refresh what has to be fetched from outside the process, then render."""
+
+        await pool_view.refresh()
+        await metrics.refresh_depth(request.app.state.queue)
+        return metrics.render()
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def parse(path: str, request: Request) -> Response:
@@ -353,10 +568,10 @@ def create_app(
 
         consumer_class = resolved.classify(_presented_key(request))
         if consumer_class is None:
+            metrics.requests.labels(UNAUTHENTICATED_CLASS, OUTCOME_REJECTED).inc()
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
         priority = resolved.priority_for(consumer_class)
-        request_id = str(uuid4())
         body = await request.body()
 
         # Settle the backend before the request costs anything. Refusing here
@@ -364,39 +579,15 @@ def create_app(
         # immediate answer that names the problem, and supplying the default
         # means a caller who followed MinerU's own documentation still works.
         if route == PARSE_ROUTE and request.method == "POST":
-            boundary = _multipart_boundary(request.headers.get("content-type", ""))
-            if boundary is not None:
-                declared = _declared_backend(body, boundary)
-                if declared is None:
-                    body = _with_default_backend(body, boundary)
-                elif declared not in SUPPORTED_PARSE_BACKENDS:
-                    supported = ", ".join(sorted(SUPPORTED_PARSE_BACKENDS))
-                    return JSONResponse(
-                        {
-                            "error": f"unsupported backend '{declared}'",
-                            "supported_backends": sorted(SUPPORTED_PARSE_BACKENDS),
-                            "detail": (
-                                "this parsing pool is built pipeline-only; "
-                                f"supported backends: {supported}"
-                            ),
-                        },
-                        status_code=400,
-                    )
+            settled = _settle_backend(request.headers.get("content-type", ""), body)
+            if isinstance(settled, JSONResponse):
+                metrics.requests.labels(consumer_class, OUTCOME_REJECTED).inc()
+                return settled
+            body = settled
 
-        held: OcrQueue = request.app.state.queue
-
-        await held.enqueue(request_id, priority, consumer_class)
-        address: str | None = None
-        try:
-            address = await _await_slot(
-                held, pool_view, request_id, priority, consumer_class, config
-            )
-            return await _forward(request, route, body, address, pool_view, held, request_id)
-        except Exception:
-            if address is not None:
-                pool_view.release(address)
-            await held.release(request_id)
-            raise
+        return await _hold_and_forward(
+            request, route, body, priority, consumer_class, pool_view, config, metrics
+        )
 
     return app
 
@@ -411,6 +602,42 @@ def run(config: OcrShimConfig | None = None) -> None:
         port=resolved.listen_port,
         log_level="info",
     )
+
+
+async def _hold_and_forward(
+    request: Request,
+    route: str,
+    body: bytes,
+    priority: int,
+    consumer_class: str,
+    upstreams: UpstreamPool,
+    config: OcrShimConfig,
+    metrics: OcrShimMetrics,
+) -> Response:
+    """Queue the request, wait for its turn, relay it, and account for the result."""
+
+    held: OcrQueue = request.app.state.queue
+    request_id = str(uuid4())
+    queued_at = time.perf_counter()
+    address: str | None = None
+    try:
+        await held.enqueue(request_id, priority, consumer_class)
+        address = await _await_slot(held, upstreams, request_id, priority, consumer_class, config)
+        metrics.queue_wait.labels(consumer_class).observe(time.perf_counter() - queued_at)
+        return await _forward(
+            request, route, body, address, upstreams, held, request_id, metrics, consumer_class
+        )
+    except BaseException as exc:
+        # Nothing was dispatched if no replica was claimed, so whatever
+        # failed did so while the request sat in the queue.
+        outcome = _failure_outcome(exc) if address is not None else OUTCOME_QUEUE_ERROR
+        if isinstance(exc, asyncio.CancelledError):
+            outcome = OUTCOME_CLIENT_GONE
+        metrics.requests.labels(consumer_class, outcome).inc()
+        if address is not None:
+            upstreams.release(address)
+        await held.release(request_id)
+        raise
 
 
 async def _await_slot(
@@ -450,6 +677,8 @@ async def _forward(
     upstreams: UpstreamPool,
     queue: OcrQueue,
     request_id: str,
+    metrics: OcrShimMetrics,
+    consumer_class: str,
 ) -> Response:
     """Relay the held request to the chosen replica and free its slot after."""
 
@@ -461,6 +690,7 @@ async def _forward(
         headers=_forwarded_headers(request.headers),
         content=body,
     )
+    dispatched_at = time.perf_counter()
     response = await client.send(upstream, stream=True)
 
     async def _finish() -> None:
@@ -468,12 +698,37 @@ async def _forward(
         upstreams.release(address)
         await queue.release(request_id)
 
+    async def _measured() -> AsyncIterator[bytes]:
+        # The parse is only over when its last byte has been relayed, and the
+        # way the relay stops is the outcome: a clean end is judged by the
+        # status the pool answered with, a transport failure is the pool's,
+        # and a closed-early generator means the caller stopped listening.
+        outcome = OUTCOME_CLIENT_GONE
+        try:
+            async for chunk in response.aiter_raw():
+                yield chunk
+            outcome = OUTCOME_SUCCEEDED if response.is_success else OUTCOME_UPSTREAM_ERROR
+        except httpx.HTTPError as exc:
+            outcome = _failure_outcome(exc)
+            raise
+        finally:
+            metrics.parse_duration.labels(address).observe(time.perf_counter() - dispatched_at)
+            metrics.requests.labels(consumer_class, outcome).inc()
+
     return StreamingResponse(
-        response.aiter_raw(),
+        _measured(),
         status_code=response.status_code,
         headers=dict(response.headers),
         background=BackgroundTask(_finish),
     )
+
+
+def _failure_outcome(exc: BaseException) -> str:
+    """Name what went wrong with a dispatched request, within the fixed vocabulary."""
+
+    if isinstance(exc, httpx.TimeoutException):
+        return OUTCOME_UPSTREAM_TIMEOUT
+    return OUTCOME_UPSTREAM_ERROR
 
 
 def _owner_id() -> str:
@@ -490,6 +745,32 @@ def _presented_key(request: Request) -> str:
     if scheme.lower() != "bearer":
         return ""
     return credential.strip()
+
+
+def _settle_backend(content_type: str, body: bytes) -> bytes | JSONResponse:
+    """Return the body with a backend the pool can run, or the refusal to send.
+
+    A body that is not multipart, or that already names a supported backend, is
+    returned as it was.
+    """
+
+    boundary = _multipart_boundary(content_type)
+    if boundary is None:
+        return body
+    declared = _declared_backend(body, boundary)
+    if declared is None:
+        return _with_default_backend(body, boundary)
+    if declared in SUPPORTED_PARSE_BACKENDS:
+        return body
+    supported = ", ".join(sorted(SUPPORTED_PARSE_BACKENDS))
+    return JSONResponse(
+        {
+            "error": f"unsupported backend '{declared}'",
+            "supported_backends": sorted(SUPPORTED_PARSE_BACKENDS),
+            "detail": f"this parsing pool is built pipeline-only; supported backends: {supported}",
+        },
+        status_code=400,
+    )
 
 
 def _multipart_boundary(content_type: str) -> bytes | None:

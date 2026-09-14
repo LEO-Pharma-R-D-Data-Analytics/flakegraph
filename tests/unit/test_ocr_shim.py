@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
+from prometheus_client.parser import text_string_to_metric_families
 from psycopg_pool import AsyncConnectionPool
 
 from kg_processor.serving import ocr_shim
-from kg_processor.serving.ocr_shim import OcrShimConfig, UpstreamPool, create_app
+from kg_processor.serving.ocr_shim import (
+    OcrQueue,
+    OcrShimConfig,
+    QueueDepth,
+    UpstreamPool,
+    create_app,
+)
 from kg_processor.serving.priority import ConsumerKeyring
 
 KEYRING = ConsumerKeyring(
@@ -45,6 +56,48 @@ class _RecordingQueue:
     async def release(self, request_id: str) -> None:
         self.released.append(request_id)
 
+    async def depth(self) -> list[QueueDepth]:
+        return []
+
+
+class _FakeConnectionPool:
+    """Stands in for the psycopg pool, answering every query with fixed rows.
+
+    Either hands out a connection whose cursors return ``rows``, or refuses to
+    hand out any connection at all when built with ``failure``.
+    """
+
+    def __init__(
+        self, rows: list[dict[str, Any]] | None = None, failure: Exception | None = None
+    ) -> None:
+        self.rows = rows or []
+        self.failure = failure
+
+    @asynccontextmanager
+    async def connection(self) -> AsyncIterator[_FakeConnectionPool]:
+        if self.failure is not None:
+            raise self.failure
+        yield self
+
+    async def execute(
+        self, query: str, params: tuple[Any, ...] | None = None
+    ) -> _FakeConnectionPool:
+        return self
+
+    async def fetchall(self) -> list[dict[str, Any]]:
+        return self.rows
+
+
+def _samples(exposition: str, name: str) -> dict[tuple[tuple[str, str], ...], float]:
+    """Return every sample of one series, keyed by its sorted label pairs."""
+
+    return {
+        tuple(sorted(sample.labels.items())): float(sample.value)
+        for family in text_string_to_metric_families(exposition)
+        for sample in family.samples
+        if sample.name == name
+    }
+
 
 def _pool(replicas: tuple[str, ...], capacity: int = 2) -> UpstreamPool:
     async def resolver() -> tuple[str, ...]:
@@ -78,7 +131,7 @@ class _Pool:
 
 def _client(
     upstream: _Pool,
-    queue: _RecordingQueue,
+    queue: _RecordingQueue | OcrQueue,
     replicas: tuple[str, ...] = ("10.0.0.1", "10.0.0.2"),
     capacity: int = 2,
 ) -> TestClient:
@@ -368,3 +421,107 @@ def test_the_queue_pool_checks_a_connection_before_handing_it_out(
 
     assert captured["conninfo"] == "postgresql://queue.invalid/flakegraph"
     assert captured["check"] is AsyncConnectionPool.check_connection
+
+
+def test_metrics_is_a_text_exposition_of_the_shims_own_series() -> None:
+    upstream, queue = _Pool(), _RecordingQueue()
+    with _client(upstream, queue) as client:
+        response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    families = {family.name for family in text_string_to_metric_families(response.text)}
+    assert {
+        "flakegraph_ocr_requests",
+        "flakegraph_ocr_queue_wait_seconds",
+        "flakegraph_ocr_parse_duration_seconds",
+        "flakegraph_ocr_in_flight",
+        "flakegraph_ocr_replica_capacity",
+        "flakegraph_ocr_upstream_replicas",
+    } <= families
+    # The ping route stays a liveness answer, not a scrape.
+    assert client.get("/ping").json() == {"status": "ok"}
+
+
+def test_a_successful_parse_is_observed_against_the_replica_that_served_it() -> None:
+    upstream, queue = _Pool(), _RecordingQueue()
+    with _client(upstream, queue, replicas=("10.0.0.1",), capacity=3) as client:
+        response = client.post(
+            "/file_parse",
+            headers={"Authorization": "Bearer sk-chat"},
+            files={"files": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+        )
+        assert response.status_code == 200
+        exposition = client.get("/metrics").text
+
+    assert _samples(exposition, "flakegraph_ocr_requests_total") == {
+        (("consumer_class", "interactive"), ("outcome", "succeeded")): 1
+    }
+    assert _samples(exposition, "flakegraph_ocr_queue_wait_seconds_count") == {
+        (("consumer_class", "interactive"),): 1
+    }
+    assert _samples(exposition, "flakegraph_ocr_parse_duration_seconds_count") == {
+        (("replica", "10.0.0.1"),): 1
+    }
+    assert _samples(exposition, "flakegraph_ocr_in_flight") == {(("replica", "10.0.0.1"),): 0}
+    assert _samples(exposition, "flakegraph_ocr_replica_capacity") == {
+        (("replica", "10.0.0.1"),): 3
+    }
+    assert _samples(exposition, "flakegraph_ocr_upstream_replicas") == {(): 1}
+
+
+def test_a_refused_request_is_counted_without_reaching_the_queue() -> None:
+    upstream, queue = _Pool(), _RecordingQueue()
+    with _client(upstream, queue) as client:
+        client.post("/file_parse", headers={"Authorization": "Bearer sk-nope"})
+        client.post(
+            "/file_parse",
+            headers={"Authorization": "Bearer sk-chat"},
+            files={"files": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+            data={"backend": "hybrid-engine"},
+        )
+        exposition = client.get("/metrics").text
+
+    assert _samples(exposition, "flakegraph_ocr_requests_total") == {
+        (("consumer_class", "unauthenticated"), ("outcome", "rejected")): 1,
+        (("consumer_class", "interactive"), ("outcome", "rejected")): 1,
+    }
+    assert "sk-nope" not in exposition
+
+
+def test_queue_depth_is_read_across_the_whole_fleet_at_scrape_time() -> None:
+    rows = [
+        {"consumer_class": "batch", "status": "waiting", "depth": 3, "oldest_seconds": 42.5},
+        {"consumer_class": "batch", "status": "dispatched", "depth": 2, "oldest_seconds": 90.0},
+        {"consumer_class": "interactive", "status": "waiting", "depth": 1, "oldest_seconds": 0.5},
+    ]
+    queue = OcrQueue(_FakeConnectionPool(rows), "shim-a", 60.0)
+    with _client(_Pool(), queue) as client:
+        exposition = client.get("/metrics").text
+
+    assert _samples(exposition, "flakegraph_ocr_queue_depth") == {
+        (("consumer_class", "batch"), ("status", "waiting")): 3,
+        (("consumer_class", "batch"), ("status", "dispatched")): 2,
+        (("consumer_class", "interactive"), ("status", "waiting")): 1,
+    }
+    # Only what is still waiting has an age worth alerting on.
+    assert _samples(exposition, "flakegraph_ocr_oldest_waiting_seconds") == {
+        (("consumer_class", "batch"),): 42.5,
+        (("consumer_class", "interactive"),): 0.5,
+    }
+
+
+def test_a_scrape_survives_the_queue_database_being_unreachable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    failure = psycopg.OperationalError("connection refused")
+    queue = OcrQueue(_FakeConnectionPool(failure=failure), "shim-a", 60.0)
+    with _client(_Pool(), queue) as client, caplog.at_level(logging.WARNING):
+        response = client.get("/metrics")
+
+    assert response.status_code == 200
+    families = {family.name for family in text_string_to_metric_families(response.text)}
+    assert "flakegraph_ocr_requests" in families
+    assert "flakegraph_ocr_replica_capacity" in families
+    assert "flakegraph_ocr_queue_depth" not in families
+    assert "queue depth is unavailable" in caplog.text

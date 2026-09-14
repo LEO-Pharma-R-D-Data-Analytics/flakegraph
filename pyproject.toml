@@ -23,6 +23,7 @@ dependencies = [
   "numpy>=2.1",
   "pandas>=2.2",
   "plotly>=6.8",
+  "prometheus-client>=0.26.0",
   "psycopg[binary,pool]>=3.3",
   "pyarrow>=18.0",
   "pydantic>=2.10",
