@@ -123,25 +123,32 @@ data:
       # has no dependency rows - its barrier is every other task in the run -
       # so it is judged the way the demand view judges it.
       query: |
-        SELECT task.stage,
-               CASE WHEN task.priority >= 1000 THEN 'interactive' ELSE 'bulk' END AS priority_band,
-               extract(epoch FROM now() - min(task.available_at))::float AS seconds
-        FROM flakegraph_task AS task
-        WHERE task.status = 'queued'
-          AND task.available_at <= now()
-          AND (
-              (task.stage <> 'finalize_graph' AND task.remaining_dependencies = 0)
-              OR (
-                  task.stage = 'finalize_graph'
-                  AND NOT EXISTS (
-                      SELECT 1 FROM flakegraph_task AS unfinished
-                      WHERE unfinished.run_id = task.run_id
-                        AND unfinished.id <> task.id
-                        AND unfinished.status <> 'succeeded'
+        SELECT stage, priority_band, COALESCE(queued.seconds, 0)::float AS seconds
+        FROM unnest(ARRAY[{{ $stageList }}]) AS stages(stage)
+        CROSS JOIN unnest(ARRAY['interactive', 'bulk']) AS bands(priority_band)
+        LEFT JOIN (
+            SELECT task.stage AS queued_stage,
+                   CASE WHEN task.priority >= 1000 THEN 'interactive' ELSE 'bulk' END AS queued_band,
+                   extract(epoch FROM now() - min(task.available_at))::float AS seconds
+            FROM flakegraph_task AS task
+            WHERE task.status = 'queued'
+              AND task.available_at <= now()
+              AND (
+                  (task.stage <> 'finalize_graph' AND task.remaining_dependencies = 0)
+                  OR (
+                      task.stage = 'finalize_graph'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM flakegraph_task AS unfinished
+                          WHERE unfinished.run_id = task.run_id
+                            AND unfinished.id <> task.id
+                            AND unfinished.status <> 'succeeded'
+                      )
                   )
               )
-          )
-        GROUP BY 1, 2
+            GROUP BY 1, 2
+        ) AS queued
+          ON queued.queued_stage = stages.stage
+         AND queued.queued_band = bands.priority_band
       primary: true
       target_databases: [{{ $database | quote }}]
       metrics:
@@ -201,9 +208,13 @@ data:
             usage: GAUGE
             description: Runs in this status
     flakegraph_publications:
+      # Every status the table admits, so a fleet that has published nothing
+      # reads as zeros rather than as no series at all.
       query: |
-        SELECT status, count(*)::float AS count
-        FROM flakegraph_publication
+        SELECT statuses.status, count(publication.generation)::float AS count
+        FROM unnest(ARRAY['queued', 'running', 'succeeded', 'failed', 'cancelled']) AS statuses(status)
+        LEFT JOIN flakegraph_publication AS publication
+          ON publication.status = statuses.status
         GROUP BY 1
       primary: true
       target_databases: [{{ $database | quote }}]
