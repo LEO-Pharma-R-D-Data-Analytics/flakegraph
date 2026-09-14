@@ -4,13 +4,18 @@
 # bootstrap-node.sh leaves a running k3s with a GPU-capable container runtime and
 # nothing else. This script adds the pieces the FlakeGraph chart depends on but
 # does not own: GPU scheduling, queue-driven autoscaling, PostgreSQL for task
-# leases, and S3-compatible storage for artifacts.
+# leases, S3-compatible storage for artifacts, and the Prometheus/Grafana stack
+# the chart wires its dashboards and alerts into.
 #
 # It runs unprivileged against the kubeconfig k3s wrote, because none of it needs
 # root — keeping the privileged surface confined to bootstrap-node.sh is the
 # point of the split.
 #
-#   ./install-cluster.sh
+#   FLAKEGRAPH_DOMAIN=example.com ./install-cluster.sh
+#
+# The domain is the one the FlakeGraph chart's Ingress will serve; Grafana
+# needs it up front to build its own URLs. monitoring-values.yaml must sit
+# beside this script.
 #
 # Everything is installed with `helm upgrade --install`, so re-running converges
 # rather than duplicating. Chart versions are pinned: an unpinned fleet drifts
@@ -18,8 +23,14 @@
 set -euo pipefail
 
 namespace="${FLAKEGRAPH_NAMESPACE:-flakegraph}"
+domain="${FLAKEGRAPH_DOMAIN:-}"
+# Distinguishes this cluster's series once several Sparks share a store or an
+# Alertmanager. The domain is unique per deployment, so it is the default.
+cluster="${FLAKEGRAPH_CLUSTER:-$domain}"
 helm_version="${FLAKEGRAPH_HELM_VERSION:-v3.19.0}"
 bin_dir="${FLAKEGRAPH_BIN_DIR:-$HOME/.local/bin}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+monitoring_values="$script_dir/monitoring-values.yaml"
 
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
 export PATH="$bin_dir:$PATH"
@@ -31,6 +42,18 @@ if ! kubectl get nodes >/dev/null 2>&1; then
   echo "cannot reach the cluster with KUBECONFIG=$KUBECONFIG" >&2
   echo "run bootstrap-node.sh --role server on this node first" >&2
   exit 1
+fi
+
+# Checked before anything is installed: failing at the last step would leave
+# the operator re-running the whole script for one missing variable.
+if [[ -z "$domain" ]]; then
+  echo "FLAKEGRAPH_DOMAIN is not set; Grafana needs the public domain for its URLs" >&2
+  echo "usage: FLAKEGRAPH_DOMAIN=example.com $0" >&2
+  exit 2
+fi
+if [[ ! -f "$monitoring_values" ]]; then
+  echo "missing $monitoring_values; copy it next to this script" >&2
+  exit 2
 fi
 
 # ---------------------------------------------------------------------------
@@ -59,8 +82,9 @@ add_repo nvdp https://nvidia.github.io/k8s-device-plugin
 add_repo kedacore https://kedacore.github.io/charts
 add_repo cnpg https://cloudnative-pg.github.io/charts
 add_repo minio https://charts.min.io/
+add_repo prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update >/dev/null
-ok "nvdp, kedacore, cnpg, minio"
+ok "nvdp, kedacore, cnpg, minio, prometheus-community"
 
 # ---------------------------------------------------------------------------
 step "GPU scheduling"
@@ -82,9 +106,16 @@ step "Queue-driven autoscaling"
 
 # FlakeGraph scales workers from the depth of its PostgreSQL task queue rather
 # than from CPU, so KEDA is a hard dependency of the chart's autoscaling paths.
+#
+# The operator's Prometheus metrics (keda_scaler_*: what each scaler last
+# read, whether it errored, whether it is active) are off by default; enabling
+# them adds a `metrics` port to the keda-operator Service that the monitoring
+# stack below scrapes. It is the only view of what KEDA thinks the queue depth
+# is, which is the first question when workers fail to scale.
 helm upgrade --install keda kedacore/keda \
   --namespace keda --create-namespace \
   --version 2.17.2 \
+  --set prometheus.operator.enabled=true \
   --wait --timeout 10m >/dev/null
 ok "keda installed"
 
@@ -139,12 +170,57 @@ helm upgrade --install minio minio/minio \
 ok "minio installed with bucket flakegraph-artifacts"
 
 # ---------------------------------------------------------------------------
+step "Monitoring"
+
+# kube-prometheus-stack goes into the application namespace, not a monitoring
+# one. Traefik on this cluster forbids cross-namespace middleware references
+# and ExternalName backends, so Grafana can only sit behind the application's
+# shared SSO middlewares if it shares their namespace. The FlakeGraph chart
+# therefore renders Grafana's Ingress, NetworkPolicy, ServiceMonitors,
+# dashboards and rules itself; this step only installs the stack, configured
+# by monitoring-values.yaml beside this script.
+monitoring_version="91.2.2"
+
+if ! kubectl -n "$namespace" get secret flakegraph-grafana-admin >/dev/null 2>&1; then
+  # People sign in through the SSO proxy; this credential is for Grafana's
+  # HTTP API. Generated once and kept only in the cluster, like the object
+  # storage credential above.
+  kubectl -n "$namespace" create secret generic flakegraph-grafana-admin \
+    --from-literal=admin-user=admin \
+    --from-literal=admin-password="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)" >/dev/null
+  ok "generated grafana admin credentials"
+fi
+
+# Helm installs a chart's CRDs once and never touches them again, so an
+# upgraded operator would run against stale CRDs and reject the fields it
+# was upgraded for. Applying them from the chart before every install keeps
+# the two in step; server-side apply with --force-conflicts is what the chart
+# documents, because the Kubernetes CRD objects are too large for the
+# client-side last-applied annotation.
+helm show crds prometheus-community/kube-prometheus-stack --version "$monitoring_version" \
+  | kubectl apply --server-side --force-conflicts -f - >/dev/null
+ok "prometheus operator CRDs applied"
+
+# The key `grafana.ini` contains a dot, hence the escaped form in --set.
+helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+  --namespace "$namespace" \
+  --version "$monitoring_version" \
+  --values "$monitoring_values" \
+  --set-string "grafana.grafana\.ini.server.root_url=https://grafana.$domain/" \
+  --set-string "prometheus.prometheusSpec.externalLabels.cluster=$cluster" \
+  --wait --timeout 15m >/dev/null
+ok "kube-prometheus-stack installed"
+
+# ---------------------------------------------------------------------------
 step "Done"
 
 cat <<SUMMARY
     Namespace:      $namespace
     Object storage: http://minio.$namespace.svc.cluster.local:9000
     Credentials:    secret/flakegraph-artifacts in $namespace
+    Grafana:        https://grafana.$domain/  (once the FlakeGraph chart renders its Ingress)
+    Grafana admin:  secret/flakegraph-grafana-admin in $namespace (API use; people sign in via SSO)
+    Prometheus:     http://monitoring-kube-prometheus-prometheus.$namespace.svc.cluster.local:9090
 
     Install FlakeGraph itself with the chart in deploy/helm/flakegraph, using a
     values file derived from deploy/examples/k3s-spark-values.yaml.
