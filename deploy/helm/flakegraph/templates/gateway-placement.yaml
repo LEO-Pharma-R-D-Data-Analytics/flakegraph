@@ -283,6 +283,14 @@ spec:
       port: {{ $placement.service.port }}
       targetPort: http
       protocol: TCP
+    # The picker's own metrics. Published on the Service always, because a
+    # ServiceMonitor can only name a Service port, and the endpoint itself
+    # authenticates its callers: a scrape without a token the API server
+    # vouches for is refused, so exposing the port hands nobody anything.
+    - name: metrics
+      port: {{ $epp.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
 ---
 apiVersion: apps/v1
 kind: Deployment

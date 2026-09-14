@@ -12,6 +12,30 @@ spec:
   postgresql:
     parameters:
       max_connections: {{ .Values.database.cloudNativePG.maxConnections | quote }}
+  {{- if .Values.monitoring.enabled }}
+  monitoring:
+    # The operator's exporter, scraped through the PodMonitor it creates. The
+    # custom queries turn the coordination tables into series: queue depth per
+    # stage and band, failures, expired leases, demand - the numbers KEDA
+    # scales on, made visible. They run as the operator's own superuser over
+    # the local socket, so the read-only role below is not involved.
+    enablePodMonitor: true
+    customQueriesConfigMap:
+      - name: {{ include "flakegraph.postgresQueriesName" . }}
+        key: queries.yaml
+  managed:
+    roles:
+      # What Grafana signs in as. Read-only over every table, including ones
+      # a later schema version adds, so a dashboard never needs a grant to
+      # follow a migration. The password lives in a Secret the chart keeps
+      # stable across upgrades; the operator reconciles the role to match it.
+      - name: {{ .Values.monitoring.database.role }}
+        login: true
+        inRoles: [pg_read_all_data]
+        passwordSecret:
+          name: {{ .Values.monitoring.database.secretName }}
+        ensure: present
+  {{- end }}
   bootstrap:
     initdb:
       database: {{ .Values.database.cloudNativePG.database }}

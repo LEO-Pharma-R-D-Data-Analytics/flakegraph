@@ -212,6 +212,9 @@ spec:
         {{- range $name, $host := $ingress.hosts }}
         - {{ printf "%s.%s" $host $ingress.domain | quote }}
         {{- end }}
+        {{- if $.Values.monitoring.enabled }}
+        - {{ printf "%s.%s" $.Values.monitoring.grafana.host $ingress.domain | quote }}
+        {{- end }}
   {{- end }}
   rules:
     - host: {{ $authHost | quote }}
@@ -230,7 +233,15 @@ spec:
     an application's own path, not the gate's, and routing it here sends the
     viewer back to sign in at the moment they finish signing in.
     */}}
+    {{- $gatedHosts := list }}
     {{- range $name, $host := $ingress.hosts }}
+    {{- $gatedHosts = append $gatedHosts $host }}
+    {{- end }}
+    {{- if $.Values.monitoring.enabled }}
+    {{- /* Grafana is gated the same way, so its sign-in lands on its host too. */}}
+    {{- $gatedHosts = append $gatedHosts $.Values.monitoring.grafana.host }}
+    {{- end }}
+    {{- range $host := $gatedHosts }}
     - host: {{ printf "%s.%s" $host $ingress.domain | quote }}
       http:
         paths:

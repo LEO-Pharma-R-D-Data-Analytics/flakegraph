@@ -1,0 +1,206 @@
+{{- if and .Values.monitoring.enabled .Values.database.cloudNativePG.enabled }}
+{{- $database := .Values.database.cloudNativePG.database }}
+{{- /*
+The stages and the pools that serve them, from the same values the worker
+Deployments and their ScaledObjects are rendered from - so a series here is
+grouped the way the fleet is actually scaled.
+*/}}
+{{- $stages := list }}
+{{- $poolCases := list }}
+{{- range $poolName, $pool := .Values.workers }}
+{{- range $stage := $pool.stages }}
+{{- $stages = append $stages (printf "'%s'" $stage) }}
+{{- $poolCases = append $poolCases (printf "WHEN '%s' THEN '%s'" $stage $poolName) }}
+{{- end }}
+{{- end }}
+{{- $stageList := join ", " $stages }}
+{{- $poolCase := printf "CASE stage %s ELSE stage END" (join " " $poolCases) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "flakegraph.postgresQueriesName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitoring
+data:
+  # SQL the CloudNativePG exporter runs on every scrape and exposes as
+  # cnpg_<query>_<column>. It runs on the primary only, as the operator's own
+  # superuser over the local socket; nothing here touches the read-only role
+  # Grafana holds.
+  #
+  # Two conventions worth knowing before adding a query. The band split is the
+  # one flakegraph_worker_demand uses - a run priority of 1000 or more is
+  # interactive - so a queue drawn here and a pool scaled by KEDA agree about
+  # which work is urgent. And per-stage counts are LEFT JOINed against the
+  # full list of stages so an empty stage reports zero rather than vanishing:
+  # a series that disappears when it is fine is one a dashboard cannot draw
+  # and an alert cannot tell from a scrape failure.
+  queries.yaml: |
+    flakegraph_tasks:
+      query: |
+        SELECT stage, status,
+               CASE WHEN priority >= 1000 THEN 'interactive' ELSE 'bulk' END AS priority_band,
+               count(*)::float AS count
+        FROM flakegraph_task
+        GROUP BY 1, 2, 3
+      primary: true
+      # A full pass over the task table, which a large run makes millions of
+      # rows. Cached so a fifteen-second scrape does not become a fifteen-second
+      # sequential scan.
+      cache_seconds: 30
+      target_databases: [{{ $database | quote }}]
+      metrics:
+        - stage:
+            usage: LABEL
+            description: Pipeline stage
+        - status:
+            usage: LABEL
+            description: Task status
+        - priority_band:
+            usage: LABEL
+            description: interactive for a run priority of 1000 or more, bulk otherwise
+        - count:
+            usage: GAUGE
+            description: Tasks in this stage, status, and band
+    flakegraph_tasks_failed_recent:
+      query: |
+        SELECT stages.stage, count(task.id)::float AS count
+        FROM unnest(ARRAY[{{ $stageList }}]) AS stages(stage)
+        LEFT JOIN flakegraph_task AS task
+          ON task.stage = stages.stage
+         AND task.status = 'failed'
+         AND task.updated_at > now() - interval '1 hour'
+        GROUP BY 1
+      primary: true
+      target_databases: [{{ $database | quote }}]
+      metrics:
+        - stage:
+            usage: LABEL
+            description: Pipeline stage
+        - count:
+            usage: GAUGE
+            description: Tasks that failed in the last hour
+    flakegraph_tasks_near_attempt_limit:
+      query: |
+        SELECT stages.stage, count(task.id)::float AS count
+        FROM unnest(ARRAY[{{ $stageList }}]) AS stages(stage)
+        LEFT JOIN flakegraph_task AS task
+          ON task.stage = stages.stage
+         AND task.status IN ('queued', 'running')
+         AND task.attempts >= task.max_attempts - 1
+        GROUP BY 1
+      primary: true
+      target_databases: [{{ $database | quote }}]
+      metrics:
+        - stage:
+            usage: LABEL
+            description: Pipeline stage
+        - count:
+            usage: GAUGE
+            description: Queued or running tasks on their last permitted attempt
+    flakegraph_tasks_lease_expired:
+      query: |
+        SELECT stages.stage, count(task.id)::float AS count
+        FROM unnest(ARRAY[{{ $stageList }}]) AS stages(stage)
+        LEFT JOIN flakegraph_task AS task
+          ON task.stage = stages.stage
+         AND task.status = 'running'
+         AND task.lease_expires_at < now()
+        GROUP BY 1
+      primary: true
+      target_databases: [{{ $database | quote }}]
+      metrics:
+        - stage:
+            usage: LABEL
+            description: Pipeline stage
+        - count:
+            usage: GAUGE
+            description: Running tasks whose lease has lapsed and that no worker has reclaimed
+    flakegraph_tasks_oldest_queued:
+      # Age of the oldest task a worker could claim right now, so "queued" here
+      # means claimable: released, with its dependencies met. The final stage
+      # has no dependency rows - its barrier is every other task in the run -
+      # so it is judged the way the demand view judges it.
+      query: |
+        SELECT task.stage,
+               CASE WHEN task.priority >= 1000 THEN 'interactive' ELSE 'bulk' END AS priority_band,
+               extract(epoch FROM now() - min(task.available_at))::float AS seconds
+        FROM flakegraph_task AS task
+        WHERE task.status = 'queued'
+          AND task.available_at <= now()
+          AND (
+              (task.stage <> 'finalize_graph' AND task.remaining_dependencies = 0)
+              OR (
+                  task.stage = 'finalize_graph'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM flakegraph_task AS unfinished
+                      WHERE unfinished.run_id = task.run_id
+                        AND unfinished.id <> task.id
+                        AND unfinished.status <> 'succeeded'
+                  )
+              )
+          )
+        GROUP BY 1, 2
+      primary: true
+      target_databases: [{{ $database | quote }}]
+      metrics:
+        - stage:
+            usage: LABEL
+            description: Pipeline stage
+        - priority_band:
+            usage: LABEL
+            description: interactive for a run priority of 1000 or more, bulk otherwise
+        - seconds:
+            usage: GAUGE
+            description: Seconds the oldest claimable task has waited
+    flakegraph_worker_demand:
+      # What KEDA scales on, with the pool that would serve each stage beside
+      # it, so demand can be set against a pool's available replicas.
+      query: |
+        SELECT stage, {{ $poolCase }} AS pool, priority_band, desired_workers::float AS desired_workers
+        FROM flakegraph_worker_demand
+      primary: true
+      target_databases: [{{ $database | quote }}]
+      metrics:
+        - stage:
+            usage: LABEL
+            description: Pipeline stage
+        - pool:
+            usage: LABEL
+            description: Worker pool that serves the stage
+        - priority_band:
+            usage: LABEL
+            description: interactive for a run priority of 1000 or more, bulk otherwise
+        - desired_workers:
+            usage: GAUGE
+            description: Ready tasks, active leases, and pending publications a worker could take
+    flakegraph_runs:
+      query: |
+        SELECT status, count(*)::float AS count
+        FROM flakegraph_run
+        GROUP BY 1
+      primary: true
+      target_databases: [{{ $database | quote }}]
+      metrics:
+        - status:
+            usage: LABEL
+            description: Run status
+        - count:
+            usage: GAUGE
+            description: Runs in this status
+    flakegraph_publications:
+      query: |
+        SELECT status, count(*)::float AS count
+        FROM flakegraph_publication
+        GROUP BY 1
+      primary: true
+      target_databases: [{{ $database | quote }}]
+      metrics:
+        - status:
+            usage: LABEL
+            description: Publication status
+        - count:
+            usage: GAUGE
+            description: Graph publications in this status
+{{- end }}

@@ -18,7 +18,8 @@
     "workers",
     "autoscaling",
     "scheduling",
-    "distributed"
+    "distributed",
+    "monitoring"
   ],
   "properties": {
     "image": {
@@ -1946,6 +1947,141 @@
       "type": "array",
       "items": {
         "type": "object"
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "release",
+        "scrapeInterval",
+        "grafana",
+        "database",
+        "rules"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "release": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scrapeInterval": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h|d|w|y)$"
+        },
+        "grafana": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "host",
+            "servicePort"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "minLength": 1
+            },
+            "servicePort": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "secretName"
+          ],
+          "properties": {
+            "role": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
+            },
+            "secretName": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "rules": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "thresholds"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "thresholds": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "targetDownFor",
+                "kvCacheUsage",
+                "kvCacheUsageFor",
+                "ttftP95Seconds",
+                "ttftFor",
+                "ocrOldestWaitingSeconds",
+                "ocrUpstreamFailureRatio",
+                "taskFailuresPerHour",
+                "taskAttentionFor",
+                "workerDemandUnmetFor"
+              ],
+              "properties": {
+                "targetDownFor": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ms|s|m|h|d|w|y)$"
+                },
+                "kvCacheUsage": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1
+                },
+                "kvCacheUsageFor": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ms|s|m|h|d|w|y)$"
+                },
+                "ttftP95Seconds": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "ttftFor": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ms|s|m|h|d|w|y)$"
+                },
+                "ocrOldestWaitingSeconds": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "ocrUpstreamFailureRatio": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1
+                },
+                "taskFailuresPerHour": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "taskAttentionFor": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ms|s|m|h|d|w|y)$"
+                },
+                "workerDemandUnmetFor": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ms|s|m|h|d|w|y)$"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },

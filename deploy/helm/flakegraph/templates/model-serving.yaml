@@ -23,6 +23,11 @@ metadata:
   labels:
     {{- include "flakegraph.labels" . | nindent 4 }}
     app.kubernetes.io/component: model-serving
+    # Both Services here front the same pods. A ServiceMonitor selecting on the
+    # component alone would find both and scrape every engine twice under two
+    # job names, so the one to scrape through is marked, and it is this one:
+    # headless, so each engine is a target of its own rather than a virtual IP.
+    flakegraph.io/scrape: "true"
 spec:
   clusterIP: None
   selector:

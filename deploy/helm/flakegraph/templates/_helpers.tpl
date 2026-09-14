@@ -192,3 +192,35 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
 {{- end -}}
+
+{{/* The gate's middlewares, as the annotation every gated Ingress carries.
+
+     Order matters, and it is the reverse of the intuition: middlewares run
+     outermost first, so the errors middleware has to wrap the gate in order to
+     see its refusal and turn it into a redirect. Listed the other way round the
+     gate still refuses, and the browser is handed a bare 401. Defined once so
+     every host behind the gate is gated the same way. */}}
+{{- define "flakegraph.authProxyMiddlewares" -}}
+{{- printf "%s-%s-errors@kubernetescrd,%s-%s-auth@kubernetescrd" .Release.Namespace (include "flakegraph.authProxyName" .) .Release.Namespace (include "flakegraph.authProxyName" .) -}}
+{{- end -}}
+
+{{/* Names produced by the kube-prometheus-stack release monitoring addresses. */}}
+{{- define "flakegraph.grafanaServiceName" -}}
+{{- printf "%s-grafana" .Values.monitoring.release | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/* The ConfigMap of SQL the CloudNativePG exporter runs as metrics. */}}
+{{- define "flakegraph.postgresQueriesName" -}}
+{{- printf "%s-postgres-queries" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/* Refuse to render monitoring objects on a cluster that cannot hold them.
+
+     Without the operator's CRDs a ServiceMonitor is not a degraded object, it
+     is an install error at apply time, reported per object and after everything
+     else has been applied. Failing here names the cause once, first. */}}
+{{- define "flakegraph.monitoringRequired" -}}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") -}}
+{{- fail "monitoring.enabled needs the Prometheus operator CRDs (monitoring.coreos.com/v1). Install the kube-prometheus-stack release from deploy/spark/install-cluster.sh into this namespace first, or pass --api-versions monitoring.coreos.com/v1/ServiceMonitor,monitoring.coreos.com/v1/PodMonitor,monitoring.coreos.com/v1/PrometheusRule when rendering offline." -}}
+{{- end -}}
+{{- end -}}

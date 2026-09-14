@@ -198,7 +198,7 @@ solves are properties of corporate networks rather than of this hardware.
 | --- | --- | --- |
 | `stage-artifacts.sh` | operator workstation | Fetches k3s, verifies its published SHA-256, copies it to the node |
 | `bootstrap-node.sh` | root, on the node | Container runtime, NVIDIA runtime, k3s, node labels |
-| `install-cluster.sh` | operator, on the node | Device plugin, KEDA, CloudNativePG, object storage |
+| `install-cluster.sh` | operator, on the node | Device plugin, KEDA, CloudNativePG, object storage, monitoring stack |
 
 `bootstrap-node.sh --role server` starts embedded etcd rather than the k3s
 default, because a default single-node server uses SQLite and can never gain a
@@ -819,6 +819,83 @@ gold-set evaluation after every Kubernetes, driver, model, provider, image, or
 chart upgrade. Promote the exact image digests and values only after the canary
 and the recovery drill below succeed.
 
+## Observability
+
+`monitoring.enabled` turns the fleet into something that can be watched rather
+than polled. It assumes a kube-prometheus-stack release named
+`monitoring.release` in the same namespace, which `install-cluster.sh` installs
+(`FLAKEGRAPH_DOMAIN` is what it needs, to give Grafana its public URL). The
+stack lives beside the application rather than in a namespace of its own for
+the same reason MinIO does: the ingress controller refuses cross-namespace
+middleware references, and Grafana is only worth publishing behind the sign-in
+gate described under [Access](#access). Once it is in place the chart renders
+everything that is specific to this fleet — scrape targets, alert rules, the
+read-only database role Grafana queries through, the dashboards — so a
+`helm upgrade` is what changes them, and a fleet installed from the chart
+arrives with its dashboards rather than acquiring them by hand.
+
+Grafana answers at `grafana.<domain>` and signs a visitor in as whoever the
+gate already identified, from the same `X-Auth-Request-Email` header the
+control plane trusts and under the same condition: a NetworkPolicy admits only
+the ingress controller and the Prometheus that scrapes it, because to anything
+else that header is just a header. New visitors become editors, so a team can
+author dashboards of its own; the six provisioned ones are read-only and change
+with the chart. `secret/flakegraph-grafana-admin` holds the credential for
+Grafana's HTTP API, which nobody needs for looking.
+
+What is measured, and where it comes from:
+
+| Source | Series | Notes |
+| --- | --- | --- |
+| Engines | `vllm:*` via the auth sidecar on `http` | Tokens/s, running and waiting, KV-cache use, time to first token, inter-token latency, prefix-cache hits, preemptions, speculative acceptance. Labelled `engine` (pod) and `node`. |
+| Auth sidecar | `flakegraph_sidecar_*` | The only per-consumer-class view of the engines: requests, duration, in-flight, the priority band stamped. Appended to the engine's scrape. |
+| Endpoint picker | `llm_d_epp_*` on `metrics` | Scraped with the scraper's ServiceAccount token; the chart grants the picker the TokenReview and SubjectAccessReview rights its metrics filter needs to evaluate one. |
+| Gateway | `litellm_*` | Requests, tokens, latency per virtual-key alias and model. The Prometheus callback is enabled only with monitoring on, because it is not free per request. |
+| OCR shim | `flakegraph_ocr_*` | Queue depth and oldest wait by class, queue-wait and parse-duration histograms, in-flight against capacity per parsing replica. |
+| Database | `cnpg_*` from CloudNativePG's exporter | Includes operator-defined queries over the task queue — counts by stage, status, and band, failures in the last hour, expired leases, tasks on their last attempt, worker demand per pool — so the pipeline is alertable without instrumenting the workers. |
+| Hosts | `DCGM_FI_DEV_*`, `node_*`, `kube_*` | GPU utilisation, power, and temperature from the platform team's dcgm-exporter; CPU, memory, disk from node-exporter. A GB10 has unified memory, so its GPU memory **is** the node's memory — DCGM and `nvidia-smi` report none. |
+
+Grafana also has a second datasource, the database itself, through a role that
+is a member of `pg_read_all_data` and nothing more. Prometheus is right for
+what is happening; the task, run, and OCR tables and the gateway's spend log
+are the record of what happened, with durations, errors, and per-key token
+totals that survive any restart. The **Pipeline Workers** and **Gateway &
+Consumers** dashboards draw their history from there.
+
+The dashboards, in the *FlakeGraph* folder:
+
+- **Fleet Overview** — the landing page: what is running now, one row per
+  host, and throughput history across engines, consumer classes, parsing, and
+  the pipeline.
+- **LLM Serving** — per-engine load, latency percentiles, token
+  distributions, cache and speculation, request outcomes, and the router.
+- **Gateway & Consumers** — who is using inference: requests and tokens by
+  key alias and model, live and historical.
+- **Document Parsing (OCR)** — queue, replica saturation, parse durations,
+  and the rows waiting right now.
+- **Pipeline Workers** — task queues by stage and band, demand against the
+  replicas KEDA provided, completions and durations per stage, failures with
+  their errors.
+- **Database & Storage** — connections, size, WAL, checkpoints, every
+  volume's use, and pods that are not ready.
+
+They are generated: `deploy/grafana/build_dashboards.py` writes
+`deploy/helm/flakegraph/dashboards/*.json`, and a test fails when the two
+drift, so a panel is changed in the generator and regenerated, never edited
+in Grafana.
+
+The chart's `PrometheusRule` covers what the serving design promises and what
+the pipeline needs an operator for: a preemption (the invariant behind
+[queue-jump, never evict](#queue-jump-never-evict)), an engine, gateway, or
+shim that stops answering, sustained KV-cache saturation, slow time to first
+token, a parsing queue whose oldest request is stale, parsing upstreams
+failing, tasks failing, tasks on their last attempt, expired leases, and
+worker demand a pool is not meeting. Every threshold is a key under
+`monitoring.rules.thresholds`. Pods, nodes, and volumes are covered by the
+stack's own rules. Alertmanager ships with no receiver; a Teams or Slack
+webhook goes under `alertmanager.config` in `deploy/spark/monitoring-values.yaml`,
+and until one exists the alerts are visible on the overview dashboard.
+
 ## Recovery
 
 - `distributed status` shows bounded stage counts, configuration compatibility,
@@ -838,11 +915,13 @@ database primary, stopping a provider replica, and deleting a Spark executor
 during finalization. Use non-sensitive canary data and confirm that retries do
 not create duplicate successful outputs.
 
-For unattended operation, alert on terminal run failures, tasks nearing their
-attempt limit, expired leases, KEDA scaler errors, unschedulable pods, database
-replica health, object-store errors, model readiness, GPU memory pressure, and
-Spark executor loss. Worker loss is expected and recoverable; a terminal task
-failure is an operator-visible outcome, never an indefinitely hung run.
+For unattended operation, enable [monitoring](#observability): its rules
+cover terminal task failures, tasks nearing their attempt limit, expired leases,
+unmet worker demand, engine readiness, and KV-cache pressure, and the stack's
+own cover unschedulable pods, volumes filling, and database health. Object-store
+errors and Spark executor loss still surface only in logs. Worker loss is
+expected and recoverable; a terminal task failure is an operator-visible
+outcome, never an indefinitely hung run.
 
 The application-layer contracts behind the deployment are described in
 [Architecture](architecture.md).

@@ -743,6 +743,86 @@ ingress:
     # a different set - a wildcard, for instance.
     hosts: []
 
+# Metrics, dashboards, and alerts for the fleet, delivered to a
+# kube-prometheus-stack release that already runs in this namespace. The chart
+# does not install that stack: it declares what to scrape, what to alert on,
+# and what to draw, and the stack picks those declarations up because its
+# selectors admit every ServiceMonitor, PodMonitor, and PrometheusRule here.
+#
+# Turning this on adds one cluster-scoped grant: the endpoint picker's metrics
+# port authenticates every scrape through the API server's TokenReview and
+# SubjectAccessReview, and only a ClusterRole can permit those. The chart
+# already holds one cluster-wide grant for the control plane's node view, so
+# this is a second of the same kind, not a new kind.
+monitoring:
+  # Off until the kube-prometheus-stack release from deploy/spark/install-cluster.sh
+  # exists in this namespace: every object below needs its CRDs, and rendering
+  # them without the CRDs fails the install rather than degrading it.
+  enabled: false
+  # Release name of that stack. Its Grafana Service and Prometheus pods are
+  # addressed by the names that release produces.
+  release: monitoring
+  # How often each target is scraped. The alerts below reason in minutes, so a
+  # coarser interval only delays them; a finer one mostly costs storage.
+  scrapeInterval: 15s
+  grafana:
+    # Short label under ingress.domain, like ingress.hosts.*. Grafana sits behind
+    # the same sign-in gate as the control plane and trusts the identity the gate
+    # establishes, so it is only ever published through that ingress.
+    host: grafana
+    servicePort: 80
+  database:
+    # Read-only role Grafana queries the task and OCR queues and LiteLLM's spend
+    # schema through. pg_read_all_data covers tables that do not exist yet, so a
+    # schema bump does not need a grant to follow it.
+    role: flakegraph_metrics
+    # Holds that role's password. The chart generates it once and keeps it: a
+    # password rotated on every upgrade would break the datasource on every
+    # upgrade, which is not what rotation is for.
+    secretName: flakegraph-postgres-metrics
+  rules:
+    enabled: true
+    # Every number an alert compares against, so a fleet can be tuned without
+    # editing PromQL. Durations are Prometheus `for:` windows.
+    thresholds:
+      # How long a scrape target - an engine, the gateway, the parsing shim -
+      # may stay down before it is more than a rollout. An engine restarting
+      # takes minutes to load weights; five is enough to tell a restart from a
+      # loss, and the others come back well inside it.
+      targetDownFor: 5m
+      # KV-cache usage fraction above which the engine is one burst away from
+      # preempting a running request - the eviction the serving design exists
+      # to prevent. Sustained rather than instantaneous, because a full cache
+      # under steady load is the engine working as intended.
+      kvCacheUsage: 0.9
+      kvCacheUsageFor: 15m
+      # p95 seconds to first token. Ten is where an interactive caller stops
+      # waiting for a chat reply, and where the sidecar's queue-jump has failed
+      # to keep interactive work ahead of batch.
+      ttftP95Seconds: 10
+      ttftFor: 10m
+      # Seconds the oldest waiting parse request has been held. The shim holds
+      # work deliberately, so a wait is not a fault - but ten minutes exceeds
+      # what the parsing pool takes to drain a full queue at its ceiling.
+      ocrOldestWaitingSeconds: 600
+      # Fraction of parse requests ending in an upstream error or timeout over
+      # fifteen minutes. One in ten is well above MinerU's steady-state rate on
+      # a healthy pool and well below a pool that is entirely down.
+      ocrUpstreamFailureRatio: 0.1
+      # Tasks that failed in the last hour, summed over stages. Single failures
+      # are retried and expected; a handful an hour means a provider or a
+      # profile is broken rather than one document being unusual.
+      taskFailuresPerHour: 5
+      # How long a gauge of tasks at their last attempt, or of expired leases,
+      # may stay above zero. Both self-heal within one lease period when the
+      # cause was a single pod; ten minutes is two of those.
+      taskAttentionFor: 10m
+      # How long demand may exceed a pool's available replicas before that is a
+      # scaling fault rather than the autoscaler catching up. KEDA polls every
+      # few seconds and a worker pod schedules in under a minute; fifteen
+      # minutes means the pool is pinned at its ceiling or cannot schedule.
+      workerDemandUnmetFor: 15m
+
 documentParsing:
   enabled: true
   # The parsing pool runs the same FlakeGraph image as everything else: MinerU

@@ -1,3 +1,51 @@
+{{- /*
+The proxy's configuration, held in a template of its own so the Deployment can
+hash exactly what the ConfigMap carries. Hashing the values that feed it is not
+the same thing: a key outside this block - monitoring, the model name - changes
+the file without changing the hash, and the pods keep serving the old one.
+*/}}
+{{- define "flakegraph.gatewayConfig" -}}
+{{- $litellm := .Values.gateway.litellm -}}
+model_list:
+  - model_name: {{ $litellm.aliases.interactive }}
+    litellm_params:
+      model: hosted_vllm/{{ .Values.modelServing.model.name }}
+      api_base: {{ include "flakegraph.inferenceRouterEndpoint" . }}
+      api_key: os.environ/{{ $litellm.upstreamKeySecret.interactiveKey }}
+  - model_name: {{ $litellm.aliases.dev }}
+    litellm_params:
+      model: hosted_vllm/{{ .Values.modelServing.model.name }}
+      api_base: {{ include "flakegraph.inferenceRouterEndpoint" . }}
+      api_key: os.environ/{{ $litellm.upstreamKeySecret.devKey }}
+  - model_name: {{ $litellm.aliases.batch }}
+    litellm_params:
+      model: hosted_vllm/{{ .Values.modelServing.model.name }}
+      api_base: {{ include "flakegraph.inferenceRouterEndpoint" . }}
+      api_key: os.environ/{{ $litellm.upstreamKeySecret.batchKey }}
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  {{- if $litellm.spendLogging.enabled }}
+  # The batch pipeline is metered like every other tenant, which at corpus
+  # scale is millions of rows. Batching the writes keeps that off the
+  # request path instead of paying a database round trip per completion.
+  proxy_batch_write_at: {{ $litellm.spendLogging.batchWriteIntervalSeconds }}
+  {{- else }}
+  disable_spend_logs: true
+  {{- end }}
+litellm_settings:
+  # The pipeline sends chat_template_kwargs to disable Qwen's free-form
+  # reasoning before strict JSON generation. Dropping unrecognised parameters
+  # would remove it silently, and the failure would surface as empty
+  # extractions rather than as an error.
+  drop_params: false
+  {{- if .Values.monitoring.enabled }}
+  # Serves /metrics: request, token, and spend series per virtual key and
+  # alias, which is where the fleet's per-consumer view of inference lives.
+  # Off without a scraper, because the callback is not free per request.
+  callbacks: ["prometheus"]
+  {{- end }}
+{{- end }}
 {{- if .Values.gateway.enabled }}
 {{- $litellm := .Values.gateway.litellm }}
 ---
@@ -14,39 +62,7 @@ data:
   # alias its virtual key may reach — never by anything in the request body.
   # Restrict each virtual key to a single alias and the mapping is unforgeable.
   config.yaml: |
-    model_list:
-      - model_name: {{ $litellm.aliases.interactive }}
-        litellm_params:
-          model: hosted_vllm/{{ .Values.modelServing.model.name }}
-          api_base: {{ include "flakegraph.inferenceRouterEndpoint" . }}
-          api_key: os.environ/{{ $litellm.upstreamKeySecret.interactiveKey }}
-      - model_name: {{ $litellm.aliases.dev }}
-        litellm_params:
-          model: hosted_vllm/{{ .Values.modelServing.model.name }}
-          api_base: {{ include "flakegraph.inferenceRouterEndpoint" . }}
-          api_key: os.environ/{{ $litellm.upstreamKeySecret.devKey }}
-      - model_name: {{ $litellm.aliases.batch }}
-        litellm_params:
-          model: hosted_vllm/{{ .Values.modelServing.model.name }}
-          api_base: {{ include "flakegraph.inferenceRouterEndpoint" . }}
-          api_key: os.environ/{{ $litellm.upstreamKeySecret.batchKey }}
-    general_settings:
-      master_key: os.environ/LITELLM_MASTER_KEY
-      database_url: os.environ/DATABASE_URL
-      {{- if $litellm.spendLogging.enabled }}
-      # The batch pipeline is metered like every other tenant, which at corpus
-      # scale is millions of rows. Batching the writes keeps that off the
-      # request path instead of paying a database round trip per completion.
-      proxy_batch_write_at: {{ $litellm.spendLogging.batchWriteIntervalSeconds }}
-      {{- else }}
-      disable_spend_logs: true
-      {{- end }}
-    litellm_settings:
-      # The pipeline sends chat_template_kwargs to disable Qwen's free-form
-      # reasoning before strict JSON generation. Dropping unrecognised parameters
-      # would remove it silently, and the failure would surface as empty
-      # extractions rather than as an error.
-      drop_params: false
+    {{- include "flakegraph.gatewayConfig" . | nindent 4 }}
 ---
 apiVersion: v1
 kind: Service
@@ -92,7 +108,11 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: gateway
       annotations:
+        # Two hashes, two reasons to roll. The values one catches changes to
+        # the Secret references and arguments below; the config one catches
+        # the file, whose inputs are not all under gateway.litellm.
         checksum/gateway-config: {{ $litellm | toJson | sha256sum }}
+        checksum/config: {{ include "flakegraph.gatewayConfig" . | sha256sum }}
     spec:
       {{- if .Values.scheduling.priorityClasses.enabled }}
       priorityClassName: {{ include "flakegraph.servingPriorityClassName" . }}
