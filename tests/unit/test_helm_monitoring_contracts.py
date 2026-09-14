@@ -434,6 +434,8 @@ _SQL_WORDS = {
     "as",
     "by",
     "case",
+    "coalesce",
+    "cross",
     "count",
     "else",
     "end",

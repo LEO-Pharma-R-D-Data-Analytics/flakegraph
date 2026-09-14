@@ -156,10 +156,21 @@ data:
             description: Seconds the oldest claimable task has waited
     flakegraph_worker_demand:
       # What KEDA scales on, with the pool that would serve each stage beside
-      # it, so demand can be set against a pool's available replicas.
+      # it, so demand can be set against a pool's available replicas. The view
+      # has no row for a stage with nothing to do, so every stage and band is
+      # spelled out and joined: an idle fleet reads as zero demand, not as a
+      # series that went missing.
       query: |
-        SELECT stage, {{ $poolCase }} AS pool, priority_band, desired_workers::float AS desired_workers
-        FROM flakegraph_worker_demand
+        SELECT stage, {{ $poolCase }} AS pool, priority_band,
+               COALESCE(demand.desired_workers, 0)::float AS desired_workers
+        FROM unnest(ARRAY[{{ $stageList }}]) AS stages(stage)
+        CROSS JOIN unnest(ARRAY['interactive', 'bulk']) AS bands(priority_band)
+        LEFT JOIN (
+            SELECT stage AS demand_stage, priority_band AS demand_band, desired_workers
+            FROM flakegraph_worker_demand
+        ) AS demand
+          ON demand.demand_stage = stages.stage
+         AND demand.demand_band = bands.priority_band
       primary: true
       target_databases: [{{ $database | quote }}]
       metrics:
