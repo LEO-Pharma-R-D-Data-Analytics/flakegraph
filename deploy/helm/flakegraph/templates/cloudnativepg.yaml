@@ -8,6 +8,11 @@ metadata:
 spec:
   instances: {{ .Values.database.cloudNativePG.instances }}
   primaryUpdateStrategy: unsupervised
+  # A disruption budget can only keep a replica available while another one
+  # exists. With a single instance the operator's budget protects nothing and
+  # wedges every node drain that reaches the primary, so it is only asked for
+  # when there is a standby to keep.
+  enablePDB: {{ gt (int .Values.database.cloudNativePG.instances) 1 }}
   enableSuperuserAccess: false
   postgresql:
     parameters:
@@ -17,8 +22,9 @@ spec:
     # The operator's exporter, scraped through the PodMonitor it creates. The
     # custom queries turn the coordination tables into series: queue depth per
     # stage and band, failures, expired leases, demand - the numbers KEDA
-    # scales on, made visible. They run as the operator's own superuser over
-    # the local socket, so the read-only role below is not involved.
+    # scales on, made visible. They run as the exporter's own role, a member
+    # of pg_monitor, which the coordination schema grants column-level reads
+    # for; the Grafana role below is not involved.
     enablePodMonitor: true
     customQueriesConfigMap:
       - name: {{ include "flakegraph.postgresQueriesName" . }}

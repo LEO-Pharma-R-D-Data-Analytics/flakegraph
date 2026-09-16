@@ -199,6 +199,7 @@ solves are properties of corporate networks rather than of this hardware.
 | `stage-artifacts.sh` | operator workstation | Fetches k3s, verifies its published SHA-256, copies it to the node |
 | `bootstrap-node.sh` | root, on the node | Container runtime, NVIDIA runtime, k3s, node labels |
 | `install-cluster.sh` | operator, on the node | Device plugin, KEDA, CloudNativePG, object storage, monitoring stack |
+| `node-maintenance.sh` | operator, anywhere with the kubeconfig | Drains a node before a reboot and waits for it to serve again afterwards |
 
 `bootstrap-node.sh --role server` starts embedded etcd rather than the k3s
 default, because a default single-node server uses SQLite and can never gain a
@@ -909,6 +910,15 @@ and until one exists the alerts are visible on the overview dashboard.
   recomputation; incomplete finalization never publishes a graph version.
 - Set pod termination grace longer than the task lease when graceful completion
   is preferred over lease recovery.
+- A node that needs a reboot - a kernel or driver update - is drained first:
+  `deploy/spark/node-maintenance.sh drain <node>`, reboot, then
+  `node-maintenance.sh restore <node>`, one node at a time. The disruption
+  budgets the chart declares let a single engine and a single parsing replica
+  be unavailable, so the other three keep serving while this one warms up;
+  a node rebooted without draining takes its engine down mid-request and the
+  router keeps sending it traffic for the quarter hour it spends warming up.
+  A single-instance database has no budget: it restarts with its node, and a
+  budget that could only wedge the drain is not declared for it.
 
 Validate recovery by deleting workers during extraction, restarting the
 database primary, stopping a provider replica, and deleting a Spark executor
