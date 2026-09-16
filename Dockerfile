@@ -102,7 +102,13 @@ RUN if [ "$KG_INSTALL_MINERU" = "true" ]; then \
             echo "--build-arg KG_PRELOAD_LOCAL_EMBEDDING=false and supply the model" >&2; \
             echo "to the deployment instead - the fleet already mounts it." >&2; \
             exit 1; \
-        }; \
+        } \
+        # A download pinned to a revision records no branch, and offline
+        # resolution of the bare model id looks the branch up. Recording it
+        # is what lets a deployment name the model without a revision.
+        && model_cache="$SENTENCE_TRANSFORMERS_HOME/models--$(echo "$KG_LOCAL_EMBEDDING_MODEL" | sed 's#/#--#g')" \
+        && mkdir -p "$model_cache/refs" \
+        && printf '%s' "$KG_LOCAL_EMBEDDING_REVISION" > "$model_cache/refs/main"; \
     fi \
     && uv cache clean \
     && chown -R kgprocessor:kgprocessor /home/kgprocessor/.cache \

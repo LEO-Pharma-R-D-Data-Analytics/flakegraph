@@ -47,7 +47,12 @@ RUN uv sync --locked --no-dev --no-editable --no-install-project \
     && uv pip install --python /opt/venv/bin/python --no-deps graphframes-py==0.12.1 \
     && if [ "$KG_PRELOAD_LOCAL_EMBEDDING" = "true" ]; then \
         /opt/venv/bin/python -c \
-          "from sentence_transformers import SentenceTransformer; SentenceTransformer('$KG_LOCAL_EMBEDDING_MODEL', revision='$KG_LOCAL_EMBEDDING_REVISION')"; \
+          "from sentence_transformers import SentenceTransformer; SentenceTransformer('$KG_LOCAL_EMBEDDING_MODEL', revision='$KG_LOCAL_EMBEDDING_REVISION')" \
+        # A pinned download records no branch; the bare model id resolves
+        # offline only when one is recorded (see the worker Dockerfile).
+        && model_cache="$SENTENCE_TRANSFORMERS_HOME/models--$(echo "$KG_LOCAL_EMBEDDING_MODEL" | sed 's#/#--#g')" \
+        && mkdir -p "$model_cache/refs" \
+        && printf '%s' "$KG_LOCAL_EMBEDDING_REVISION" > "$model_cache/refs/main"; \
     fi \
     && chown -R spark:spark /home/spark/.cache
 
