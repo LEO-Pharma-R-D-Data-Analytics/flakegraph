@@ -92,6 +92,30 @@ def test_postgres_schema_initialization_is_safe_during_worker_startup_burst(
         list(executor.map(lambda store: store.initialize(), stores))
 
 
+def test_a_schema_at_another_version_is_refused_rather_than_stamped_current(
+    isolated_postgres_dsn: str,
+) -> None:
+    """The statements describe one shape; an older database must not be papered over."""
+
+    _store(isolated_postgres_dsn)
+    with psycopg.connect(isolated_postgres_dsn, autocommit=True) as connection:
+        connection.execute("UPDATE flakegraph_schema_version SET version = 7")
+
+    with pytest.raises(RuntimeError, match="version 7 has no migration path"):
+        PostgresDistributedStore(isolated_postgres_dsn).initialize()
+
+
+def test_tables_without_a_version_row_are_refused_too(isolated_postgres_dsn: str) -> None:
+    """A database from before version tracking is older still, not empty."""
+
+    _store(isolated_postgres_dsn)
+    with psycopg.connect(isolated_postgres_dsn, autocommit=True) as connection:
+        connection.execute("DROP TABLE flakegraph_schema_version")
+
+    with pytest.raises(RuntimeError, match="version 0 has no migration path"):
+        PostgresDistributedStore(isolated_postgres_dsn).initialize()
+
+
 def test_postgres_schema_indexes_dependency_completion_lookup(
     isolated_postgres_dsn: str,
 ) -> None:

@@ -169,7 +169,14 @@ class PostgresDistributedStore:
         self._pool_finalizer()
 
     def initialize(self) -> None:
-        """Apply migrations once and make ordinary replica startup a cheap check."""
+        """Create the schema once and make ordinary replica startup a cheap check.
+
+        Only an empty database or one already at this build's version is
+        accepted. The statements describe the current shape and nothing else,
+        so running them over an older schema would leave it stamped current
+        without the columns and constraints this build reads; refusing is
+        what makes the version number mean something.
+        """
 
         if self.blob_store is not None:
             initialize = getattr(self.blob_store, "initialize", None)
@@ -181,21 +188,16 @@ class PostgresDistributedStore:
                 "SELECT pg_advisory_xact_lock(%s)",
                 (_SCHEMA_INITIALIZATION_LOCK_ID,),
             )
-            version_table = connection.execute(
-                "SELECT to_regclass('flakegraph_schema_version') AS relation"
-            ).fetchone()
-            if version_table is not None and version_table["relation"] is not None:
-                version_row = connection.execute(
-                    "SELECT version FROM flakegraph_schema_version WHERE singleton = TRUE"
-                ).fetchone()
-                if version_row is not None:
-                    installed_version = int(version_row["version"])
-                    if installed_version > _SCHEMA_VERSION:
-                        raise RuntimeError(
-                            "coordination schema is newer than this FlakeGraph build"
-                        )
-                    if installed_version == _SCHEMA_VERSION:
-                        return
+            installed_version = _installed_schema_version(connection)
+            if installed_version == _SCHEMA_VERSION:
+                return
+            if installed_version is not None and installed_version > _SCHEMA_VERSION:
+                raise RuntimeError("coordination schema is newer than this FlakeGraph build")
+            if installed_version is not None:
+                raise RuntimeError(
+                    f"coordination schema version {installed_version} has no migration "
+                    "path in this build"
+                )
             for statement in _SCHEMA_STATEMENTS:
                 connection.execute(statement)
             connection.execute(
@@ -2225,6 +2227,32 @@ def _is_initial_document_plan(
     return not final_task.dependency_ids and final_task.id in known_task_ids
 
 
+def _installed_schema_version(connection: psycopg.Connection[dict[str, Any]]) -> int | None:
+    """Return the recorded schema version, or None when nothing was ever installed.
+
+    Tables without a version row come from a build that predates version
+    tracking; that counts as version 0, which has no migration path either.
+    """
+
+    version_table = connection.execute(
+        "SELECT to_regclass('flakegraph_schema_version') AS relation"
+    ).fetchone()
+    if version_table is not None and version_table["relation"] is not None:
+        version_row = connection.execute(
+            "SELECT version FROM flakegraph_schema_version WHERE singleton = TRUE"
+        ).fetchone()
+        if version_row is not None:
+            return int(version_row["version"])
+    run_table = connection.execute("SELECT to_regclass('flakegraph_run') AS relation").fetchone()
+    if run_table is not None and run_table["relation"] is not None:
+        return 0
+    return None
+
+
+# The schema in its current shape. Earlier shapes are not carried here: a
+# database at another version is refused in initialize() rather than migrated,
+# because the only migration this build could offer is the one it was tested
+# with, and that is none.
 _SCHEMA_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS flakegraph_run (
@@ -2283,123 +2311,12 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     """
-    ALTER TABLE flakegraph_task
-    ADD COLUMN IF NOT EXISTS progress_json JSONB
-    """,
-    """
-    ALTER TABLE flakegraph_task
-    ADD COLUMN IF NOT EXISTS progress_updated_at TIMESTAMPTZ
-    """,
-    """
-    ALTER TABLE flakegraph_task
-    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ
-    """,
-    """
-    ALTER TABLE flakegraph_task
-    ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ
-    """,
-    """
     CREATE TABLE IF NOT EXISTS flakegraph_task_dependency (
         task_id TEXT NOT NULL REFERENCES flakegraph_task(id) ON DELETE CASCADE,
         depends_on_task_id TEXT NOT NULL REFERENCES flakegraph_task(id) ON DELETE CASCADE,
         PRIMARY KEY (task_id, depends_on_task_id),
         CHECK (task_id <> depends_on_task_id)
     )
-    """,
-    """
-    WITH prerequisite_events AS (
-        SELECT dependency.task_id, prerequisite.updated_at
-        FROM flakegraph_task_dependency AS dependency
-        JOIN flakegraph_task AS prerequisite
-          ON prerequisite.id = dependency.depends_on_task_id
-        WHERE prerequisite.status = 'succeeded'
-        UNION ALL
-        SELECT finalizer.id, prerequisite.updated_at
-        FROM flakegraph_task AS finalizer
-        JOIN flakegraph_task AS prerequisite
-          ON prerequisite.run_id = finalizer.run_id
-         AND prerequisite.id <> finalizer.id
-        WHERE finalizer.stage = 'finalize_graph'
-          AND prerequisite.status = 'succeeded'
-    ), prerequisite_times AS (
-        SELECT task_id, MAX(updated_at) AS ready_at
-        FROM prerequisite_events
-        GROUP BY task_id
-    )
-    UPDATE flakegraph_task AS task
-    SET started_at = LEAST(
-        task.updated_at,
-        GREATEST(task.created_at, COALESCE(prerequisite.ready_at, task.created_at))
-    )
-    FROM prerequisite_times AS prerequisite
-    WHERE prerequisite.task_id = task.id
-      AND task.started_at IS NULL
-      AND task.status <> 'queued'
-    """,
-    """
-    UPDATE flakegraph_task
-    SET started_at = LEAST(updated_at, created_at)
-    WHERE started_at IS NULL AND status <> 'queued'
-    """,
-    """
-    UPDATE flakegraph_task
-    SET completed_at = updated_at
-    WHERE completed_at IS NULL AND status IN ('succeeded', 'failed', 'cancelled')
-    """,
-    """
-    ALTER TABLE flakegraph_task
-    DROP CONSTRAINT IF EXISTS flakegraph_task_stage_check
-    """,
-    """
-    UPDATE flakegraph_task
-    SET stage = 'extract_entity_window'
-    WHERE stage IN ('extract_document', 'extract_window')
-    """,
-    """
-    ALTER TABLE flakegraph_task
-    ADD CONSTRAINT flakegraph_task_stage_check CHECK (
-        stage IN (
-            'prepare_document',
-            'extract_document_context',
-            'extract_entity_window',
-            'compact_entity_inventory',
-            'extract_relation_window',
-            'compact_document',
-            'finalize_graph'
-        )
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS flakegraph_task_dependency (
-        task_id TEXT NOT NULL REFERENCES flakegraph_task(id) ON DELETE CASCADE,
-        depends_on_task_id TEXT NOT NULL REFERENCES flakegraph_task(id) ON DELETE CASCADE,
-        PRIMARY KEY (task_id, depends_on_task_id),
-        CHECK (task_id <> depends_on_task_id)
-    )
-    """,
-    """
-    ALTER TABLE flakegraph_task
-    ADD COLUMN IF NOT EXISTS remaining_dependencies INTEGER
-    """,
-    """
-    UPDATE flakegraph_task AS task
-    SET remaining_dependencies = (
-        SELECT COUNT(*)
-        FROM flakegraph_task_dependency AS dependency
-        JOIN flakegraph_task AS prerequisite
-          ON prerequisite.id = dependency.depends_on_task_id
-        WHERE dependency.task_id = task.id
-          AND prerequisite.status <> 'succeeded'
-    )
-    WHERE task.remaining_dependencies IS NULL
-    """,
-    """
-    ALTER TABLE flakegraph_task
-    ALTER COLUMN remaining_dependencies SET DEFAULT 0
-    """,
-    """
-    ALTER TABLE flakegraph_task
-    ALTER COLUMN remaining_dependencies SET NOT NULL
     """,
     """
     CREATE TABLE IF NOT EXISTS flakegraph_artifact (
@@ -2426,54 +2343,9 @@ _SCHEMA_STATEMENTS = (
         storage_uri TEXT,
         metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        CHECK ((payload IS NOT NULL) <> (storage_uri IS NOT NULL))
-    )
-    """,
-    """
-    ALTER TABLE flakegraph_artifact
-    DROP CONSTRAINT IF EXISTS flakegraph_artifact_run_id_kind_checksum_key
-    """,
-    """
-    ALTER TABLE flakegraph_artifact
-    DROP CONSTRAINT IF EXISTS flakegraph_artifact_kind_check
-    """,
-    """
-    UPDATE flakegraph_artifact
-    SET kind = 'extracted_entity_window'
-    WHERE kind = 'extracted_window'
-    """,
-    """
-    ALTER TABLE flakegraph_artifact
-    ADD CONSTRAINT flakegraph_artifact_kind_check CHECK (
-        kind IN (
-            'source_document',
-            'prepared_document',
-            'document_context',
-            'extraction_window',
-            'extracted_entity_window',
-            'document_entity_inventory',
-            'extracted_relation_window',
-            'extracted_document',
-            'graph_result'
+        CONSTRAINT flakegraph_artifact_payload_location_check CHECK (
+            (payload IS NOT NULL) <> (storage_uri IS NOT NULL)
         )
-    )
-    """,
-    """
-    ALTER TABLE flakegraph_artifact
-    ADD COLUMN IF NOT EXISTS storage_uri TEXT
-    """,
-    """
-    ALTER TABLE flakegraph_artifact
-    ALTER COLUMN payload DROP NOT NULL
-    """,
-    """
-    ALTER TABLE flakegraph_artifact
-    DROP CONSTRAINT IF EXISTS flakegraph_artifact_payload_location_check
-    """,
-    """
-    ALTER TABLE flakegraph_artifact
-    ADD CONSTRAINT flakegraph_artifact_payload_location_check CHECK (
-        (payload IS NOT NULL) <> (storage_uri IS NOT NULL)
     )
     """,
     """
@@ -2578,9 +2450,6 @@ _SCHEMA_STATEMENTS = (
     WHERE status = 'queued'
     """,
     """
-    DROP INDEX IF EXISTS flakegraph_task_run_idx
-    """,
-    """
     CREATE INDEX IF NOT EXISTS flakegraph_task_run_summary_idx
     ON flakegraph_task (run_id, status, stage)
     """,
@@ -2620,11 +2489,6 @@ _SCHEMA_STATEMENTS = (
         config_digest TEXT NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
-    """,
-    """
-    -- The view gained a priority_band column, and a replace cannot rename or
-    -- reorder an existing view's output.
-    DROP VIEW IF EXISTS flakegraph_worker_demand
     """,
     """
     CREATE VIEW flakegraph_worker_demand AS
