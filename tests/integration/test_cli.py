@@ -976,9 +976,7 @@ def test_file_queue_worker_still_succeeds_when_the_queue_genuinely_finished() ->
 
     manager = _FakeQueueManager([[]], status_counts={"DONE": 10})
 
-    summary = _run_file_queue_worker(
-        _queue_worker_settings(), cast(SnowflakeJobManager, manager)
-    )
+    summary = _run_file_queue_worker(_queue_worker_settings(), cast(SnowflakeJobManager, manager))
 
     assert summary["drained"] is True
     assert summary["files_processed"] == 0
@@ -991,9 +989,7 @@ def test_file_queue_worker_tolerates_a_partially_failed_queue() -> None:
 
     manager = _FakeQueueManager([[]], status_counts={"DONE": 7, "FAILED": 3})
 
-    summary = _run_file_queue_worker(
-        _queue_worker_settings(), cast(SnowflakeJobManager, manager)
-    )
+    summary = _run_file_queue_worker(_queue_worker_settings(), cast(SnowflakeJobManager, manager))
 
     assert summary["queue_status_counts"] == {"DONE": 7, "FAILED": 3}
     assert "blocked_files" not in summary

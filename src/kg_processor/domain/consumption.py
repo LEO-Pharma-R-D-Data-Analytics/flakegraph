@@ -85,8 +85,6 @@ def _first_int(payload: Mapping[str, Any], names: tuple[str, ...]) -> int:
     return 0
 
 
-
-
 class Locality(StrEnum):
     """Where the work ran, which decides whether it was billed or avoided."""
 

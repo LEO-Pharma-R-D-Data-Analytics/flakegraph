@@ -202,8 +202,7 @@ def test_community_rating_uses_the_relations_the_report_received() -> None:
     community = result.communities[0]
     assert community.rating == 10.0
     assert community.rating_explanation == (
-        "Structural score from density 1.00, evidence coverage 1.00, "
-        "and mean edge confidence 1.00."
+        "Structural score from density 1.00, evidence coverage 1.00, and mean edge confidence 1.00."
     )
 
 

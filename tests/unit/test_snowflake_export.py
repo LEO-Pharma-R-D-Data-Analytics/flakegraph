@@ -17,8 +17,19 @@ _ROWS: dict[str, list[Sequence[object]]] = {
     ],
     "KG_EDGE": [
         (
-            "edge-1", "g1", "node-1", "node-2", "RELATED_TO", None,
-            1.0, 0.9, None, None, None, 1, None,
+            "edge-1",
+            "g1",
+            "node-1",
+            "node-2",
+            "RELATED_TO",
+            None,
+            1.0,
+            0.9,
+            None,
+            None,
+            None,
+            1,
+            None,
         ),
     ],
 }
@@ -223,6 +234,4 @@ def test_export_accepts_a_lower_case_configured_name(tmp_path: Path) -> None:
         settings, "g1", tmp_path / "kg", connector_factory=lambda **_: connection
     )
 
-    assert all(
-        "EXAMPLE_DB.EXAMPLE_SCHEMA." in sql for sql, _ in connection.cursors[0].executed
-    )
+    assert all("EXAMPLE_DB.EXAMPLE_SCHEMA." in sql for sql, _ in connection.cursors[0].executed)

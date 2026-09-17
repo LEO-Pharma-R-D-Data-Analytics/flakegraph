@@ -25,7 +25,7 @@ class LocalJsonCache:
             return None
         try:
             return ParsedDocument.model_validate_json(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return None
 
     def put_ocr_document(self, key: OcrCacheKey, document: ParsedDocument) -> None:
@@ -41,7 +41,7 @@ class LocalJsonCache:
             return None
         try:
             return ExtractionResult.model_validate_json(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return None
 
     def put_extraction_result(self, key: ExtractionCacheKey, result: ExtractionResult) -> None:

@@ -1599,9 +1599,9 @@ class _FleetOcrBackend:
     def fleet_ocr_options(self) -> dict[str, object]:
         """Return the routing plus the endpoint read from the worker contract."""
 
-        return {
-            key: value for key, value in _FLEET_OCR_SECTION.items() if key != "provider"
-        } | {"mineru_api_url": "http://flakegraph-flakegraph-ocr:8080"}
+        return {key: value for key, value in _FLEET_OCR_SECTION.items() if key != "provider"} | {
+            "mineru_api_url": "http://flakegraph-flakegraph-ocr:8080"
+        }
 
 
 def test_a_fleet_submission_carries_the_deployed_parsing_route(tmp_path: Path) -> None:

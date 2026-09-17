@@ -170,11 +170,6 @@ def test_snowflake_cortex_bounds_enrichment_calls_without_a_request_timeout() ->
     assert connection.cursor_instance.timeouts == [77]
 
 
-def test_snowflake_cortex_rejects_non_positive_timeout() -> None:
-    with pytest.raises(ValueError, match="timeout must be positive"):
-        SnowflakeCortexLlmProvider(_config(), "llama3.3-70b", timeout_seconds=0)
-
-
 def test_snowflake_cortex_summarizes_community() -> None:
     connection = FakeConnection(
         [

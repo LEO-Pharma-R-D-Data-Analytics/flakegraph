@@ -61,8 +61,6 @@ class OpenAICompatibleLlmProvider:
 
         if not model.strip():
             raise ValueError("OpenAI-compatible LLM requires an explicit model")
-        if timeout_seconds <= 0:
-            raise ValueError("OpenAI-compatible LLM timeout must be positive")
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.model = model

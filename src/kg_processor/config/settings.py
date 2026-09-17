@@ -75,26 +75,8 @@ class JobSettings(_SettingsModel):
     use_lease: bool = False
     use_file_queue: bool = False
     lease_owner: str | None = None
-    lease_seconds: int = 900
-    file_batch_size: int = 100
-
-    @field_validator("lease_seconds")
-    @classmethod
-    def lease_seconds_must_be_positive(cls, value: int) -> int:
-        """Reject non-positive lease windows before a worker can stall the queue."""
-
-        if value <= 0:
-            raise ValueError("lease_seconds must be positive")
-        return value
-
-    @field_validator("file_batch_size")
-    @classmethod
-    def file_batch_size_must_be_positive(cls, value: int) -> int:
-        """Keep file claim batches meaningful for both local and Snowflake queues."""
-
-        if value <= 0:
-            raise ValueError("file_batch_size must be positive")
-        return value
+    lease_seconds: int = Field(default=900, gt=0)
+    file_batch_size: int = Field(default=100, gt=0)
 
 
 # The floor of the interactive band. Everything below it is bulk work, and the
@@ -119,12 +101,12 @@ class DistributedSettings(_SettingsModel):
     # Live workers renew ownership in the background, so this window controls
     # crash detection rather than maximum task duration. Five minutes tolerates
     # brief coordination outages while returning work from a dead node promptly.
-    lease_seconds: int = 300
-    poll_interval_seconds: float = 1.0
-    retry_delay_seconds: float = 15.0
-    max_attempts: int = 3
+    lease_seconds: int = Field(default=300, gt=0)
+    poll_interval_seconds: float = Field(default=1.0, ge=0)
+    retry_delay_seconds: float = Field(default=15.0, ge=0)
+    max_attempts: int = Field(default=3, gt=0)
     artifact_compression_level: int = Field(default=6, ge=0, le=9)
-    max_artifact_bytes: int = 512 * 1024 * 1024
+    max_artifact_bytes: int = Field(default=512 * 1024 * 1024, gt=0)
     artifact_uri: str | None = None
     artifact_endpoint_url: str | None = None
     artifact_access_key_id: str | None = None
@@ -140,11 +122,11 @@ class DistributedSettings(_SettingsModel):
     # reference to it rather than the values, which Spark would otherwise write
     # into every executor Pod spec in clear text.
     spark_provider_secret: str = "flakegraph-providers"
-    spark_executor_instances: int = 4
-    spark_executor_cores: int = 4
+    spark_executor_instances: int = Field(default=4, gt=0)
+    spark_executor_cores: int = Field(default=4, gt=0)
     spark_executor_memory: str = "8g"
     spark_executor_memory_overhead: str = "8g"
-    spark_shuffle_partitions: int = 0
+    spark_shuffle_partitions: int = Field(default=0, ge=0)
     # Added to every task the run creates. The stage ladder occupies 0-20, so a
     # run submitted at 0 stays inside the bulk band while one submitted at 1000
     # claims workers ahead of any backlog. Reserve 0-99 for bulk work and 1000
@@ -186,39 +168,6 @@ class DistributedSettings(_SettingsModel):
             raise ValueError("distributed.worker_stages must not be empty")
         if len(set(value)) != len(value):
             raise ValueError("distributed.worker_stages must not contain duplicates")
-        return value
-
-    @field_validator(
-        "lease_seconds",
-        "max_attempts",
-        "max_artifact_bytes",
-        "spark_executor_instances",
-        "spark_executor_cores",
-    )
-    @classmethod
-    def positive_integer_controls(cls, value: int) -> int:
-        """Keep leases, retries, and payload bounds meaningful at runtime."""
-
-        if value <= 0:
-            raise ValueError("distributed integer controls must be positive")
-        return value
-
-    @field_validator("poll_interval_seconds", "retry_delay_seconds")
-    @classmethod
-    def non_negative_timing_controls(cls, value: float) -> float:
-        """Allow immediate test retries while rejecting nonsensical negative delays."""
-
-        if value < 0:
-            raise ValueError("distributed timing controls must not be negative")
-        return value
-
-    @field_validator("spark_shuffle_partitions")
-    @classmethod
-    def shuffle_partitions_must_not_be_negative(cls, value: int) -> int:
-        """Use zero for adaptive sizing while rejecting impossible negatives."""
-
-        if value < 0:
-            raise ValueError("distributed.spark_shuffle_partitions must not be negative")
         return value
 
     @field_validator("priority_offset")
@@ -332,13 +281,13 @@ class OcrSettings(_SettingsModel):
     provider: str = "mineru_internal"
     fallback_primary_provider: str = "builtin_text"
     fallback_secondary_provider: str = "mineru_internal"
-    fallback_min_characters_per_page: int = 80
-    fallback_max_sparse_page_ratio: float = 0.2
-    fallback_max_unbroken_text_ratio: float = 0.5
-    fallback_max_fragmented_text_ratio: float = 0.15
+    fallback_min_characters_per_page: int = Field(default=80, ge=1)
+    fallback_max_sparse_page_ratio: float = Field(default=0.2, ge=0.0, lt=1.0)
+    fallback_max_unbroken_text_ratio: float = Field(default=0.5, ge=0.0, lt=1.0)
+    fallback_max_fragmented_text_ratio: float = Field(default=0.15, ge=0.0, lt=1.0)
     language: str | None = None
     page_range: str | None = None
-    timeout_seconds: int = 900
+    timeout_seconds: int = Field(default=900, gt=0)
     model_cache_dir: Path | None = None
     mineru_command: str = "mineru"
     mineru_method: Literal["auto", "txt", "ocr"] = "auto"
@@ -350,15 +299,15 @@ class OcrSettings(_SettingsModel):
     mineru_api_url: str | None = None
     mineru_api_key: str | None = None
     mineru_server_url: str | None = None
-    mineru_start_page_id: int | None = None
-    mineru_end_page_id: int | None = None
+    mineru_start_page_id: int | None = Field(default=None, ge=0)
+    mineru_end_page_id: int | None = Field(default=None, ge=0)
     mineru_formula: bool | None = None
     mineru_table: bool | None = None
     mineru_image_analysis: bool | None = None
     mineru_client_side_output_generation: bool = False
     tesseract_command: str = "tesseract"
     tesseract_pdf_renderer_command: str = "pdftoppm"
-    tesseract_dpi: int = 300
+    tesseract_dpi: int = Field(default=300, gt=0)
     snowflake_parse_mode: Literal["OCR", "LAYOUT"] = "OCR"
     snowflake_extract_images: bool = False
     snowflake_page_split: bool = True
@@ -393,59 +342,6 @@ class OcrSettings(_SettingsModel):
 
         return _validate_provider_name(value, "ocr")
 
-    @field_validator("fallback_min_characters_per_page")
-    @classmethod
-    def fallback_density_must_be_positive(cls, value: int) -> int:
-        """Require a meaningful positive text-density threshold for routing."""
-
-        if value < 1:
-            raise ValueError("fallback_min_characters_per_page must be positive")
-        return value
-
-    @field_validator(
-        "fallback_max_sparse_page_ratio",
-        "fallback_max_unbroken_text_ratio",
-        "fallback_max_fragmented_text_ratio",
-    )
-    @classmethod
-    def fallback_sparse_ratio_must_be_bounded(cls, value: float) -> float:
-        """Keep fallback routing ratios within an interpretable range."""
-
-        if not 0.0 <= value < 1.0:
-            raise ValueError("fallback OCR routing ratios must be in [0, 1)")
-        return value
-
-    @field_validator("mineru_start_page_id", "mineru_end_page_id")
-    @classmethod
-    def mineru_page_ids_must_be_non_negative(cls, value: int | None) -> int | None:
-        """Keep MinerU page slicing compatible with its zero-based API contract."""
-
-        if value is not None and value < 0:
-            raise ValueError("MinerU page ids use zero-based indexes and must be non-negative")
-        return value
-
-    @field_validator("tesseract_dpi")
-    @classmethod
-    def tesseract_dpi_must_be_positive(cls, value: int) -> int:
-        """Require a render DPI that can be passed safely to pdftoppm/Tesseract."""
-
-        if value <= 0:
-            raise ValueError("tesseract_dpi must be positive")
-        return value
-
-    @field_validator("timeout_seconds")
-    @classmethod
-    def timeout_seconds_must_be_positive(cls, value: int) -> int:
-        """Reject a timeout that would cancel every OCR subprocess or HTTP request.
-
-        The value is forwarded to subprocess and HTTP transports where zero and
-        negative deadlines expire immediately or are read as "no deadline".
-        """
-
-        if value <= 0:
-            raise ValueError("ocr timeout_seconds must be positive")
-        return value
-
     @field_validator("snowflake_parse_mode", mode="before")
     @classmethod
     def snowflake_parse_mode_uppercase(cls, value: object) -> object:
@@ -457,7 +353,7 @@ class OcrSettings(_SettingsModel):
 class GenericHttpOcrSettings(_SettingsModel):
     """Maps an arbitrary HTTP OCR response into the normalized document schema."""
 
-    max_response_bytes: int = 25 * 1024 * 1024
+    max_response_bytes: int = Field(default=25 * 1024 * 1024, ge=0)
     endpoint: str | None = None
     api_key: str | None = None
     api_key_header: str = "Authorization"
@@ -487,15 +383,6 @@ class GenericHttpOcrSettings(_SettingsModel):
     error_path: str = "error"
     status_path: str = "status"
 
-    @field_validator("max_response_bytes")
-    @classmethod
-    def max_response_bytes_must_be_positive(cls, value: int) -> int:
-        """Accept zero as an explicit opt-out from the response-size bound."""
-
-        if value < 0:
-            raise ValueError("generic_http_ocr.max_response_bytes must be non-negative")
-        return value
-
 
 class LlmSettings(_SettingsModel):
     """Select the graph-extraction LLM transport, model, credentials, and timeout.
@@ -509,14 +396,14 @@ class LlmSettings(_SettingsModel):
     model: str = "gpt-4.1-mini"
     api_key: str | None = None
     api_version: str = "2025-01-01-preview"
-    timeout_seconds: int = DEFAULT_LLM_TIMEOUT_SECONDS
-    context_window_tokens: int = 32_768
+    timeout_seconds: int = Field(default=DEFAULT_LLM_TIMEOUT_SECONDS, gt=0)
+    context_window_tokens: int = Field(default=32768, gt=0)
     # The ceiling on a single completion. On a shared fleet this is the primary
     # control over how long interactive work waits: a queue-jumping request is
     # served after the next running request finishes, so capping how long any one
     # of them can run is what bounds that wait. Left unset, each adapter keeps
     # the budget it was measured against.
-    max_output_tokens: int | None = None
+    max_output_tokens: int | None = Field(default=None, gt=0)
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -524,28 +411,6 @@ class LlmSettings(_SettingsModel):
         """Validate LLM provider names before adapter construction."""
 
         return _validate_provider_name(value, "llm")
-
-    @field_validator("max_output_tokens")
-    @classmethod
-    def max_output_tokens_must_be_positive(cls, value: int | None) -> int | None:
-        """Reject a ceiling that would truncate every completion to nothing."""
-
-        if value is not None and value <= 0:
-            raise ValueError("llm max_output_tokens must be positive")
-        return value
-
-    @field_validator("timeout_seconds", "context_window_tokens")
-    @classmethod
-    def timeout_seconds_must_be_positive(cls, value: int, info: Any) -> int:
-        """Reject a timeout that would fail or cancel every provider request.
-
-        A single validated value is propagated to extraction and enrichment calls
-        so providers do not retain inconsistent hidden transport defaults.
-        """
-
-        if value <= 0:
-            raise ValueError(f"llm {info.field_name} must be positive")
-        return value
 
 
 class EmbeddingSettings(_SettingsModel):
@@ -556,8 +421,8 @@ class EmbeddingSettings(_SettingsModel):
     model: str = "sentence-transformers/all-MiniLM-L6-v2"
     api_key: str | None = None
     api_version: str = "2025-01-01-preview"
-    dimension: int = 384
-    batch_size: int = 32
+    dimension: int = Field(default=384, gt=0)
+    batch_size: int = Field(default=32, gt=0)
     device: str | None = None
 
     @field_validator("provider", mode="before")
@@ -566,24 +431,6 @@ class EmbeddingSettings(_SettingsModel):
         """Validate embedding provider names before adapter construction."""
 
         return _validate_provider_name(value, "embedding")
-
-    @field_validator("dimension")
-    @classmethod
-    def dimension_must_be_positive(cls, value: int) -> int:
-        """Require a vector dimension that can produce valid table rows."""
-
-        if value <= 0:
-            raise ValueError("embedding dimension must be positive")
-        return value
-
-    @field_validator("batch_size")
-    @classmethod
-    def batch_size_must_be_positive(cls, value: int) -> int:
-        """Require a positive provider batch size so embeddings always make progress."""
-
-        if value <= 0:
-            raise ValueError("embedding batch_size must be positive")
-        return value
 
 
 class ConsumptionSettings(_SettingsModel):
@@ -645,20 +492,7 @@ class ExtractorSettings(_SettingsModel):
     relation_provider: Literal["llm"] = "llm"
     verifier_provider: Literal["llm"] = "llm"
     gliner_model: str = "urchade/gliner_multi-v2.1"
-    gliner_threshold: float = 0.50
-
-    @field_validator("gliner_threshold")
-    @classmethod
-    def gliner_threshold_must_be_probability(cls, value: float) -> float:
-        """Keep the local NER confidence threshold on a normalized probability scale.
-
-        Validation occurs before the optional model is loaded, providing an immediate
-        configuration error instead of a late inference failure.
-        """
-
-        if not 0.0 <= value <= 1.0:
-            raise ValueError("gliner_threshold must be between 0 and 1")
-        return value
+    gliner_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class GraphSettings(_SettingsModel):
@@ -673,59 +507,59 @@ class GraphSettings(_SettingsModel):
     # files should normally select transports and credentials only; keeping the
     # extraction behavior here prevents provider profiles from changing graph
     # semantics merely because a transport configuration was copied.
-    chunk_token_size: int = 500
+    chunk_token_size: int = Field(default=500, gt=0)
     chunk_token_overlap: int = 60
     # A compact window keeps the structured extraction task exhaustive. Larger
     # section-sized requests reduce provider calls, but measured scientific-paper
     # runs omit substantial entities and relations even when the response remains
     # below its record limit. Fleet execution supplies throughput by leasing these
     # independent windows dynamically rather than weakening per-window recall.
-    extraction_window_tokens: int = 700
-    max_chunks_per_llm_call: int = 2
-    document_context_tokens: int = 1200
-    document_context_max_chunks: int = 3
-    max_document_context_entities: int = 3
-    extraction_parallelism: int = 2
+    extraction_window_tokens: int = Field(default=700, gt=0)
+    max_chunks_per_llm_call: int = Field(default=2, gt=0)
+    document_context_tokens: int = Field(default=1200, gt=0)
+    document_context_max_chunks: int = Field(default=3, gt=0)
+    max_document_context_entities: int = Field(default=3, gt=0)
+    extraction_parallelism: int = Field(default=2, gt=0)
     # Each window receives a completeness/gleaning pass, so two bounded responses
     # can recover more records without risking one oversized, truncated JSON body.
-    max_entities_per_batch: int = 40
-    max_relations_per_batch: int = 40
-    gleaning_max_passes: int = 1
-    gleaning_saturation_threshold: int = 10
-    gleaning_min_uncovered_tokens: int = 40
+    max_entities_per_batch: int = Field(default=40, gt=0)
+    max_relations_per_batch: int = Field(default=40, gt=0)
+    gleaning_max_passes: int = Field(default=1, ge=0)
+    gleaning_saturation_threshold: int = Field(default=10, gt=0)
+    gleaning_min_uncovered_tokens: int = Field(default=40, gt=0)
     verify_relations: bool = True
-    verification_min_confidence: float = 0.75
+    verification_min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
     entity_resolution_enabled: bool = True
-    resolution_lexical_auto_merge: float = 0.96
-    resolution_embedding_auto_merge: float = 0.94
-    resolution_candidate_threshold: float = 0.80
-    resolution_embedding_lexical_floor: float = 0.45
-    resolution_max_candidates_per_mention: int = 3
+    resolution_lexical_auto_merge: float = Field(default=0.96, ge=0.0, le=1.0)
+    resolution_embedding_auto_merge: float = Field(default=0.94, ge=0.0, le=1.0)
+    resolution_candidate_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    resolution_embedding_lexical_floor: float = Field(default=0.45, ge=0.0, le=1.0)
+    resolution_max_candidates_per_mention: int = Field(default=3, gt=0)
     # A decision is a compact boolean/confidence/reason tuple. Forty bounded
     # candidates fit comfortably in one strict response and halve provider round
     # trips without changing candidate generation or merge thresholds.
-    resolution_adjudication_batch_size: int = 40
-    resolution_parallelism: int = 2
-    resolution_llm_merge_min_confidence: float = 0.90
+    resolution_adjudication_batch_size: int = Field(default=40, gt=0)
+    resolution_parallelism: int = Field(default=2, gt=0)
+    resolution_llm_merge_min_confidence: float = Field(default=0.9, ge=0.0, le=1.0)
     deterministic_seed: int = 17
-    min_entity_confidence: float = 0.0
-    min_relation_confidence: float = 0.0
+    min_entity_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    min_relation_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     # A grounded entity remains useful even when no relation survives extraction
     # or verification. Consumers can derive a connected/core view later; deleting
     # isolates here irreversibly couples entity recall to relation recall.
     drop_isolated_entities: bool = False
-    min_entity_name_length: int = 2
+    min_entity_name_length: int = Field(default=2, gt=0)
     require_relation_endpoint_grounding: bool = True
-    relation_weight_max: float = 10.0
-    min_community_size: int = 2
-    max_community_size: int = 50
-    community_resolution: float = 1.0
-    community_co_mention_weight: float = 0.05
-    community_report_parallelism: int = 2
-    description_merge_parallelism: int = 2
-    description_merge_min_observations: int = 2
-    description_merge_max_descriptions: int = 8
-    description_merge_max_evidence: int = 5
+    relation_weight_max: float = Field(default=10.0, gt=0)
+    min_community_size: int = Field(default=2, gt=0)
+    max_community_size: int = Field(default=50, gt=0)
+    community_resolution: float = Field(default=1.0, gt=0)
+    community_co_mention_weight: float = Field(default=0.05, gt=0)
+    community_report_parallelism: int = Field(default=2, gt=0)
+    description_merge_parallelism: int = Field(default=2, gt=0)
+    description_merge_min_observations: int = Field(default=2, gt=0)
+    description_merge_max_descriptions: int = Field(default=8, gt=0)
+    description_merge_max_evidence: int = Field(default=5, gt=0)
     fail_on_quality_error: bool = True
     entity_types: list[str] = Field(
         default_factory=lambda: [
@@ -759,15 +593,6 @@ class GraphSettings(_SettingsModel):
 
         return _str_to_list(value) if isinstance(value, str) else value
 
-    @field_validator("chunk_token_size")
-    @classmethod
-    def chunk_token_size_must_be_positive(cls, value: int) -> int:
-        """Require non-empty chunks before any LLM extraction is scheduled."""
-
-        if value <= 0:
-            raise ValueError("chunk_token_size must be positive")
-        return value
-
     @field_validator("chunk_token_overlap")
     @classmethod
     def overlap_smaller_than_chunk(cls, value: int, info: Any) -> int:
@@ -778,96 +603,6 @@ class GraphSettings(_SettingsModel):
         chunk_size = info.data.get("chunk_token_size")
         if chunk_size is not None and value >= chunk_size:
             raise ValueError("chunk_token_overlap must be smaller than chunk_token_size")
-        return value
-
-    @field_validator(
-        "max_chunks_per_llm_call",
-        "document_context_tokens",
-        "document_context_max_chunks",
-        "max_document_context_entities",
-        "extraction_window_tokens",
-        "extraction_parallelism",
-        "max_entities_per_batch",
-        "max_relations_per_batch",
-        "gleaning_saturation_threshold",
-        "min_entity_name_length",
-        "min_community_size",
-        "max_community_size",
-        "community_report_parallelism",
-        "description_merge_parallelism",
-        "gleaning_min_uncovered_tokens",
-        "resolution_max_candidates_per_mention",
-        "resolution_adjudication_batch_size",
-        "resolution_parallelism",
-    )
-    @classmethod
-    def graph_positive_integer_limits(cls, value: int) -> int:
-        """Validate graph limits that are used as loop bounds or SQL batch sizes."""
-
-        if value <= 0:
-            raise ValueError("graph integer limits must be positive")
-        return value
-
-    @field_validator("gleaning_max_passes")
-    @classmethod
-    def gleaning_max_passes_must_be_non_negative(cls, value: int) -> int:
-        """Allow disabling gleaning with zero while rejecting impossible negatives."""
-
-        if value < 0:
-            raise ValueError("gleaning_max_passes must be non-negative")
-        return value
-
-    @field_validator("relation_weight_max")
-    @classmethod
-    def relation_weight_max_must_be_positive(cls, value: float) -> float:
-        """Keep relation weights in a bounded positive scale for downstream ranking."""
-
-        if value <= 0:
-            raise ValueError("relation_weight_max must be positive")
-        return value
-
-    @field_validator("community_resolution", "community_co_mention_weight")
-    @classmethod
-    def community_weights_must_be_positive(cls, value: float) -> float:
-        """Require positive Leiden resolution and co-mention projection parameters.
-
-        Non-positive values would either invalidate community optimization or erase
-        the weak projection used to stabilize sparse graph regions.
-        """
-
-        if value <= 0:
-            raise ValueError("community weights must be positive")
-        return value
-
-    @field_validator(
-        "min_entity_confidence",
-        "min_relation_confidence",
-        "verification_min_confidence",
-        "resolution_lexical_auto_merge",
-        "resolution_embedding_auto_merge",
-        "resolution_candidate_threshold",
-        "resolution_embedding_lexical_floor",
-        "resolution_llm_merge_min_confidence",
-    )
-    @classmethod
-    def confidence_thresholds_must_be_probability(cls, value: float) -> float:
-        """Ensure confidence thresholds stay on the normalized 0..1 scale."""
-
-        if value < 0.0 or value > 1.0:
-            raise ValueError("confidence thresholds must be between 0 and 1")
-        return value
-
-    @field_validator(
-        "description_merge_min_observations",
-        "description_merge_max_descriptions",
-        "description_merge_max_evidence",
-    )
-    @classmethod
-    def description_merge_limits_must_be_positive(cls, value: int) -> int:
-        """Require merge limits that still allow descriptions to be synthesized."""
-
-        if value <= 0:
-            raise ValueError("description merge limits must be positive")
         return value
 
     @model_validator(mode="after")
@@ -939,16 +674,16 @@ class SnowflakeSettings(_SettingsModel):
     image_digest: str | None = None
     compute_pool: str | None = None
     compute_pool_instance_family: str | None = None
-    compute_pool_min_nodes: int = 1
-    compute_pool_max_nodes: int = 1
+    compute_pool_min_nodes: int = Field(default=1, gt=0)
+    compute_pool_max_nodes: int = Field(default=1, gt=0)
     service_name: str = "KG_PROCESSOR_JOB"
     service_spec_stage: str | None = None
     service_cpu_request: str = "500m"
     service_cpu_limit: str = "1"
     service_memory_request: str = "3Gi"
     service_memory_limit: str = "5Gi"
-    service_gpu_count: int = 0
-    bulk_target_file_size_mb: int = 128
+    service_gpu_count: int = Field(default=0, ge=0)
+    bulk_target_file_size_mb: int = Field(default=128, gt=0)
 
     @field_validator("authenticator", mode="before")
     @classmethod
@@ -956,19 +691,6 @@ class SnowflakeSettings(_SettingsModel):
         """Apply the same friendly aliases to file and environment configuration."""
 
         return _snowflake_auth_alias(value) if isinstance(value, str) else value
-
-    @field_validator(
-        "compute_pool_min_nodes",
-        "compute_pool_max_nodes",
-        "bulk_target_file_size_mb",
-    )
-    @classmethod
-    def snowflake_positive_integer_settings(cls, value: int) -> int:
-        """Validate Snowflake sizing knobs that are emitted into SQL or service specs."""
-
-        if value <= 0:
-            raise ValueError("Snowflake positive integer settings must be positive")
-        return value
 
     @field_validator("image_digest")
     @classmethod
@@ -981,15 +703,6 @@ class SnowflakeSettings(_SettingsModel):
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", normalized):
             raise ValueError("image_digest must be a sha256:<64 hex chars> OCI digest")
         return normalized
-
-    @field_validator("service_gpu_count")
-    @classmethod
-    def service_gpu_count_must_be_non_negative(cls, value: int) -> int:
-        """Allow CPU-only services while rejecting negative GPU requests."""
-
-        if value < 0:
-            raise ValueError("service_gpu_count must be non-negative")
-        return value
 
     @model_validator(mode="after")
     def compute_pool_max_must_cover_min(self) -> SnowflakeSettings:

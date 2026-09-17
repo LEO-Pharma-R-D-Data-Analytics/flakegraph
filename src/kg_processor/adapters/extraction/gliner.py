@@ -29,7 +29,7 @@ class GlinerEntityExtractor:
     """
 
     def __init__(self, model_name: str, threshold: float = 0.5) -> None:
-        """Store model selection and validate the normalized confidence threshold.
+        """Store model selection and defer the load until the first extraction.
 
         Loading is deliberately deferred until the first extraction request so
         preflight and non-GLiNER commands do not pay model startup cost. Separate
@@ -37,8 +37,6 @@ class GlinerEntityExtractor:
         safe to invoke concurrently.
         """
 
-        if not 0.0 <= threshold <= 1.0:
-            raise ValueError("GLiNER threshold must be between 0 and 1")
         self.model_name = model_name
         self.threshold = threshold
         self._model: Any | None = None

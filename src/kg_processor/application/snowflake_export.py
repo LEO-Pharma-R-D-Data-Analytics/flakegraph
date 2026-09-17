@@ -76,9 +76,7 @@ def export_snowflake_graph(
         try:
             for artifact_name, table in _ARTIFACT_TABLES.items():
                 columns = [
-                    name
-                    for name in schema_columns[table]
-                    if name.upper() not in _EXCLUDED_COLUMNS
+                    name for name in schema_columns[table] if name.upper() not in _EXCLUDED_COLUMNS
                 ]
                 frame = _read_table(cursor, pd, config, table, columns, graph_id)
                 frames[artifact_name] = frame

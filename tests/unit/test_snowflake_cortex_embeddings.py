@@ -170,11 +170,6 @@ def test_snowflake_cortex_embeddings_bound_every_batch_statement() -> None:
     assert connection.cursor_instance.timeouts == [45, 45]
 
 
-def test_snowflake_cortex_embeddings_reject_non_positive_timeout() -> None:
-    with pytest.raises(ValueError, match="timeout must be positive"):
-        SnowflakeCortexEmbeddingProvider(_config(), timeout_seconds=0)
-
-
 def test_snowflake_cortex_embeddings_reject_missing_batch_rows() -> None:
     """A partial set-based response must not silently misalign later texts."""
 

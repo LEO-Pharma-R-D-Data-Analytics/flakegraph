@@ -32,8 +32,6 @@ class SnowflakeCortexEmbeddingProvider:
     ) -> None:
         """Configure the session and the per-batch statement timeout."""
 
-        if timeout_seconds <= 0:
-            raise ValueError("Snowflake Cortex embedding timeout must be positive")
         self.config = config
         self.connector_factory = connector_factory
         self.timeout_seconds = timeout_seconds

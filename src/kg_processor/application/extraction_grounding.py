@@ -115,9 +115,7 @@ def _surface_spans_from_index(
         tokens = re.findall(r"\w+", normalized_surface, flags=re.UNICODE)
         if not tokens:
             continue
-        trailing_marker = (
-            r"(?:\d+[*†‡]*)?" if len(tokens) > 1 and not tokens[-1].isdigit() else ""
-        )
+        trailing_marker = r"(?:\d+[*†‡]*)?" if len(tokens) > 1 and not tokens[-1].isdigit() else ""
         for pattern in _compiled_surface_patterns(tuple(tokens), trailing_marker):
             for match in pattern.finditer(normalized_source):
                 spans.add((source_starts[match.start()], source_ends[match.end() - 1]))

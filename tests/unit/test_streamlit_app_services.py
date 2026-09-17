@@ -2287,8 +2287,7 @@ def test_kubernetes_database_url_comes_from_deployed_worker_contract(
     monkeypatch.setattr("flakegraph_app.backends.kubernetes._kubectl_json", kubectl)
 
     assert (
-        _fleet_database_url("flakegraph", ClusterTarget())
-        == "postgresql://app@database-rw:5432/kg"
+        _fleet_database_url("flakegraph", ClusterTarget()) == "postgresql://app@database-rw:5432/kg"
     )
 
 
@@ -3276,9 +3275,9 @@ def test_a_suspended_service_is_not_called_a_dead_worker() -> None:
         snapshot = SnowflakeBackend(session).status("run-1")
 
         assert snapshot.status == "pending", state
-        assert not any(
-            statement.startswith("UPDATE KG_JOB") for statement in session.statements
-        ), state
+        assert not any(statement.startswith("UPDATE KG_JOB") for statement in session.statements), (
+            state
+        )
 
 
 def test_one_concurrency_budget_reaches_every_model_calling_stage() -> None:

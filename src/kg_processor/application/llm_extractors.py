@@ -863,9 +863,7 @@ def _ontology_definition_keys(ontology: OntologyProfile) -> frozenset[str]:
     """Return every ontology definition in the form used to recognize one."""
 
     return frozenset(
-        key
-        for key in (_definition_key(item.description) for item in ontology.entity_types)
-        if key
+        key for key in (_definition_key(item.description) for item in ontology.entity_types) if key
     )
 
 

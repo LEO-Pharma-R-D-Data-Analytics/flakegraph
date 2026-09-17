@@ -98,7 +98,6 @@ def test_listing_graphs_applies_the_visibility_predicate() -> None:
     Owner's rights means an unfiltered query returns every graph in the account.
     """
 
-
     statements: list[tuple[str, Any]] = []
 
     class Session:
@@ -123,7 +122,6 @@ def test_opening_a_graph_is_authorized_independently_of_the_listing() -> None:
     filtered list is not by itself a boundary.
     """
 
-
     statements: list[tuple[str, Any]] = []
 
     class Session:
@@ -143,7 +141,6 @@ def test_opening_a_graph_is_authorized_independently_of_the_listing() -> None:
 def test_sharing_rejects_a_target_that_is_neither_user_nor_role() -> None:
     """Refuse a grantee type the visibility predicate cannot evaluate."""
 
-
     class Session:
         def sql(self, statement: str, params: Any = None) -> Any:
             raise AssertionError("must not reach SQL")
@@ -156,7 +153,6 @@ def test_sharing_rejects_a_target_that_is_neither_user_nor_role() -> None:
 
 def test_claiming_a_graph_never_takes_one_that_is_already_owned() -> None:
     """Leave an existing owner in place when someone else re-runs their graph."""
-
 
     statements: list[str] = []
 
@@ -185,7 +181,6 @@ def test_resolving_viewer_roles_escapes_the_username_it_must_interpolate() -> No
     usernames arrive from the identity provider. An unescaped quote would end
     the identifier and let the rest of the name be read as SQL.
     """
-
 
     statements: list[str] = []
 
@@ -311,7 +306,10 @@ def test_a_credential_carried_in_an_endpoint_query_is_recognized() -> None:
     for url in secret_bearing:
         assert redacted_url(url) != url, url
 
-    for url in ["https://api.example.com/v1?next_token=cursor", "https://api.example.com/v1?page=2"]:
+    for url in [
+        "https://api.example.com/v1?next_token=cursor",
+        "https://api.example.com/v1?page=2",
+    ]:
         assert redacted_url(url) == url, url
 
 
@@ -496,9 +494,7 @@ def test_a_role_share_does_not_admit_a_user_of_the_same_name() -> None:
     widens a share beyond the principal the owner named.
     """
 
-    clause, parameters = visible_graph_predicate(
-        Viewer(user_name="ANALYSTS", roles=frozenset())
-    )
+    clause, parameters = visible_graph_predicate(Viewer(user_name="ANALYSTS", roles=frozenset()))
 
     assert "GRANTEE_TYPE" in clause
     assert "'USER'" in clause
@@ -592,12 +588,18 @@ def test_retrying_a_run_requeues_its_failed_documents_and_starts_a_worker() -> N
         def sql(self, statement: str, params: Any = None) -> Any:
             statements.append(statement)
             if "CONFIG:snowflake:compute_pool" in statement:
-                return _Result([_Row({
-                    "POOL": "POOL_A",
-                    "SPEC_STAGE": "@DB.SCH.SPECS",
-                    "DB": "DB",
-                    "SCH": "SCH",
-                })])
+                return _Result(
+                    [
+                        _Row(
+                            {
+                                "POOL": "POOL_A",
+                                "SPEC_STAGE": "@DB.SCH.SPECS",
+                                "DB": "DB",
+                                "SCH": "SCH",
+                            }
+                        )
+                    ]
+                )
             if "SELECT GRAPH_ID FROM KG_JOB" in statement:
                 return _Result([_Row({"GRAPH_ID": "graph-1"})])
             if "COUNT(*) AS QUEUED" in statement:
@@ -605,14 +607,20 @@ def test_retrying_a_run_requeues_its_failed_documents_and_starts_a_worker() -> N
             if statement.startswith("SELECT 1 FROM KG_GRAPH"):
                 return _Result([_Row({"1": 1})])
             if "FROM KG_JOB J" in statement or "KG_JOB_FILE F" in statement:
-                return _Result([_Row({
-                    "ID": "run-1",
-                    "GRAPH_ID": "graph-1",
-                    "STATUS": "PENDING",
-                    "STAGE": "queued",
-                    "FILE_STATUS": "QUEUED",
-                    "FILES": 4,
-                })])
+                return _Result(
+                    [
+                        _Row(
+                            {
+                                "ID": "run-1",
+                                "GRAPH_ID": "graph-1",
+                                "STATUS": "PENDING",
+                                "STAGE": "queued",
+                                "FILE_STATUS": "QUEUED",
+                                "FILES": 4,
+                            }
+                        )
+                    ]
+                )
             return _Result([])
 
     backend = SnowflakeBackend(Session())
@@ -642,7 +650,6 @@ def test_a_running_worker_reports_what_it_has_spent_so_far() -> None:
     run finishes, so the long runs whose spend is worth watching are exactly the
     ones that show nothing until it is too late to act on.
     """
-
 
     written: list[dict[str, Any]] = []
 
@@ -686,7 +693,6 @@ def test_a_worker_that_cannot_price_its_work_still_reports_progress() -> None:
     Progress is what tells an operator the run is alive. A failure while
     summarising spend must not take that away.
     """
-
 
     written: list[dict[str, Any]] = []
 
@@ -738,21 +744,27 @@ def test_a_dead_worker_is_noticed_in_the_history_not_only_when_opened() -> None:
         def sql(self, statement: str, params: Any = None) -> Any:
             statements.append(statement)
             if "FROM KG_JOB J" in statement:
-                return _Result([_Row({
-                    "ID": "run-1",
-                    "GRAPH_ID": "graph-1",
-                    "GRAPH_NAME": "graph-1",
-                    "STATUS": "RUNNING",
-                    "ERROR": None,
-                    "CREATED_AT": "2026-01-01",
-                    "UPDATED_AT": "2026-01-01",
-                    "OWNER": None,
-                    "DOCUMENTS_TOTAL": 5,
-                    "DOCUMENTS_COMPLETED": 0,
-                    "DOCUMENTS_FAILED": 0,
-                    "DOCUMENTS_PENDING": 5,
-                    "SECONDS_SINCE_UPDATE": 7_200,
-                })])
+                return _Result(
+                    [
+                        _Row(
+                            {
+                                "ID": "run-1",
+                                "GRAPH_ID": "graph-1",
+                                "GRAPH_NAME": "graph-1",
+                                "STATUS": "RUNNING",
+                                "ERROR": None,
+                                "CREATED_AT": "2026-01-01",
+                                "UPDATED_AT": "2026-01-01",
+                                "OWNER": None,
+                                "DOCUMENTS_TOTAL": 5,
+                                "DOCUMENTS_COMPLETED": 0,
+                                "DOCUMENTS_FAILED": 0,
+                                "DOCUMENTS_PENDING": 5,
+                                "SECONDS_SINCE_UPDATE": 7_200,
+                            }
+                        )
+                    ]
+                )
             return _Result([])
 
     backend = SnowflakeBackend(Session())
@@ -779,21 +791,27 @@ def test_a_busy_run_is_not_interrogated_by_the_history() -> None:
     class Session:
         def sql(self, statement: str, params: Any = None) -> Any:
             if "FROM KG_JOB J" in statement:
-                return _Result([_Row({
-                    "ID": "run-1",
-                    "GRAPH_ID": "graph-1",
-                    "GRAPH_NAME": "graph-1",
-                    "STATUS": "RUNNING",
-                    "ERROR": None,
-                    "CREATED_AT": "2026-01-01",
-                    "UPDATED_AT": "2026-01-01",
-                    "OWNER": None,
-                    "DOCUMENTS_TOTAL": 5,
-                    "DOCUMENTS_COMPLETED": 0,
-                    "DOCUMENTS_FAILED": 0,
-                    "DOCUMENTS_PENDING": 5,
-                    "SECONDS_SINCE_UPDATE": 3,
-                })])
+                return _Result(
+                    [
+                        _Row(
+                            {
+                                "ID": "run-1",
+                                "GRAPH_ID": "graph-1",
+                                "GRAPH_NAME": "graph-1",
+                                "STATUS": "RUNNING",
+                                "ERROR": None,
+                                "CREATED_AT": "2026-01-01",
+                                "UPDATED_AT": "2026-01-01",
+                                "OWNER": None,
+                                "DOCUMENTS_TOTAL": 5,
+                                "DOCUMENTS_COMPLETED": 0,
+                                "DOCUMENTS_FAILED": 0,
+                                "DOCUMENTS_PENDING": 5,
+                                "SECONDS_SINCE_UPDATE": 3,
+                            }
+                        )
+                    ]
+                )
             return _Result([])
 
     backend = SnowflakeBackend(Session())
@@ -891,14 +909,20 @@ def test_deleting_a_graph_also_clears_its_staged_documents_and_service() -> None
             if "SELECT 1 FROM KG_GRAPH G" in statement:
                 return _Result([_Row({"1": 1})])
             if "stage_prefix" in statement:
-                return _Result([_Row({
-                    "ID": "run-1",
-                    "UPLOAD_PREFIX": "app/ALICE/run-1",
-                    "DOCUMENT_STAGE": "@DB.SCH.KG_DOCS",
-                    "SPEC_STAGE": "@DB.SCH.KG_SERVICE_SPECS",
-                    "DB": "DB",
-                    "SCH": "SCH",
-                })])
+                return _Result(
+                    [
+                        _Row(
+                            {
+                                "ID": "run-1",
+                                "UPLOAD_PREFIX": "app/ALICE/run-1",
+                                "DOCUMENT_STAGE": "@DB.SCH.KG_DOCS",
+                                "SPEC_STAGE": "@DB.SCH.KG_SERVICE_SPECS",
+                                "DB": "DB",
+                                "SCH": "SCH",
+                            }
+                        )
+                    ]
+                )
             if "UNION ALL" in statement:
                 return _Result([])
             return _Result([])
@@ -929,14 +953,20 @@ def test_a_curated_source_stage_is_never_emptied_by_a_deletion() -> None:
             if "SELECT 1 FROM KG_GRAPH G" in statement:
                 return _Result([_Row({"1": 1})])
             if "stage_prefix" in statement:
-                return _Result([_Row({
-                    "ID": "run-1",
-                    "UPLOAD_PREFIX": "corporate/reference-corpus",
-                    "DOCUMENT_STAGE": "@DB.SCH.KG_DOCS",
-                    "SPEC_STAGE": "@DB.SCH.KG_SERVICE_SPECS",
-                    "DB": "DB",
-                    "SCH": "SCH",
-                })])
+                return _Result(
+                    [
+                        _Row(
+                            {
+                                "ID": "run-1",
+                                "UPLOAD_PREFIX": "corporate/reference-corpus",
+                                "DOCUMENT_STAGE": "@DB.SCH.KG_DOCS",
+                                "SPEC_STAGE": "@DB.SCH.KG_SERVICE_SPECS",
+                                "DB": "DB",
+                                "SCH": "SCH",
+                            }
+                        )
+                    ]
+                )
             return _Result([])
 
     backend = SnowflakeBackend(Session())

@@ -704,31 +704,25 @@ def test_settings_accepts_zero_gleaning_passes() -> None:
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"embedding": {"batch_size": 0}}, "embedding batch_size must be positive"),
-        ({"llm": {"timeout_seconds": 0}}, "llm timeout_seconds must be positive"),
-        (
-            {"generic_http_ocr": {"max_response_bytes": -1}},
-            "generic_http_ocr.max_response_bytes must be non-negative",
-        ),
-        ({"graph": {"chunk_token_size": 0}}, "chunk_token_size must be positive"),
+        ({"embedding": {"batch_size": 0}}, "embedding.batch_size"),
+        ({"llm": {"timeout_seconds": 0}}, "llm.timeout_seconds"),
+        ({"generic_http_ocr": {"max_response_bytes": -1}}, "generic_http_ocr.max_response_bytes"),
+        ({"graph": {"chunk_token_size": 0}}, "graph.chunk_token_size"),
         ({"graph": {"chunk_token_overlap": -1}}, "chunk_token_overlap must be non-negative"),
         (
             {"graph": {"chunk_token_size": 10, "chunk_token_overlap": 10}},
             "chunk_token_overlap must be smaller than chunk_token_size",
         ),
-        ({"graph": {"gleaning_max_passes": -1}}, "gleaning_max_passes must be non-negative"),
-        ({"graph": {"relation_weight_max": 0}}, "relation_weight_max must be positive"),
+        ({"graph": {"gleaning_max_passes": -1}}, "graph.gleaning_max_passes"),
+        ({"graph": {"relation_weight_max": 0}}, "graph.relation_weight_max"),
         (
             {"graph": {"resolution_max_candidates_per_mention": 0}},
-            "graph integer limits must be positive",
+            "graph.resolution_max_candidates_per_mention",
         ),
-        (
-            {"graph": {"resolution_parallelism": 0}},
-            "graph integer limits must be positive",
-        ),
+        ({"graph": {"resolution_parallelism": 0}}, "graph.resolution_parallelism"),
         (
             {"graph": {"resolution_embedding_lexical_floor": 1.1}},
-            "confidence thresholds must be between 0 and 1",
+            "graph.resolution_embedding_lexical_floor",
         ),
         (
             {"snowflake": {"compute_pool_min_nodes": 3, "compute_pool_max_nodes": 2}},
@@ -896,7 +890,7 @@ def test_settings_accept_friendly_ocr_engine_names_under_either_variable() -> No
 def test_settings_reject_a_non_positive_ocr_timeout() -> None:
     """The value becomes a subprocess and HTTP deadline that must be reachable."""
 
-    with pytest.raises(ValueError, match="ocr timeout_seconds must be positive"):
+    with pytest.raises(ValueError, match="ocr.timeout_seconds"):
         Settings.load(overrides={"ocr": {"timeout_seconds": 0}})
 
 

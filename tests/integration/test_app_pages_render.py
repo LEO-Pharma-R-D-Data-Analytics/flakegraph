@@ -46,8 +46,6 @@ def completed_run() -> Iterator[str]:
     written there under a unique id rather than into a temporary directory.
     """
 
-
-
     run_id = f"apptest-{uuid.uuid4().hex[:12]}"
     state_root = _REPOSITORY_ROOT / ".flakegraph" / "app"
     run_directory = state_root / "runs" / run_id
@@ -268,9 +266,7 @@ def test_only_the_snowflake_runtime_is_offered_inside_snowflake(
 
         return object()
 
-    monkeypatch.setattr(
-        "flakegraph_app.backends.factory.active_snowflake_session", _session
-    )
+    monkeypatch.setattr("flakegraph_app.backends.factory.active_snowflake_session", _session)
 
     app = _app()
     app.run()

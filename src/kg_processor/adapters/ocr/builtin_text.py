@@ -119,9 +119,7 @@ class BuiltinTextOcrProvider:
                     "password-protected PDFs are not supported by builtin_text OCR"
                 )
             if len(reader.pages) > MAX_PDFIUM_FALLBACK_PAGES:
-                raise ValueError(
-                    f"PDF exceeds the {MAX_PDFIUM_FALLBACK_PAGES} page limit"
-                )
+                raise ValueError(f"PDF exceeds the {MAX_PDFIUM_FALLBACK_PAGES} page limit")
             pages: list[ParsedPage] = []
             total_text_bytes = 0
             for index, page in enumerate(reader.pages, start=1):
@@ -129,8 +127,7 @@ class BuiltinTextOcrProvider:
                 total_text_bytes += len(text.encode("utf-8"))
                 if total_text_bytes > MAX_PDFIUM_FALLBACK_TEXT_BYTES:
                     raise ValueError(
-                        "PDF text exceeds the "
-                        f"{MAX_PDFIUM_FALLBACK_TEXT_BYTES} byte limit"
+                        f"PDF text exceeds the {MAX_PDFIUM_FALLBACK_TEXT_BYTES} byte limit"
                     )
                 pages.append(_page_from_text(file, index, text))
             return pages

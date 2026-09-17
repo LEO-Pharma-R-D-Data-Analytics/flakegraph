@@ -92,8 +92,6 @@ class SnowflakeCortexLlmProvider:
         contract. Graph enrichment calls do not, so they use this value.
         """
 
-        if timeout_seconds <= 0:
-            raise ValueError("Snowflake Cortex LLM timeout must be positive")
         self.config = config
         self.default_model = default_model
         self.connector_factory = connector_factory
