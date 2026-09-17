@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Barrier
@@ -12,47 +9,7 @@ import pytest
 from kg_processor.adapters.files.azure_blob import (
     AzureBlobFileSource,
     AzureBlobFileSourceConfig,
-    _download_blob,
 )
-
-
-def test_concurrent_azure_downloads_publish_only_complete_files(tmp_path: Path) -> None:
-    target = tmp_path / "shared.pdf"
-    barrier = Barrier(2)
-    payloads = [b"AAAAAA", b"BBBBBB"]
-
-    class Downloader:
-        def __init__(self, payload: bytes) -> None:
-            self.payload = payload
-
-        def chunks(self) -> Iterable[bytes]:
-            yield self.payload[:3]
-            barrier.wait(timeout=2)
-            yield self.payload[3:]
-
-    class Container:
-        def __init__(self) -> None:
-            self.index = 0
-
-        def download_blob(self, _name: str) -> Downloader:
-            payload = payloads[self.index]
-            self.index += 1
-            return Downloader(payload)
-
-        def list_blobs(self, name_starts_with: str | None = None) -> list[object]:
-            return []
-
-    container = Container()
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(
-            executor.map(lambda _index: _download_blob(container, "shared.pdf", target), range(2))
-        )
-
-    assert target.read_bytes() in payloads
-    assert sorted(checksum for checksum, _size in results) == sorted(
-        hashlib.sha256(payload).hexdigest() for payload in payloads
-    )
-    assert not list(tmp_path.rglob("*.part"))
 
 
 def test_azure_blob_file_source_lists_filters_downloads_and_hashes(tmp_path: Path) -> None:

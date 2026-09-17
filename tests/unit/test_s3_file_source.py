@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
 from typing import Any
 
 import pytest
@@ -14,35 +12,7 @@ import pytest
 from kg_processor.adapters.files.s3 import (
     S3FileSource,
     S3FileSourceConfig,
-    _download_body,
 )
-
-
-def test_concurrent_s3_downloads_publish_only_complete_files(tmp_path: Path) -> None:
-    target = tmp_path / "shared.pdf"
-    barrier = Barrier(2)
-    payloads = [b"AAAAAA", b"BBBBBB"]
-
-    class Body:
-        def __init__(self, payload: bytes) -> None:
-            self.payload = payload
-
-        def iter_chunks(self, chunk_size: int = 1024) -> Iterable[bytes]:
-            del chunk_size
-            yield self.payload[:3]
-            barrier.wait(timeout=2)
-            yield self.payload[3:]
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(
-            executor.map(lambda payload: _download_body(Body(payload), target), payloads)
-        )
-
-    assert target.read_bytes() in payloads
-    assert sorted(checksum for checksum, _size in results) == sorted(
-        hashlib.sha256(payload).hexdigest() for payload in payloads
-    )
-    assert not list(tmp_path.rglob("*.part"))
 
 
 def test_s3_source_filters_streams_downloads_and_preserves_provenance(tmp_path: Path) -> None:

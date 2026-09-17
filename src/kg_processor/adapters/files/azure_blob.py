@@ -20,15 +20,12 @@ from azure.storage.blob import BlobServiceClient
 
 from kg_processor.adapters.files.common import (
     DOWNLOAD_PARALLELISM,
-    cached_input_file,
     claimed_download_root,
+    fetch_input_file,
     is_supported_file,
     matches_include_globs,
     normalized_prefix,
     object_download_path,
-    stream_to_path,
-    verify_download_size,
-    write_download_metadata,
 )
 from kg_processor.domain.documents import InputFile
 from kg_processor.domain.ids import stable_id
@@ -154,7 +151,6 @@ def _download_input_file(
         relative_path,
         stable_id("azure_blob_download_path", config.container, blob_name),
     )
-    source_uri = _source_uri(config, blob_name)
     remote_identity = {
         name: str(_object_value(blob, source) or "")
         for name, source in (
@@ -163,27 +159,14 @@ def _download_input_file(
             ("last_modified", "last_modified"),
         )
     }
-    cached = cached_input_file(
+    return fetch_input_file(
         local_path,
         remote_identity,
-        source_uri,
-        stable_id("azure_blob_file", config.container, blob_name),
+        _source_uri(config, blob_name),
+        ("azure_blob_file", config.container, blob_name),
         _content_type(blob, blob_name),
+        lambda: container_client.download_blob(blob_name).chunks(),
     )
-    if cached is not None:
-        return cached
-    checksum, size_bytes = _download_blob(container_client, blob_name, local_path)
-    verify_download_size(source_uri, remote_identity, size_bytes)
-    result = InputFile(
-        id=stable_id("azure_blob_file", config.container, blob_name, checksum),
-        path=local_path,
-        source_uri=source_uri,
-        checksum=checksum,
-        mime_type=_content_type(blob, blob_name),
-        size_bytes=size_bytes,
-    )
-    write_download_metadata(local_path, remote_identity, result)
-    return result
 
 
 def _load_azure_blob_client(config: AzureBlobFileSourceConfig) -> AzureBlobServiceClient:
@@ -201,14 +184,6 @@ def _load_azure_blob_client(config: AzureBlobFileSourceConfig) -> AzureBlobServi
         AzureBlobServiceClient,
         BlobServiceClient(account_url=config.account_url, credential=credential),
     )
-
-
-def _download_blob(
-    container_client: AzureBlobContainerClient,
-    blob_name: str,
-    local_path: Path,
-) -> tuple[str, int]:
-    return stream_to_path(container_client.download_blob(blob_name).chunks(), local_path)
 
 
 def _blob_name(blob: object) -> str:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -12,8 +14,33 @@ import pytest
 from kg_processor.adapters.files.common import (
     cached_input_file,
     claimed_download_root,
+    stream_to_path,
     verify_download_size,
 )
+
+
+def test_concurrent_downloads_publish_only_complete_files(tmp_path: Path) -> None:
+    """Two workers streaming the same object leave one whole file and no parts."""
+
+    target = tmp_path / "shared.pdf"
+    barrier = Barrier(2)
+    payloads = [b"AAAAAA", b"BBBBBB"]
+
+    def chunks(payload: bytes) -> Iterable[bytes]:
+        yield payload[:3]
+        barrier.wait(timeout=2)
+        yield payload[3:]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(lambda payload: stream_to_path(chunks(payload), target), payloads)
+        )
+
+    assert target.read_bytes() in payloads
+    assert sorted(checksum for checksum, _size in results) == sorted(
+        hashlib.sha256(payload).hexdigest() for payload in payloads
+    )
+    assert not list(tmp_path.rglob("*.part"))
 
 
 def test_concurrent_cache_claims_resolve_to_one_complete_root(tmp_path: Path) -> None:

@@ -19,15 +19,12 @@ import boto3
 
 from kg_processor.adapters.files.common import (
     DOWNLOAD_PARALLELISM,
-    cached_input_file,
     claimed_download_root,
+    fetch_input_file,
     is_supported_file,
     matches_include_globs,
     normalized_prefix,
     object_download_path,
-    stream_to_path,
-    verify_download_size,
-    write_download_metadata,
 )
 from kg_processor.domain.documents import InputFile
 from kg_processor.domain.ids import stable_id
@@ -160,44 +157,23 @@ def _download_input_file(
         relative_path,
         stable_id("s3_download_path", config.bucket, key),
     )
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    source_uri = f"s3://{config.bucket}/{key}"
-    # Judged from the key on every path, so a file's type does not depend on
-    # whether it was downloaded now or found in the cache from an earlier run.
-    mime_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
-    cached = cached_input_file(
+
+    def open_body() -> Iterable[bytes]:
+        body = client.get_object(Bucket=config.bucket, Key=key).get("Body")
+        if body is None or not hasattr(body, "iter_chunks"):
+            raise ValueError(f"S3 object response for {key!r} did not include a streaming body")
+        return cast(S3Body, body).iter_chunks(chunk_size=1024 * 1024)
+
+    return fetch_input_file(
         local_path,
         remote_identity,
-        source_uri,
-        stable_id("s3_file", config.bucket, key),
-        mime_type,
+        f"s3://{config.bucket}/{key}",
+        ("s3_file", config.bucket, key),
+        # Judged from the key on every path, so a file's type does not depend on
+        # whether it was downloaded now or found in the cache from an earlier run.
+        mimetypes.guess_type(key)[0] or "application/octet-stream",
+        open_body,
     )
-    if cached is not None:
-        return cached
-    response = client.get_object(Bucket=config.bucket, Key=key)
-    body = response.get("Body")
-    if body is None or not hasattr(body, "iter_chunks"):
-        raise ValueError(f"S3 object response for {key!r} did not include a streaming body")
-
-    checksum, size_bytes = _download_body(body, local_path)
-    verify_download_size(source_uri, remote_identity, size_bytes)
-
-    result = InputFile(
-        id=stable_id("s3_file", config.bucket, key, checksum),
-        path=local_path,
-        source_uri=source_uri,
-        checksum=checksum,
-        mime_type=mime_type,
-        size_bytes=size_bytes,
-    )
-    write_download_metadata(local_path, remote_identity, result)
-    return result
-
-
-def _download_body(body: S3Body, local_path: Path) -> tuple[str, int]:
-    """Stream one S3 body to its cache path."""
-
-    return stream_to_path(body.iter_chunks(chunk_size=1024 * 1024), local_path)
 
 
 def _relative_object_path(key: str, prefix: str) -> str:

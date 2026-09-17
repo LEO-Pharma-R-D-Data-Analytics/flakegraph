@@ -14,7 +14,7 @@ import json
 import mimetypes
 import os
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from time import sleep
 
@@ -190,6 +190,40 @@ def verify_download_size(
         f"Truncated download for {source_uri}: the listing declares {listed} bytes "
         f"but {size_bytes} bytes arrived"
     )
+
+
+def fetch_input_file(
+    local_path: Path,
+    remote_identity: dict[str, str],
+    source_uri: str,
+    identity: tuple[str, ...],
+    mime_type: str,
+    open_chunks: Callable[[], Iterable[bytes]],
+) -> InputFile:
+    """Return the cached download when the listing still matches, else fetch it.
+
+    ``identity`` is the id namespace and the parts that name the object; the
+    checksum completes it once the bytes are known. The stream is opened only
+    on a cache miss.
+    """
+
+    cached = cached_input_file(
+        local_path, remote_identity, source_uri, stable_id(*identity), mime_type
+    )
+    if cached is not None:
+        return cached
+    checksum, size_bytes = stream_to_path(open_chunks(), local_path)
+    verify_download_size(source_uri, remote_identity, size_bytes)
+    result = InputFile(
+        id=stable_id(*identity, checksum),
+        path=local_path,
+        source_uri=source_uri,
+        checksum=checksum,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+    )
+    write_download_metadata(local_path, remote_identity, result)
+    return result
 
 
 def cached_input_file(
