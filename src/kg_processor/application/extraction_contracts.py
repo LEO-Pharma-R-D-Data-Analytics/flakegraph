@@ -7,7 +7,6 @@ JSON schemas, token bounds, and provider-neutral request construction.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any, Literal, cast
 
@@ -21,6 +20,7 @@ from kg_processor.domain.extraction import (
     RelationObservation,
     ResolutionCandidate,
 )
+from kg_processor.domain.ids import sha256_hex
 from kg_processor.domain.ontology import OntologyProfile
 from kg_processor.ports.llm import StructuredCompletionRequest
 
@@ -433,7 +433,7 @@ def extraction_contract_fingerprint() -> str:
             ResolutionDecisionCandidateBatch,
         )
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return sha256_hex(payload)
 
 
 def _request(
@@ -455,7 +455,7 @@ def _request(
 
     prompt = extraction_prompt(task_name, payload)
     metadata = prompt_metadata(prompt)
-    request_checksum = hashlib.sha256(f"{prompt.system}\n{prompt.user}".encode()).hexdigest()
+    request_checksum = sha256_hex(f"{prompt.system}\n{prompt.user}")
     return StructuredCompletionRequest(
         task_name=task_name,
         model=model,

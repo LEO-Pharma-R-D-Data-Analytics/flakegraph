@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import importlib.util
 import math
 from collections import defaultdict
@@ -450,4 +451,4 @@ def _float(value: Any) -> float:
 def _escape(value: Any) -> str:
     """Escape the small HTML subset interpreted by Plotly hover labels."""
 
-    return str(value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return html.escape(str(value or ""), quote=False)

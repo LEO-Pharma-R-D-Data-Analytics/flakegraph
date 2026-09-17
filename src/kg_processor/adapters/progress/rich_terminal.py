@@ -517,11 +517,11 @@ class RichTerminalProgressSink:
         body.append("Graph ready", style="bold green")
         body.append(f" in {_format_duration(self.clock() - self._started_at)}\n", style="dim")
         body.append(
-            f"{_report_int(report, 'files_processed')} files   "
-            f"{_report_int(report, 'chunks_created')} chunks   "
-            f"{_report_int(report, 'nodes_created')} nodes   "
-            f"{_report_int(report, 'edges_created')} edges   "
-            f"{_report_int(report, 'communities_created')} communities"
+            f"{_count(report, 'files_processed')} files   "
+            f"{_count(report, 'chunks_created')} chunks   "
+            f"{_count(report, 'nodes_created')} nodes   "
+            f"{_count(report, 'edges_created')} edges   "
+            f"{_count(report, 'communities_created')} communities"
         )
         destination = (
             str(self.context.output_path)
@@ -624,9 +624,3 @@ def _format_duration(seconds: float | None) -> str:
         return f"{minutes}m {remaining_seconds:02d}s"
     hours, remaining_minutes = divmod(minutes, _SECONDS_PER_MINUTE)
     return f"{hours}h {remaining_minutes:02d}m"
-
-
-def _report_int(report: Mapping[str, Any], key: str) -> int:
-    """Read a final run-report counter defensively for terminal presentation."""
-
-    return _count(report, key)

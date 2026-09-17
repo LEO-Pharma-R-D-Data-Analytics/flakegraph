@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 from time import sleep
 
 from kg_processor.domain.documents import InputFile
-from kg_processor.domain.ids import stable_id
+from kg_processor.domain.ids import sha256_file, stable_id
 
 SUPPORTED_SUFFIXES = {
     ".pdf",
@@ -113,16 +113,6 @@ def _matches_glob(normalized: str, pattern: str) -> bool:
         root_pattern = pattern.removeprefix("**/")
         return posix.full_match(root_pattern)
     return False
-
-
-def sha256_file(path: Path) -> str:
-    """Return the SHA-256 of a file's bytes, the canonical content hash."""
-
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def stream_to_path(chunks: Iterable[bytes], local_path: Path) -> tuple[str, int]:

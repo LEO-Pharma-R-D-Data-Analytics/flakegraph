@@ -20,11 +20,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from kg_processor.adapters.files.common import (
-    is_supported_file,
-    matches_include_globs,
-    sha256_file,
-)
+from kg_processor.adapters.files.common import is_supported_file, matches_include_globs
 from kg_processor.adapters.snowflake import (
     ConnectorFactory,
     ReusableSnowflakeConnections,
@@ -33,7 +29,7 @@ from kg_processor.adapters.snowflake import (
     validate_stage_location,
 )
 from kg_processor.domain.documents import InputFile
-from kg_processor.domain.ids import stable_id
+from kg_processor.domain.ids import sha256_file, stable_id
 
 _LIST_ROW_MIN_COLUMNS = 2
 _LIST_ROW_CHECKSUM_COLUMNS = 3

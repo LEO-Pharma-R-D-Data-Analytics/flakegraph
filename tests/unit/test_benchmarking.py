@@ -9,7 +9,6 @@ from pathlib import Path
 from kg_processor.application.benchmarking import (
     benchmark_stability,
     build_benchmark_report,
-    file_sha256,
 )
 from kg_processor.config.settings import Settings
 
@@ -109,24 +108,6 @@ def test_provenance_is_allowlisted_and_excludes_private_runtime_values(tmp_path:
         "source": "manifest",
         "manifest_path": "~/fixtures/manifest.json",
     }
-
-
-def test_file_sha256_is_stable_for_identical_bytes_and_changes_with_content(
-    tmp_path: Path,
-) -> None:
-    """Digest exact bytes deterministically rather than parsed file structure."""
-
-    left = tmp_path / "left.yaml"
-    right = tmp_path / "right.yaml"
-    left.write_bytes(b"llm:\n  model: benchmark-model\n")
-    right.write_bytes(left.read_bytes())
-
-    original = file_sha256(left)
-
-    assert original == file_sha256(left)
-    assert original == file_sha256(right)
-    right.write_bytes(right.read_bytes() + b"\n")
-    assert original != file_sha256(right)
 
 
 def test_single_run_stability_is_explicitly_not_measured() -> None:

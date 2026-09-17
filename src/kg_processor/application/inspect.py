@@ -8,6 +8,7 @@ Snowflake integration is available.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -243,7 +244,7 @@ def _read_json_file(path: Path) -> dict[str, Any]:
         return {}
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
+    except OSError, UnicodeError, ValueError:
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
@@ -459,7 +460,7 @@ def _top_entities(
     evidence: list[dict[str, Any]],
     limit: int = 10,
 ) -> list[dict[str, Any]]:
-    evidence_counts = _evidence_counts(evidence)
+    evidence_counts = Counter(str(item.get("subject_id", "")) for item in evidence)
     ranked = sorted(
         nodes,
         key=lambda node: (
@@ -489,7 +490,7 @@ def _top_relations(
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     names_by_node_id = {str(node.get("id")): str(node.get("name", "")) for node in nodes}
-    evidence_counts = _evidence_counts(evidence)
+    evidence_counts = Counter(str(item.get("subject_id", "")) for item in evidence)
     ranked = sorted(
         edges,
         key=lambda edge: (
@@ -538,14 +539,6 @@ def _community_summaries(
         }
         for community in ranked[:limit]
     ]
-
-
-def _evidence_counts(evidence: list[dict[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for item in evidence:
-        subject_id = str(item.get("subject_id", ""))
-        counts[subject_id] = counts.get(subject_id, 0) + 1
-    return counts
 
 
 def _as_list(value: object) -> list[object]:

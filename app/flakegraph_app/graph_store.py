@@ -128,13 +128,13 @@ def load_snowflake_graph(config_path: Path, graph_id: str) -> GraphDataset:
     # processing package, which targets a newer worker runtime, out of module import.
     from kg_processor.adapters.snowflake import (  # noqa: PLC0415
         SnowflakeConnectionConfig,
-        load_snowflake_connector,
+        connect_snowflake,
     )
     from kg_processor.config.settings import Settings  # noqa: PLC0415
 
     settings = Settings.load(config_path)
     config = SnowflakeConnectionConfig.from_settings(settings.snowflake)
-    connection = load_snowflake_connector()(**config.connect_kwargs())
+    connection = connect_snowflake(config)
     cursor: Any = connection.cursor()
     try:
         tables: dict[str, list[dict[str, Any]]] = {}

@@ -198,7 +198,7 @@ def _graph_metrics(request: RunReportRequest) -> dict[str, Any]:
             "dropped_entities_by_reason": request.entity_filter.dropped_reason_counts(),
             "dropped_relations_by_reason": request.relation_filter.dropped_reason_counts(),
         },
-        "extraction": _extraction_metrics(request.extraction),
+        "extraction": _two_pass_extraction_metrics(request.extraction.provider_metadata),
         "merge": {
             "decision_actions": request.assembly.decision_action_counts(),
             "decision_reasons": request.assembly.decision_reason_counts(),
@@ -216,12 +216,6 @@ def _graph_metrics(request: RunReportRequest) -> dict[str, Any]:
         # spend without each one learning about it separately.
         metrics["consumption"] = request.consumption
     return metrics
-
-
-def _extraction_metrics(extraction: ExtractionResult) -> dict[str, Any]:
-    """Summarize extraction-stage traces under the stable run-report contract."""
-
-    return _two_pass_extraction_metrics(extraction.provider_metadata)
 
 
 def _two_pass_extraction_metrics(metadata: dict[str, Any]) -> dict[str, Any]:

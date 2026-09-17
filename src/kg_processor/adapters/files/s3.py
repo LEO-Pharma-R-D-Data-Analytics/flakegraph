@@ -179,7 +179,7 @@ def _download_input_file(
 def _relative_object_path(key: str, prefix: str) -> str:
     """Return the path below the selected prefix and reject empty results."""
 
-    relative = key[len(prefix) :] if prefix and key.startswith(prefix) else key
+    relative = key.removeprefix(prefix)
     if not relative:
         raise ValueError("S3 object key resolves to an empty relative path")
     return relative

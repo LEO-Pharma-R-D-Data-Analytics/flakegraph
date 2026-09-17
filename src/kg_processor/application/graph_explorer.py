@@ -13,11 +13,16 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import networkx as nx
 
-from kg_processor.application.inspect import inspect_local_graph, read_local_graph_artifacts
+from kg_processor.application.inspect import (
+    _float_value,
+    _int_value,
+    inspect_local_graph,
+    read_local_graph_artifacts,
+)
 
 EXPLORER_SCHEMA_VERSION = 1
 _SPRING_LAYOUT_NODE_LIMIT = 1_200
@@ -191,7 +196,7 @@ def _community_membership(communities: list[dict[str, Any]]) -> dict[str, list[s
     ordered = sorted(
         communities,
         key=lambda item: (
-            -_float(item.get("rating")),
+            -_float_value(item.get("rating")),
             str(item.get("title", "")).lower(),
             str(item.get("id", "")),
         ),
@@ -224,7 +229,7 @@ def _graph_layouts(
         source = str(edge.get("source_node_id", ""))
         target = str(edge.get("target_node_id", ""))
         if source in valid_node_ids and target in valid_node_ids:
-            graph.add_edge(source, target, weight=max(_float(edge.get("weight")), 0.01))
+            graph.add_edge(source, target, weight=max(_float_value(edge.get("weight")), 0.01))
 
     community = _community_layout(nodes, communities)
     radial = _radial_layout(nodes)
@@ -270,7 +275,7 @@ def _community_layout(
         ordered_members = sorted(
             members,
             key=lambda node: (
-                -_int(node.get("degree")),
+                -_int_value(node.get("degree")),
                 str(node.get("name", "")).lower(),
                 str(node.get("id", "")),
             ),
@@ -295,8 +300,8 @@ def _radial_layout(nodes: list[dict[str, Any]]) -> dict[str, list[float]]:
     ordered = sorted(
         nodes,
         key=lambda node: (
-            -_int(node.get("degree")),
-            -_float(node.get("rank")),
+            -_int_value(node.get("degree")),
+            -_float_value(node.get("rank")),
             str(node.get("name", "")).lower(),
         ),
     )
@@ -339,17 +344,3 @@ def _string_list(value: object) -> list[str]:
     if normalized is None:
         return []
     return [str(normalized)]
-
-
-def _int(value: object) -> int:
-    try:
-        return int(cast(Any, value)) if value is not None else 0
-    except TypeError, ValueError:
-        return 0
-
-
-def _float(value: object) -> float:
-    try:
-        return float(cast(Any, value)) if value is not None else 0.0
-    except TypeError, ValueError:
-        return 0.0

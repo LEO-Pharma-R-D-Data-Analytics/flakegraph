@@ -9,7 +9,6 @@ or machine/user identities.
 
 from __future__ import annotations
 
-import hashlib
 import platform
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -20,6 +19,7 @@ from typing import Any
 from kg_processor import __version__
 from kg_processor.application.graph_evaluation import jaccard, load_gold_graph
 from kg_processor.config.settings import Settings
+from kg_processor.domain.ids import sha256_file
 
 BENCHMARK_SCHEMA_VERSION = 2
 _QUALITY_METRICS: dict[str, tuple[str, ...]] = {
@@ -35,21 +35,6 @@ _QUALITY_METRICS: dict[str, tuple[str, ...]] = {
     "two_hop_recoverability": ("two_hop_recoverability",),
     "information_retention": ("information_retention",),
 }
-
-
-def file_sha256(path: Path) -> str:
-    """Return the lowercase SHA-256 digest of a file's exact byte content.
-
-    Reading bytes instead of parsed YAML or JSON makes the identifier stable for
-    identical artifacts and sensitive to every versioned fixture/config change.
-    The content itself never enters the benchmark report.
-    """
-
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def benchmark_stability(
@@ -135,11 +120,11 @@ def build_benchmark_report(
         "schema_version": BENCHMARK_SCHEMA_VERSION,
         "generated_at_utc": timestamp,
         "provenance": {
-            "config": {"path": safe_config_path, "sha256": file_sha256(config_path)},
+            "config": {"path": safe_config_path, "sha256": sha256_file(config_path)},
             "dataset": {
                 "gold_name": load_gold_graph(gold_path).name,
                 "gold_path": safe_gold_path,
-                "gold_sha256": file_sha256(gold_path),
+                "gold_sha256": sha256_file(gold_path),
                 "input": _input_provenance(settings),
             },
             "providers": _provider_provenance(settings),

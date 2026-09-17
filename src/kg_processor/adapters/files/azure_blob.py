@@ -205,10 +205,7 @@ def _object_value(value: object, key: str) -> object:
 
 
 def _relative_blob_path(blob_name: str, prefix: str) -> str:
-    normalized = blob_name.strip("/")
-    if prefix and normalized.startswith(prefix):
-        return normalized[len(prefix) :]
-    return normalized
+    return blob_name.strip("/").removeprefix(prefix)
 
 
 def _download_root(config: AzureBlobFileSourceConfig) -> Path:
