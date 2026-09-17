@@ -79,7 +79,9 @@ jobs:
       - name: PostgreSQL integration contract
         env:
           KG_TEST_POSTGRES_DSN: postgresql://flakegraph:flakegraph@localhost:5432/flakegraph
-        run: uv run pytest tests/integration/test_postgres_distributed_store.py
+        run: >-
+          uv run pytest tests/integration/test_postgres_distributed_store.py
+          tests/integration/test_ocr_shim_queue.py
 
       - name: Validate Helm chart
         run: |
