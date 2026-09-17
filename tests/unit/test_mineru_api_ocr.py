@@ -77,6 +77,7 @@ class FakeClient:
 def _reset_fake_client() -> Iterator[None]:
     """Keep one test's response configuration out of the next one."""
 
+    FakeClient.requests = []
     FakeClient.response_payload = {}
     FakeClient.status_code = 200
     FakeClient.declared_content_length = None
