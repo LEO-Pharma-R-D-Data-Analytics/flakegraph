@@ -51,12 +51,25 @@ jobs:
       - name: Install locked app environment
         run: uv sync --locked --inexact --extra app
 
+      # The export resolves Linux Torch from PyTorch's CPU wheel index, as
+      # pyproject's [tool.uv.sources] does, so pip-audit's own resolver has to
+      # see that index too or it cannot find the exported torch pin at all.
+      # Streamlit is held at 1.52.2 on purpose: the app's deployment target,
+      # Streamlit-in-Snowflake, runs the newest Streamlit its Anaconda channel
+      # ships, and tests/unit/test_app_streamlit_api_compatibility.py keeps the
+      # local pin identical so the API guard means something. The two advisories
+      # against that version need a Windows host (PYSEC-2026-2285) or local access
+      # to the cache hasher (PYSEC-2026-212), neither of which a Linux container
+      # or the warehouse runtime offers. Drop the ignores when the channel moves.
       - name: Audit runtime dependencies
         run: |
           uv export --locked --no-dev --no-emit-project --all-extras \
             --output-file /tmp/flakegraph-runtime-requirements.txt
           uvx --python 3.14 pip-audit==2.10.1 \
             --requirement /tmp/flakegraph-runtime-requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            --ignore-vuln PYSEC-2026-212 \
+            --ignore-vuln PYSEC-2026-2285 \
             --progress-spinner off
 
       - name: Ruff
