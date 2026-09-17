@@ -45,6 +45,14 @@ jobs:
       - name: Install uv
         run: python -m pip install "uv==0.11.28"
 
+      # The runner image ships Helm 3, whose client-side dry-run install still
+      # insists on reaching a cluster; the chart tests render NOTES.txt through
+      # that dry run with no kubeconfig, which only Helm 4 allows.
+      - name: Set up Helm 4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.3
+
       - name: Install locked development environment
         run: uv sync --locked --extra dev --extra distributed-spark
 

@@ -84,7 +84,8 @@ def notes(settings: tuple[str, ...] = ()) -> str:
     """Return the NOTES a release would print, rendered without a cluster.
 
     ``helm template`` never prints NOTES.txt; a client-side dry-run install
-    does, and with no kubeconfig to find it cannot reach for a cluster.
+    does, and with no kubeconfig to find it cannot reach for a cluster. That
+    holds for Helm 4; Helm 3 refuses the dry run until it has reached one.
     """
 
     command = [
