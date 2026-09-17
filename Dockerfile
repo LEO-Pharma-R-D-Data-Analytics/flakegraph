@@ -1,8 +1,8 @@
 # Keep the container base aligned with pyproject/mypy/ruff and the local validation
 # runtime. The digest pins the otherwise mutable Python image tag.
-# Pinned deliberately: a kubectl more than one minor ahead of the API server is
-# outside the supported skew.
-ARG KG_KUBECTL_VERSION=v1.32.5
+# Pinned to the fleet's k3s server minor (deploy/spark/stage-artifacts.sh):
+# kubectl supports one minor either side of the API server, no further.
+ARG KG_KUBECTL_VERSION=v1.36.3
 FROM registry.k8s.io/kubectl:${KG_KUBECTL_VERSION} AS kubectl
 
 FROM python:3.14.6-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
