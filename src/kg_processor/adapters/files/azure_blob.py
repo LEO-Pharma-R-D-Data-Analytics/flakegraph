@@ -6,17 +6,17 @@ paths, while the original Azure URI and checksum remain part of provenance.
 
 from __future__ import annotations
 
-import hashlib
-import importlib
 import mimetypes
 import re
-import uuid
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
+
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobServiceClient
 
 from kg_processor.adapters.files.common import (
     DOWNLOAD_PARALLELISM,
@@ -26,6 +26,7 @@ from kg_processor.adapters.files.common import (
     matches_include_globs,
     normalized_prefix,
     object_download_path,
+    stream_to_path,
     verify_download_size,
     write_download_metadata,
 )
@@ -186,42 +187,20 @@ def _download_input_file(
 
 
 def _load_azure_blob_client(config: AzureBlobFileSourceConfig) -> AzureBlobServiceClient:
-    try:
-        module = importlib.import_module("azure.storage.blob")
-    except ImportError as exc:
-        raise RuntimeError(
-            "azure_blob file source requires azure-storage-blob to be installed"
-        ) from exc
-    raw_client = getattr(module, "BlobServiceClient", None)
-    if raw_client is None:
-        raise RuntimeError("azure.storage.blob.BlobServiceClient is not available")
     if config.connection_string:
         return cast(
             AzureBlobServiceClient,
-            raw_client.from_connection_string(config.connection_string),
+            BlobServiceClient.from_connection_string(config.connection_string),
         )
     if not config.account_url:
         raise ValueError("azure_blob file source requires connection_string or account_url")
-    credential: object = config.sas_token or _default_azure_credential()
+    # A SAS token is used as given; otherwise Azure's standard local, workload
+    # and managed-identity credential chain applies.
+    credential = config.sas_token or DefaultAzureCredential()
     return cast(
         AzureBlobServiceClient,
-        raw_client(account_url=config.account_url, credential=credential),
+        BlobServiceClient(account_url=config.account_url, credential=credential),
     )
-
-
-def _default_azure_credential() -> object:
-    """Use Azure's standard local, workload, managed-identity credential chain."""
-
-    try:
-        identity = importlib.import_module("azure.identity")
-    except ImportError as exc:
-        raise RuntimeError(
-            "Azure identity authentication requires azure-identity to be installed"
-        ) from exc
-    credential_type = getattr(identity, "DefaultAzureCredential", None)
-    if credential_type is None:
-        raise RuntimeError("azure.identity.DefaultAzureCredential is not available")
-    return credential_type()
 
 
 def _download_blob(
@@ -229,21 +208,7 @@ def _download_blob(
     blob_name: str,
     local_path: Path,
 ) -> tuple[str, int]:
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    downloader = container_client.download_blob(blob_name)
-    digest = hashlib.sha256()
-    size_bytes = 0
-    temporary_path = local_path.with_name(f".{local_path.name}.{uuid.uuid4().hex}.part")
-    try:
-        with temporary_path.open("wb") as handle:
-            for chunk in downloader.chunks():
-                digest.update(chunk)
-                size_bytes += len(chunk)
-                handle.write(chunk)
-        temporary_path.replace(local_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-    return digest.hexdigest(), size_bytes
+    return stream_to_path(container_client.download_blob(blob_name).chunks(), local_path)
 
 
 def _blob_name(blob: object) -> str:
@@ -254,20 +219,13 @@ def _blob_name(blob: object) -> str:
 
 
 def _content_type(blob: object, blob_name: str) -> str:
-    direct = _object_value(blob, "content_type")
-    if isinstance(direct, str) and direct:
-        return direct
-    content_settings = _object_value(blob, "content_settings")
-    if content_settings is not None:
-        value = _object_value(content_settings, "content_type")
-        if isinstance(value, str) and value:
-            return value
-    return mimetypes.guess_type(blob_name)[0] or "application/octet-stream"
+    """Prefer what the blob's own properties say, then the name's extension."""
+
+    declared = getattr(getattr(blob, "content_settings", None), "content_type", None)
+    return declared or mimetypes.guess_type(blob_name)[0] or "application/octet-stream"
 
 
 def _object_value(value: object, key: str) -> object:
-    if isinstance(value, dict):
-        return value.get(key)
     return getattr(value, key, None)
 
 

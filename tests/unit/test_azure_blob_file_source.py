@@ -319,10 +319,19 @@ def _config(tmp_path: Path) -> AzureBlobFileSourceConfig:
 
 
 @dataclass
+class _ContentSettings:
+    content_type: str | None
+
+
+@dataclass
 class _FakeBlob:
     name: str
     content_type: str | None = None
     size: int | None = None
+
+    @property
+    def content_settings(self) -> _ContentSettings:
+        return _ContentSettings(self.content_type)
 
 
 class _FakeDownloader:

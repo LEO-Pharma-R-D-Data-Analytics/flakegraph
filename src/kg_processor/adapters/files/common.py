@@ -125,6 +125,30 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def stream_to_path(chunks: Iterable[bytes], local_path: Path) -> tuple[str, int]:
+    """Write a remote object's chunks to ``local_path`` and return its digest and size.
+
+    The bytes land in a uniquely named temporary file and are published with
+    one atomic replace, so a concurrent reader sees either nothing or the
+    complete object, and a failed download leaves nothing behind.
+    """
+
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    size_bytes = 0
+    temporary_path = local_path.with_name(f".{local_path.name}.{uuid.uuid4().hex}.part")
+    try:
+        with temporary_path.open("wb") as handle:
+            for chunk in chunks:
+                digest.update(chunk)
+                size_bytes += len(chunk)
+                handle.write(chunk)
+        temporary_path.replace(local_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return digest.hexdigest(), size_bytes
+
+
 def normalized_prefix(prefix: str | None) -> str:
     """Normalize an optional container prefix to a relative directory prefix."""
 

@@ -8,9 +8,7 @@ OCR providers.
 
 from __future__ import annotations
 
-import hashlib
 import mimetypes
-import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -27,6 +25,7 @@ from kg_processor.adapters.files.common import (
     matches_include_globs,
     normalized_prefix,
     object_download_path,
+    stream_to_path,
     verify_download_size,
     write_download_metadata,
 )
@@ -196,23 +195,9 @@ def _download_input_file(
 
 
 def _download_body(body: S3Body, local_path: Path) -> tuple[str, int]:
-    """Stream one S3 body through a unique temporary file and atomic replace."""
+    """Stream one S3 body to its cache path."""
 
-    digest = hashlib.sha256()
-    size_bytes = 0
-    temporary_path = local_path.with_name(f".{local_path.name}.{uuid.uuid4().hex}.part")
-    try:
-        with temporary_path.open("wb") as handle:
-            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
-                if not chunk:
-                    continue
-                digest.update(chunk)
-                size_bytes += len(chunk)
-                handle.write(chunk)
-        temporary_path.replace(local_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-    return digest.hexdigest(), size_bytes
+    return stream_to_path(body.iter_chunks(chunk_size=1024 * 1024), local_path)
 
 
 def _relative_object_path(key: str, prefix: str) -> str:
