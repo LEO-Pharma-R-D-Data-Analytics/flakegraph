@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, TextIO
@@ -103,25 +104,16 @@ class CompositeProgressSink:
 
     def __init__(self, sinks: Sequence[ProgressSink]) -> None:
         self.sinks = list(sinks)
-        self.last_errors: list[dict[str, str]] = []
 
     def emit(self, event: ProgressEvent) -> None:
         """Forward one progress event to every configured sink."""
 
-        self.last_errors = []
         for sink in self.sinks:
-            try:
+            # Progress is observational and must never terminate OCR/LLM work,
+            # so one sink's outage is swallowed and delivery continues to the
+            # independent sinks.
+            with suppress(Exception):
                 sink.emit(event)
-            except Exception as exc:
-                # Progress is observational and must never terminate OCR/LLM work.
-                # Record a redacted diagnostic for callers that monitor sink health
-                # while continuing delivery to independent sinks.
-                self.last_errors.append(
-                    {
-                        "sink": type(sink).__name__,
-                        "error": redact_sensitive_text(str(exc)),
-                    }
-                )
 
 
 def elapsed_ms(started_at: float, finished_at: float) -> int:

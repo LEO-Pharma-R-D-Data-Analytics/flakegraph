@@ -70,7 +70,6 @@ class MemoryDistributedStore:
         self.lease: TaskLease | None = None
         self.completed: list[tuple[str, str, list[str], list[TaskDefinition], str | None]] = []
         self.failed: list[tuple[str, str, dict[str, Any], timedelta]] = []
-        self.heartbeats: list[tuple[str, str, timedelta]] = []
         self.progress_updates: list[tuple[str, str, TaskProgress]] = []
         self.served_configurations: dict[TaskStage, str] = {}
         self.initial_task_streams = 0
@@ -235,7 +234,7 @@ class MemoryDistributedStore:
             self.served_configurations[stage] = config_digest
 
     def heartbeat(self, task_id: str, worker_id: str, lease_duration: timedelta) -> None:
-        self.heartbeats.append((task_id, worker_id, lease_duration))
+        """Record nothing: a unit test finishes long before the first renewal is due."""
 
     def report_task_progress(
         self,
@@ -579,6 +578,9 @@ def test_worker_prepares_source_from_artifact_without_shared_input_mount(tmp_pat
     result = _worker(settings, store, pipeline, TaskStage.PREPARE_DOCUMENT).process_one()
 
     assert result.succeeded is True
+    assert store.served_configurations == {
+        TaskStage.PREPARE_DOCUMENT: distributed_processing_config_digest(settings)
+    }
     assert len(store.completed) == 1
     output = store.get(store.completed[0][2][0])
     assert output.ref.kind == ArtifactKind.PREPARED_DOCUMENT

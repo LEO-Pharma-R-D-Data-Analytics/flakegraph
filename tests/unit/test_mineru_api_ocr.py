@@ -1,88 +1,14 @@
 from __future__ import annotations
 
-import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
+from http_fakes import StreamingClient, input_file
 
 from kg_processor.adapters.ocr import mineru_api
 from kg_processor.adapters.ocr.mineru_api import MineruApiOcrProvider
-from kg_processor.domain.documents import InputFile
 from kg_processor.ports.ocr import OcrOptions
-
-
-class FakeClient:
-    """Serve MinerU responses through the streaming interface the adapter uses."""
-
-    requests: list[dict[str, Any]] = []
-    response_payload: dict[str, object] = {}
-    status_code: int = 200
-    declared_content_length: int | None = None
-
-    def __init__(self, timeout: float | None = None) -> None:
-        self.timeout = timeout
-
-    def __enter__(self) -> FakeClient:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    @contextmanager
-    def stream(
-        self,
-        method: str,
-        url: str,
-        headers: dict[str, str],
-        data: dict[str, str],
-        files: dict[str, object],
-        timeout: float | None = None,
-    ) -> Iterator[httpx.Response]:
-        """Yield one streamed response and record how it was requested."""
-
-        FakeClient.requests.append(
-            {
-                "method": method,
-                "url": url,
-                "headers": headers,
-                "data": data,
-                "files": files,
-                # The uploaded handle must still be open while the body streams.
-                "file_handle_open": not files["files"][1].closed,  # type: ignore[index]
-            }
-        )
-        request = httpx.Request("POST", url, headers=headers)
-        body = json.dumps(FakeClient.response_payload).encode("utf-8")
-        response_headers = (
-            {"content-length": str(FakeClient.declared_content_length)}
-            if FakeClient.declared_content_length is not None
-            else {}
-        )
-        response = httpx.Response(
-            FakeClient.status_code,
-            content=body,
-            headers=response_headers,
-            request=request,
-        )
-        try:
-            yield response
-        finally:
-            response.close()
-
-
-@pytest.fixture(autouse=True)
-def _reset_fake_client() -> Iterator[None]:
-    """Keep one test's response configuration out of the next one."""
-
-    FakeClient.requests = []
-    FakeClient.response_payload = {}
-    FakeClient.status_code = 200
-    FakeClient.declared_content_length = None
-    yield
 
 
 def test_mineru_api_ocr_posts_file_parse_and_normalizes_markdown(
@@ -91,21 +17,23 @@ def test_mineru_api_ocr_posts_file_parse_and_normalizes_markdown(
 ) -> None:
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {
-        "results": [
-            {
-                "file_name": "sample.pdf",
-                "md_content": "# Title\nAlice works at Acme.",
-                "status": "done",
-            }
-        ]
-    }
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    client = StreamingClient(
+        {
+            "results": [
+                {
+                    "file_name": "sample.pdf",
+                    "md_content": "# Title\nAlice works at Acme.",
+                    "status": "done",
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     provider = MineruApiOcrProvider("https://mineru.example", api_key="secret")
 
     document = provider.parse(
-        _input_file(input_path),
+        input_file(input_path),
         OcrOptions(
             language="en",
             method="auto",
@@ -116,7 +44,7 @@ def test_mineru_api_ocr_posts_file_parse_and_normalizes_markdown(
         ),
     )
 
-    request = FakeClient.requests[0]
+    request = client.requests[0]
     assert request["url"] == "https://mineru.example/file_parse"
     assert request["headers"] == {"Authorization": "Bearer secret"}
     assert request["data"] == {
@@ -142,20 +70,22 @@ def test_mineru_api_ocr_uses_middle_json_pages(
 ) -> None:
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {
-        "data": {
-            "middle_json": {
-                "pages": [
-                    {"page_number": 3, "text": "Page three", "language": "en"},
-                ]
+    client = StreamingClient(
+        {
+            "data": {
+                "middle_json": {
+                    "pages": [
+                        {"page_number": 3, "text": "Page three", "language": "en"},
+                    ]
+                }
             }
         }
-    }
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     provider = MineruApiOcrProvider("https://mineru.example")
 
-    document = provider.parse(_input_file(input_path), OcrOptions())
+    document = provider.parse(input_file(input_path), OcrOptions())
 
     assert document.pages[0].page_number == 3
     assert document.pages[0].raw_text == "Page three"
@@ -168,19 +98,21 @@ def test_mineru_api_ocr_accepts_results_dict_keyed_by_file_stem(
 ) -> None:
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {
-        "results": {
-            "sample": {
-                "md_content": "# Sample\nFilename-keyed response.",
-                "status": "done",
+    client = StreamingClient(
+        {
+            "results": {
+                "sample": {
+                    "md_content": "# Sample\nFilename-keyed response.",
+                    "status": "done",
+                }
             }
         }
-    }
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     provider = MineruApiOcrProvider("https://mineru.example")
 
-    document = provider.parse(_input_file(input_path), OcrOptions())
+    document = provider.parse(input_file(input_path), OcrOptions())
 
     assert document.pages[0].markdown == "# Sample\nFilename-keyed response."
 
@@ -191,17 +123,19 @@ def test_mineru_api_ocr_ignores_invalid_middle_json_when_markdown_exists(
 ) -> None:
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {
-        "data": {
-            "md_content": "Fallback markdown",
-            "middle_json": "{not-json",
+    client = StreamingClient(
+        {
+            "data": {
+                "md_content": "Fallback markdown",
+                "middle_json": "{not-json",
+            }
         }
-    }
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     provider = MineruApiOcrProvider("https://mineru.example")
 
-    document = provider.parse(_input_file(input_path), OcrOptions())
+    document = provider.parse(input_file(input_path), OcrOptions())
 
     assert document.pages[0].markdown == "Fallback markdown"
 
@@ -212,19 +146,21 @@ def test_mineru_api_ocr_preserves_zero_page_and_accepts_page_idx(
 ) -> None:
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {
-        "data": {
-            "pages": [
-                {"page_number": 0, "text": "Zero page"},
-                {"page": "not-a-number", "page_idx": "1", "text": "Second page"},
-            ]
+    client = StreamingClient(
+        {
+            "data": {
+                "pages": [
+                    {"page_number": 0, "text": "Zero page"},
+                    {"page": "not-a-number", "page_idx": "1", "text": "Second page"},
+                ]
+            }
         }
-    }
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     provider = MineruApiOcrProvider("https://mineru.example")
 
-    document = provider.parse(_input_file(input_path), OcrOptions())
+    document = provider.parse(input_file(input_path), OcrOptions())
 
     assert [page.page_number for page in document.pages] == [0, 2]
 
@@ -235,40 +171,42 @@ def test_mineru_api_ocr_normalizes_assets_from_result_and_middle_json(
 ) -> None:
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {
-        "data": {
-            "md_content": "Document with assets",
-            "images": [
-                {
-                    "image_id": "top-image",
-                    "type": "image",
-                    "page_number": 1,
-                    "img_path": "images/top.png",
-                    "caption": "Top image",
-                }
-            ],
-            "middle_json": {
-                "pages": [
+    client = StreamingClient(
+        {
+            "data": {
+                "md_content": "Document with assets",
+                "images": [
                     {
-                        "page_number": 2,
-                        "text": "Page two",
-                        "figures": [
-                            {
-                                "type": "figure",
-                                "url": "https://mineru.example/figures/2.png",
-                                "data": "base64-payload",
-                            }
-                        ],
+                        "image_id": "top-image",
+                        "type": "image",
+                        "page_number": 1,
+                        "img_path": "images/top.png",
+                        "caption": "Top image",
                     }
-                ]
-            },
+                ],
+                "middle_json": {
+                    "pages": [
+                        {
+                            "page_number": 2,
+                            "text": "Page two",
+                            "figures": [
+                                {
+                                    "type": "figure",
+                                    "url": "https://mineru.example/figures/2.png",
+                                    "data": "base64-payload",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
         }
-    }
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     provider = MineruApiOcrProvider("https://mineru.example")
 
-    document = provider.parse(_input_file(input_path), OcrOptions())
+    document = provider.parse(input_file(input_path), OcrOptions())
 
     assert [asset.id for asset in document.assets] == [
         "top-image",
@@ -292,28 +230,30 @@ def test_mineru_api_ocr_deduplicates_assets_from_overlapping_payloads(
 ) -> None:
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {
-        "result": {
-            "md_content": "Document with duplicated image",
-            "images": [
-                {"id": "image-1", "kind": "image", "path": "images/1.png"},
-            ],
-            "pages": [
-                {
-                    "page_number": 1,
-                    "text": "Page one",
-                    "images": [
-                        {"id": "image-1", "kind": "image", "path": "images/1.png"},
-                    ],
-                }
-            ],
+    client = StreamingClient(
+        {
+            "result": {
+                "md_content": "Document with duplicated image",
+                "images": [
+                    {"id": "image-1", "kind": "image", "path": "images/1.png"},
+                ],
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "text": "Page one",
+                        "images": [
+                            {"id": "image-1", "kind": "image", "path": "images/1.png"},
+                        ],
+                    }
+                ],
+            }
         }
-    }
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     provider = MineruApiOcrProvider("https://mineru.example")
 
-    document = provider.parse(_input_file(input_path), OcrOptions())
+    document = provider.parse(input_file(input_path), OcrOptions())
 
     assert [asset.id for asset in document.assets] == ["image-1"]
 
@@ -324,13 +264,13 @@ def test_mineru_api_ocr_raises_failed_status(
 ) -> None:
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {"status": "failed", "error": "bad file"}
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    client = StreamingClient({"status": "failed", "error": "bad file"})
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     provider = MineruApiOcrProvider("https://mineru.example")
 
     with pytest.raises(RuntimeError, match="MinerU API failed"):
-        provider.parse(_input_file(input_path), OcrOptions())
+        provider.parse(input_file(input_path), OcrOptions())
 
 
 def test_mineru_api_ocr_uploads_and_reads_the_body_as_one_stream(
@@ -341,14 +281,14 @@ def test_mineru_api_ocr_uploads_and_reads_the_body_as_one_stream(
 
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {"data": {"md_content": "Streamed markdown"}}
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    client = StreamingClient({"data": {"md_content": "Streamed markdown"}})
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     document = MineruApiOcrProvider("https://mineru.example").parse(
-        _input_file(input_path), OcrOptions()
+        input_file(input_path), OcrOptions()
     )
 
-    request = FakeClient.requests[0]
+    request = client.requests[0]
     assert request["method"] == "POST"
     assert request["file_handle_open"] is True
     assert document.pages[0].markdown == "Streamed markdown"
@@ -362,12 +302,11 @@ def test_mineru_api_ocr_raises_for_a_rejected_upload(
 
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {"detail": "unsupported media type"}
-    FakeClient.status_code = 415
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    client = StreamingClient({"detail": "unsupported media type"}, status_code=415)
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     with pytest.raises(httpx.HTTPStatusError):
-        MineruApiOcrProvider("https://mineru.example").parse(_input_file(input_path), OcrOptions())
+        MineruApiOcrProvider("https://mineru.example").parse(input_file(input_path), OcrOptions())
 
 
 def test_mineru_api_ocr_rejects_a_declared_response_above_the_bound(
@@ -378,15 +317,16 @@ def test_mineru_api_ocr_rejects_a_declared_response_above_the_bound(
 
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {"data": {"md_content": "Small body"}}
-    FakeClient.declared_content_length = 10_000
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    client = StreamingClient(
+        {"data": {"md_content": "Small body"}}, response_headers={"content-length": "10000"}
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
     monkeypatch.setattr(mineru_api, "_MAX_RESPONSE_BYTES", 64)
 
     provider = MineruApiOcrProvider("https://mineru.example")
 
     with pytest.raises(RuntimeError, match="declared"):
-        provider.parse(_input_file(input_path), OcrOptions())
+        provider.parse(input_file(input_path), OcrOptions())
 
 
 def test_mineru_api_ocr_tolerates_non_dict_content_list_items(
@@ -397,31 +337,22 @@ def test_mineru_api_ocr_tolerates_non_dict_content_list_items(
 
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {
-        "data": {
-            "content_list": [
-                "loose paragraph",
-                {"page_idx": 1, "text": "Second page paragraph"},
-            ]
+    client = StreamingClient(
+        {
+            "data": {
+                "content_list": [
+                    "loose paragraph",
+                    {"page_idx": 1, "text": "Second page paragraph"},
+                ]
+            }
         }
-    }
-    monkeypatch.setattr(httpx, "Client", FakeClient)
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
 
     document = MineruApiOcrProvider("https://mineru.example").parse(
-        _input_file(input_path), OcrOptions()
+        input_file(input_path), OcrOptions()
     )
 
     assert [page.page_number for page in document.pages] == [1, 2]
     assert document.pages[0].raw_text == "loose paragraph"
     assert document.pages[1].raw_text == "Second page paragraph"
-
-
-def _input_file(path: Path) -> InputFile:
-    return InputFile(
-        id="file_1",
-        path=path,
-        source_uri=str(path),
-        checksum="checksum",
-        mime_type="application/pdf",
-        size_bytes=path.stat().st_size,
-    )

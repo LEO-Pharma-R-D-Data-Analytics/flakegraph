@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Barrier
@@ -36,9 +37,12 @@ def test_azure_blob_file_source_lists_filters_downloads_and_hashes(tmp_path: Pat
     assert files[0].source_uri == (
         "https://storage.example/container/incoming/documents/readme.txt"
     )
-    assert files[0].mime_type == "text/plain"
+    # The container's declared type wins over the one the name suggests, and
+    # a blob that declares none falls back to the guess.
+    assert files[0].mime_type == "text/custom"
+    assert files[1].mime_type == "application/pdf"
     assert files[0].size_bytes == 5
-    assert len(files[0].checksum) == 64
+    assert files[0].checksum == hashlib.sha256(b"hello").hexdigest()
 
 
 def test_azure_blob_source_uses_distinct_paths_for_case_colliding_keys(tmp_path: Path) -> None:
@@ -309,7 +313,7 @@ class _FakeContainer:
         return [
             _FakeBlob(
                 name,
-                "text/plain" if name.endswith(".txt") else None,
+                "text/custom" if name.endswith(".txt") else None,
                 len(payload) if self.size_in_listing else None,
             )
             for name, payload in self.blobs.items()

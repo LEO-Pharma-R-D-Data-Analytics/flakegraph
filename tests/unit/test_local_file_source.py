@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from kg_processor.adapters.files.local import LocalFileSource
@@ -14,7 +15,7 @@ def test_local_file_source_hashes_supported_files(tmp_path: Path) -> None:
 
     assert len(files) == 1
     assert files[0].path == sample
-    assert files[0].checksum
+    assert files[0].checksum == hashlib.sha256(b"Alice in Copenhagen").hexdigest()
     assert files[0].mime_type == "text/plain"
 
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 import pytest
+from http_fakes import Handler, ScriptedClient
 
 from kg_processor.adapters.embeddings.azure_openai import AzureOpenAIEmbeddingProvider
 from kg_processor.adapters.embeddings.openai_compatible import OpenAICompatibleEmbeddingProvider
@@ -23,312 +26,125 @@ def test_openai_string_lists_drop_null_and_non_string_values() -> None:
     assert coerce_string_list([None, " Valid question? ", 7, ""]) == ["Valid question?"]
 
 
-class _MockClient:
-    instances = 0
-
-    def __init__(self, timeout: float | None = None) -> None:
-        self.__class__.instances += 1
-        self.timeout = timeout
-
-    def __enter__(self) -> _MockClient:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def post(
-        self,
-        url: str,
-        headers: dict[str, str],
-        json: dict[str, object],
-        timeout: float | None = None,
-    ) -> httpx.Response:
-        request = httpx.Request("POST", url, headers=headers)
-        if url.endswith("/chat/completions"):
-            assert json["max_tokens"] == 8192
-            messages = json["messages"]
-            assert isinstance(messages, list)
-            system_message = messages[0]
-            assert isinstance(system_message, dict)
-            system_content = str(system_message["content"])
-            content: dict[str, object]
-            if "merge observed descriptions" in system_content:
-                content = {"description": "Alice Smith works at Acme Corp."}
-            elif json["model"] == "community":
-                content = {
-                    "title": "Acme",
-                    "summary": "Acme community",
-                    "rating": 7,
-                    "rating_explanation": "Important because Alice is connected to Acme.",
-                    "findings": [{"summary": "Finding", "explanation": "Because"}],
-                    "suggested_questions": ["How is Alice connected to Acme?"],
-                }
-            else:
-                content = {
-                    "entities": [
-                        {
-                            "name": "Alice Smith",
-                            "type": "PERSON",
-                            "description": "Alice Smith is present.",
-                            "source_chunk_id": "chunk_1",
-                            "confidence": 1,
-                            "aliases": [],
-                        }
-                    ],
-                    "relations": [],
-                }
-            return httpx.Response(
-                200,
-                json={"choices": [{"message": {"content": __import__("json").dumps(content)}}]},
-                request=request,
-            )
-        if url.endswith("/embeddings"):
-            return httpx.Response(
-                200,
-                json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]},
-                request=request,
-            )
-        raise AssertionError(f"Unexpected URL: {url}")
-
-
-class _StructuredRetryMockClient:
-    """Return malformed JSON once, then valid strict output during regeneration.
-
-    Class-level counting spans the adapter's two client contexts.
-    """
-
-    call_count = 0
-
-    def __init__(self, timeout: float | None = None) -> None:
-        """Record the adapter timeout for compatibility with the HTTP client API.
-
-        No real network resources are allocated.
-        """
-
-        self.timeout = timeout
-
-    def __enter__(self) -> _StructuredRetryMockClient:
-        """Expose this deterministic client through the adapter's context-manager protocol.
-
-        The same fixture instance handles each request context.
-        """
-
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        """Close the mock context without suppressing exceptions from adapter logic.
-
-        There are no resources requiring teardown.
-        """
-
-        return None
-
-    def post(
-        self,
-        url: str,
-        headers: dict[str, str],
-        json: dict[str, object],
-        timeout: float | None = None,
-    ) -> httpx.Response:
-        """Validate strict transport and alternate malformed then valid response content.
-
-        Both responses retain an ordinary HTTP response shape.
-        """
-
-        _StructuredRetryMockClient.call_count += 1
-        response_format = json["response_format"]
-        assert isinstance(response_format, dict)
-        assert response_format["type"] == "json_schema"
-        content = "{broken" if self.call_count == 1 else '{"records": []}'
-        request = httpx.Request("POST", url, headers=headers)
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": content}}]},
-            request=request,
-        )
-
-
-class _VllmMockClient:
-    def __init__(self, timeout: float | None = None) -> None:
-        self.timeout = timeout
-
-    def __enter__(self) -> _VllmMockClient:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def post(
-        self,
-        url: str,
-        headers: dict[str, str],
-        json: dict[str, object],
-        timeout: float | None = None,
-    ) -> httpx.Response:
-        request = httpx.Request("POST", url, headers=headers)
-        assert url == "http://localhost:8000/v1/chat/completions"
-        assert "Authorization" not in headers
-        assert json["model"] == "qwen2.5"
-        assert json["max_tokens"] == 16384
-        assert json["chat_template_kwargs"] == {"enable_thinking": False}
-        content = {
-            "entities": [
-                {
-                    "name": "Alice Smith",
-                    "type": "PERSON",
-                    "description": "Alice Smith is present.",
-                    "source_chunk_id": "chunk_1",
-                    "confidence": 1,
-                    "aliases": [],
-                }
-            ],
-            "relations": [],
+_ENTITIES = {
+    "entities": [
+        {
+            "name": "Alice Smith",
+            "type": "PERSON",
+            "description": "Alice Smith is present.",
+            "source_chunk_id": "chunk_1",
+            "confidence": 1,
+            "aliases": [],
         }
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": __import__("json").dumps(content)}}]},
-            request=request,
+    ],
+    "relations": [],
+}
+_MERGED = {"description": "Alice Smith works at Acme Corp."}
+
+
+def _chat(content: object) -> httpx.Response:
+    """Return one chat completion whose message is ``content``, serialized unless a string."""
+
+    text = content if isinstance(content, str) else json.dumps(content)
+    return httpx.Response(200, json={"choices": [{"message": {"content": text}}]})
+
+
+def _embedding() -> httpx.Response:
+    return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]})
+
+
+def _embeddings_rejecting(condition: Callable[[dict[str, Any]], bool], error: object) -> Handler:
+    """Embed every batch except the ones ``condition`` picks, which get a 400 with ``error``."""
+
+    def handler(url: str, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
+        return httpx.Response(400, json=error) if condition(payload) else _embedding()
+
+    return handler
+
+
+def _system_prompt(payload: dict[str, Any]) -> str:
+    return str(payload["messages"][0]["content"])
+
+
+def _openai(url: str, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
+    """Answer the compatible adapter's chat and embedding calls."""
+
+    if url.endswith("/embeddings"):
+        return _embedding()
+    assert url.endswith("/chat/completions"), f"Unexpected URL: {url}"
+    assert payload["max_tokens"] == 8192
+    if "merge observed descriptions" in _system_prompt(payload):
+        return _chat(_MERGED)
+    if payload["model"] == "community":
+        return _chat(
+            {
+                "title": "Acme",
+                "summary": "Acme community",
+                "rating": 7,
+                "rating_explanation": "Important because Alice is connected to Acme.",
+                "findings": [{"summary": "Finding", "explanation": "Because"}],
+                "suggested_questions": ["How is Alice connected to Acme?"],
+            }
         )
+    return _chat(_ENTITIES)
 
 
-class _AzureMockClient:
-    def __init__(self, timeout: float | None = None) -> None:
-        self.timeout = timeout
-
-    def __enter__(self) -> _AzureMockClient:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def post(
-        self,
-        url: str,
-        headers: dict[str, str],
-        json: dict[str, object],
-        timeout: float | None = None,
-    ) -> httpx.Response:
-        request = httpx.Request("POST", url, headers=headers)
-        assert "api-version=2025-01-01-preview" in url
-        assert headers["api-key"] == "secret"
-        if url.endswith("/chat/completions?api-version=2025-01-01-preview"):
-            assert json["max_tokens"] == 8192
-            assert json["reasoning_effort"] == "none"
-            messages = json["messages"]
-            assert isinstance(messages, list)
-            system_message = messages[0]
-            assert isinstance(system_message, dict)
-            system_content = str(system_message["content"])
-            content: dict[str, object]
-            if "merge observed descriptions" in system_content:
-                content = {"description": "Alice Smith works at Acme Corp."}
-            elif "knowledge-graph community" in system_content:
-                content = {
-                    "title": "Acme",
-                    "summary": "Acme community",
-                    "rating": "6.5",
-                    "rating_explanation": "Important because the relation is high weight.",
-                    "findings": [{"summary": "Finding", "explanation": "Because"}],
-                    "suggested_questions": ["What does Acme connect to?"],
-                }
-            else:
-                content = {
-                    "entities": [
-                        {
-                            "name": "Alice Smith",
-                            "type": "PERSON",
-                            "description": "Alice Smith is present.",
-                            "source_chunk_id": "chunk_1",
-                            "confidence": 1,
-                            "aliases": [],
-                        }
-                    ],
-                    "relations": [],
-                }
-            return httpx.Response(
-                200,
-                json={"choices": [{"message": {"content": __import__("json").dumps(content)}}]},
-                request=request,
-            )
-        if url.endswith("/embeddings?api-version=2025-01-01-preview"):
-            return httpx.Response(
-                200,
-                json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]},
-                request=request,
-            )
-        raise AssertionError(f"Unexpected URL: {url}")
+def _vllm(url: str, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
+    assert url == "http://localhost:8000/v1/chat/completions"
+    assert "Authorization" not in headers
+    assert payload["model"] == "qwen2.5"
+    assert payload["max_tokens"] == 16384
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    return _chat(_ENTITIES)
 
 
-class _AzureCapabilityNegotiationMockClient:
-    """Require the newer token field and default temperature before succeeding."""
+def _azure(url: str, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
+    """Answer deployment-addressed chat and embedding calls."""
 
-    payloads: list[dict[str, object]] = []
-
-    def __init__(self, timeout: float | None = None) -> None:
-        self.timeout = timeout
-
-    def __enter__(self) -> _AzureCapabilityNegotiationMockClient:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def post(
-        self,
-        url: str,
-        headers: dict[str, str],
-        json: dict[str, object],
-        timeout: float | None = None,
-    ) -> httpx.Response:
-        """Return the same structured capability errors emitted by newer models."""
-
-        self.__class__.payloads.append(dict(json))
-        request = httpx.Request("POST", url, headers=headers)
-        if "max_tokens" in json:
-            return httpx.Response(
-                400,
-                json={
-                    "error": {
-                        "code": "unsupported_parameter",
-                        "param": "max_tokens",
-                    }
-                },
-                request=request,
-            )
-        if "temperature" in json:
-            return httpx.Response(
-                400,
-                json={
-                    "error": {
-                        "code": "unsupported_value",
-                        "param": "temperature",
-                    }
-                },
-                request=request,
-            )
-        if "reasoning_effort" in json:
-            return httpx.Response(
-                400,
-                json={
-                    "error": {
-                        "code": "unsupported_parameter",
-                        "param": "reasoning_effort",
-                    }
-                },
-                request=request,
-            )
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": '{"ok":true}'}}]},
-            request=request,
+    assert "api-version=2025-01-01-preview" in url
+    assert headers["api-key"] == "secret"
+    if url.endswith("/embeddings?api-version=2025-01-01-preview"):
+        return _embedding()
+    assert url.endswith("/chat/completions?api-version=2025-01-01-preview"), url
+    assert payload["max_tokens"] == 8192
+    assert payload["reasoning_effort"] == "none"
+    system = _system_prompt(payload)
+    if "merge observed descriptions" in system:
+        return _chat(_MERGED)
+    if "knowledge-graph community" in system:
+        return _chat(
+            {
+                "title": "Acme",
+                "summary": "Acme community",
+                "rating": "6.5",
+                "rating_explanation": "Important because the relation is high weight.",
+                "findings": [{"summary": "Finding", "explanation": "Because"}],
+                "suggested_questions": ["What does Acme connect to?"],
+            }
         )
+    return _chat(_ENTITIES)
+
+
+def _azure_negotiating(
+    url: str, headers: dict[str, str], payload: dict[str, Any]
+) -> httpx.Response:
+    """Return the structured capability errors newer models emit until the request fits."""
+
+    for parameter, code in (
+        ("max_tokens", "unsupported_parameter"),
+        ("temperature", "unsupported_value"),
+        ("reasoning_effort", "unsupported_parameter"),
+    ):
+        if parameter in payload:
+            return httpx.Response(400, json={"error": {"code": code, "param": parameter}})
+    return _chat('{"ok":true}')
 
 
 def test_openai_compatible_llm_runs_structured_and_enrichment_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _MockClient.instances = 0
-    monkeypatch.setattr(httpx, "Client", _MockClient)
+    client = ScriptedClient(_openai)
+    monkeypatch.setattr(httpx, "Client", client.open)
     provider = OpenAICompatibleLlmProvider("https://example.test/v1", "secret", model="community")
     result = provider.complete_structured(
         StructuredCompletionRequest(
@@ -365,7 +181,7 @@ def test_openai_compatible_llm_runs_structured_and_enrichment_tasks(
     assert description.provider_metadata["provider"] == "openai_compatible"
     assert description.provider_metadata["model"] == "community"
     assert description.provider_metadata["prompt_name"] == "entity_description_merge"
-    assert _MockClient.instances == 1
+    assert client.opened == 1
 
 
 def test_openai_compatible_llm_requires_explicit_default_model() -> None:
@@ -381,8 +197,12 @@ def test_openai_structured_completion_retries_malformed_transport_json(
     Repair attempts must appear in provider metadata.
     """
 
-    _StructuredRetryMockClient.call_count = 0
-    monkeypatch.setattr(httpx, "Client", _StructuredRetryMockClient)
+    def handler(url: str, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
+        assert payload["response_format"]["type"] == "json_schema"
+        return _chat("{broken" if len(client.requests) == 1 else '{"records": []}')
+
+    client = ScriptedClient(handler)
+    monkeypatch.setattr(httpx, "Client", client.open)
     provider = OpenAICompatibleLlmProvider("https://example.test/v1", "secret", "model")
 
     result = provider.complete_structured(
@@ -401,7 +221,7 @@ def test_openai_structured_completion_retries_malformed_transport_json(
 
     assert result.payload == {"records": []}
     assert result.provider_metadata["format_repair_attempts"] == 1
-    assert _StructuredRetryMockClient.call_count == 2
+    assert len(client.requests) == 2
 
 
 def test_openai_structured_completion_retries_empty_message_content(
@@ -438,7 +258,7 @@ def test_openai_structured_completion_retries_empty_message_content(
 def test_vllm_local_llm_uses_openai_compatible_chat_without_required_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(httpx, "Client", _VllmMockClient)
+    monkeypatch.setattr(httpx, "Client", ScriptedClient(_vllm).open)
     provider = VllmLocalLlmProvider("http://localhost:8000/v1", model="qwen2.5")
     result = provider.complete_structured(
         StructuredCompletionRequest(
@@ -457,8 +277,8 @@ def test_vllm_local_llm_uses_openai_compatible_chat_without_required_auth(
     assert provider.capabilities().max_output_tokens == 16384
 
 
-def test_openai_compatible_embeddings_validate_dimension(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(httpx, "Client", _MockClient)
+def test_openai_compatible_embeddings_validate_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(httpx, "Client", ScriptedClient(_openai).open)
     provider = OpenAICompatibleEmbeddingProvider("https://example.test/v1", "secret")
 
     vectors = provider.embed(["Alice"], EmbedOptions(model="embed", dimension=3))
@@ -466,8 +286,8 @@ def test_openai_compatible_embeddings_validate_dimension(monkeypatch) -> None:  
     assert vectors == [[0.1, 0.2, 0.3]]
 
 
-def test_azure_openai_llm_uses_deployment_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(httpx, "Client", _AzureMockClient)
+def test_azure_openai_llm_uses_deployment_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(httpx, "Client", ScriptedClient(_azure).open)
     provider = AzureOpenAILlmProvider(
         "https://example.test",
         "secret",
@@ -524,11 +344,11 @@ def test_azure_openai_advertises_dense_relation_output_budget() -> None:
     assert provider.capabilities().max_output_tokens == 16384
 
 
-def test_azure_openai_negotiates_newer_chat_parameters(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_azure_openai_negotiates_newer_chat_parameters(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cache model capability errors so only the first request requires retries."""
 
-    _AzureCapabilityNegotiationMockClient.payloads = []
-    monkeypatch.setattr(httpx, "Client", _AzureCapabilityNegotiationMockClient)
+    client = ScriptedClient(_azure_negotiating)
+    monkeypatch.setattr(httpx, "Client", client.open)
     provider = AzureOpenAILlmProvider(
         "https://example.test",
         "secret",
@@ -549,18 +369,19 @@ def test_azure_openai_negotiates_newer_chat_parameters(monkeypatch) -> None:  # 
 
     assert first.payload == {"ok": True}
     assert second.payload == {"ok": True}
-    assert len(_AzureCapabilityNegotiationMockClient.payloads) == 5
-    assert "max_tokens" in _AzureCapabilityNegotiationMockClient.payloads[0]
-    assert "max_completion_tokens" in _AzureCapabilityNegotiationMockClient.payloads[1]
-    assert "temperature" in _AzureCapabilityNegotiationMockClient.payloads[1]
-    assert "temperature" not in _AzureCapabilityNegotiationMockClient.payloads[2]
-    assert "reasoning_effort" in _AzureCapabilityNegotiationMockClient.payloads[2]
-    assert "reasoning_effort" not in _AzureCapabilityNegotiationMockClient.payloads[3]
-    assert "reasoning_effort" not in _AzureCapabilityNegotiationMockClient.payloads[4]
+    payloads = client.payloads
+    assert len(payloads) == 5
+    assert "max_tokens" in payloads[0]
+    assert "max_completion_tokens" in payloads[1]
+    assert "temperature" in payloads[1]
+    assert "temperature" not in payloads[2]
+    assert "reasoning_effort" in payloads[2]
+    assert "reasoning_effort" not in payloads[3]
+    assert "reasoning_effort" not in payloads[4]
 
 
-def test_azure_openai_embeddings_use_deployment_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(httpx, "Client", _AzureMockClient)
+def test_azure_openai_embeddings_use_deployment_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(httpx, "Client", ScriptedClient(_azure).open)
     provider = AzureOpenAIEmbeddingProvider(
         "https://example.test",
         "secret",
@@ -592,44 +413,20 @@ def test_embedding_adapters_retry_without_unsupported_dimensions(
     build: Callable[[], OpenAICompatibleEmbeddingProvider],
     model: str,
 ) -> None:
-    class _DimensionsFallbackClient:
-        payloads: list[dict[str, object]] = []
-
-        def __init__(self, timeout: float | None = None) -> None:
-            self.timeout = timeout
-
-        def close(self) -> None:
-            return None
-
-        def post(
-            self,
-            url: str,
-            headers: dict[str, str],
-            json: dict[str, object],
-            timeout: float | None = None,
-        ) -> httpx.Response:
-            del headers
-            self.__class__.payloads.append(dict(json))
-            request = httpx.Request("POST", url)
-            if "dimensions" in json:
-                return httpx.Response(
-                    400, json={"error": "unsupported dimensions"}, request=request
-                )
-            return httpx.Response(
-                200,
-                json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]},
-                request=request,
-            )
-
-    _DimensionsFallbackClient.payloads = []
-    monkeypatch.setattr(httpx, "Client", _DimensionsFallbackClient)
+    # The rejection has to name the parameter before the adapter may drop it.
+    client = ScriptedClient(
+        _embeddings_rejecting(
+            lambda payload: "dimensions" in payload, {"error": "unsupported dimensions"}
+        )
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
     provider = build()
 
     vectors = provider.embed(["Alice"], EmbedOptions(model=model, dimension=3))
 
     assert vectors == [[0.1, 0.2, 0.3]]
-    assert "dimensions" in _DimensionsFallbackClient.payloads[0]
-    assert "dimensions" not in _DimensionsFallbackClient.payloads[1]
+    assert "dimensions" in client.payloads[0]
+    assert "dimensions" not in client.payloads[1]
     provider.close()
 
 
@@ -638,47 +435,19 @@ def test_embedding_adapters_keep_the_requested_width_after_an_unrelated_rejectio
 ) -> None:
     """One rejected batch must not narrow every later vector in the process."""
 
-    class _OversizedBatchClient:
-        payloads: list[dict[str, object]] = []
-
-        def __init__(self, timeout: float | None = None) -> None:
-            self.timeout = timeout
-
-        def close(self) -> None:
-            return None
-
-        def post(
-            self,
-            url: str,
-            headers: dict[str, str],
-            json: dict[str, object],
-            timeout: float | None = None,
-        ) -> httpx.Response:
-            del headers
-            self.__class__.payloads.append(dict(json))
-            request = httpx.Request("POST", url)
-            inputs = json["input"]
-            assert isinstance(inputs, list)
-            if len(inputs) > 1:
-                return httpx.Response(
-                    400,
-                    json={
-                        "error": {
-                            "code": "context_length_exceeded",
-                            "message": "This model's maximum context length is 8192 tokens",
-                            "param": "input",
-                        }
-                    },
-                    request=request,
-                )
-            return httpx.Response(
-                200,
-                json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]},
-                request=request,
-            )
-
-    _OversizedBatchClient.payloads = []
-    monkeypatch.setattr(httpx, "Client", _OversizedBatchClient)
+    client = ScriptedClient(
+        _embeddings_rejecting(
+            lambda payload: len(payload["input"]) > 1,
+            {
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": "This model's maximum context length is 8192 tokens",
+                    "param": "input",
+                }
+            },
+        )
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
     provider = OpenAICompatibleEmbeddingProvider("https://example.test/v1", "secret")
     options = EmbedOptions(model="text-embedding-3-small", dimension=3)
 
@@ -686,49 +455,19 @@ def test_embedding_adapters_keep_the_requested_width_after_an_unrelated_rejectio
         provider.embed(["Alice", "Acme"], options)
 
     assert provider.embed(["Alice"], options) == [[0.1, 0.2, 0.3]]
-    assert all("dimensions" in payload for payload in _OversizedBatchClient.payloads)
+    assert all("dimensions" in payload for payload in client.payloads)
     provider.close()
 
 
 def test_generic_embedding_omits_dimensions_for_unknown_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _StrictCompatibleClient:
-        payloads: list[dict[str, object]] = []
-
-        def __init__(self, timeout: float | None = None) -> None:
-            self.timeout = timeout
-
-        def close(self) -> None:
-            return None
-
-        def post(
-            self,
-            url: str,
-            headers: dict[str, str],
-            json: dict[str, object],
-            timeout: float | None = None,
-        ) -> httpx.Response:
-            del headers
-            self.__class__.payloads.append(dict(json))
-            request = httpx.Request("POST", url)
-            if "dimensions" in json:
-                return httpx.Response(
-                    400,
-                    json={"error": "extra fields are forbidden"},
-                    request=request,
-                )
-            return httpx.Response(
-                200,
-                json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]},
-                request=request,
-            )
-
-    monkeypatch.setattr(httpx, "Client", _StrictCompatibleClient)
+    client = ScriptedClient(lambda *_: _embedding())
+    monkeypatch.setattr(httpx, "Client", client.open)
     provider = OpenAICompatibleEmbeddingProvider("https://example.test/v1", "secret")
 
     vectors = provider.embed(["Alice"], EmbedOptions(model="custom-model", dimension=3))
 
     assert vectors == [[0.1, 0.2, 0.3]]
-    assert _StrictCompatibleClient.payloads == [{"model": "custom-model", "input": ["Alice"]}]
+    assert client.payloads == [{"model": "custom-model", "input": ["Alice"]}]
     provider.close()

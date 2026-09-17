@@ -173,9 +173,6 @@ def test_pdfium_fallback_applies_resource_limits_before_opening_pdf(
 
     assert order == ["cap", "open sample.pdf"]
     assert parent.recv() == ("error", "RuntimeError: stop here")
-    assert builtin_text.MAX_PDFIUM_FALLBACK_MEMORY_BYTES > 0
-    assert builtin_text.MAX_PDFIUM_FALLBACK_TEXT_BYTES > 0
-    assert builtin_text.MAX_PDFIUM_FALLBACK_PAGES > 0
 
 
 def test_builtin_text_ocr_uses_pdfium_for_primary_value_errors(

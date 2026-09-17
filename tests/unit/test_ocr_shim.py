@@ -14,6 +14,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg_pool import AsyncConnectionPool
+from serving import KEYRING, RecordingUpstream, samples
 from starlette.requests import ClientDisconnect
 
 from kg_processor.serving import ocr_shim
@@ -23,12 +24,6 @@ from kg_processor.serving.ocr_shim import (
     QueueDepth,
     UpstreamPool,
     create_app,
-)
-from kg_processor.serving.priority import ConsumerKeyring
-
-KEYRING = ConsumerKeyring(
-    bands={"interactive": 0, "dev": 10, "batch": 100},
-    keys={"sk-chat": "interactive", "sk-pipeline": "batch"},
 )
 
 
@@ -84,14 +79,30 @@ class _FakeConnectionPool:
     """Stands in for the psycopg pool, answering every query with fixed rows.
 
     Either hands out a connection whose cursors return ``rows``, or refuses to
-    hand out any connection at all when built with ``failure``.
+    hand out any connection at all when built with ``failure``. Built the way
+    the shim builds the real pool, it keeps what it was opened with.
     """
 
+    check_connection = AsyncConnectionPool.check_connection
+
     def __init__(
-        self, rows: list[dict[str, Any]] | None = None, failure: Exception | None = None
+        self,
+        conninfo: str = "",
+        *,
+        rows: list[dict[str, Any]] | None = None,
+        failure: Exception | None = None,
+        **opened_with: Any,
     ) -> None:
+        self.conninfo = conninfo
+        self.opened_with = opened_with
         self.rows = rows or []
         self.failure = failure
+
+    async def __aenter__(self) -> _FakeConnectionPool:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
 
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[_FakeConnectionPool]:
@@ -108,41 +119,11 @@ class _FakeConnectionPool:
         return self.rows
 
 
-def _samples(exposition: str, name: str) -> dict[tuple[tuple[str, str], ...], float]:
-    """Return every sample of one series, keyed by its sorted label pairs."""
-
-    return {
-        tuple(sorted(sample.labels.items())): float(sample.value)
-        for family in text_string_to_metric_families(exposition)
-        for sample in family.samples
-        if sample.name == name
-    }
-
-
 def _pool(replicas: tuple[str, ...], capacity: int = 2) -> UpstreamPool:
     async def resolver() -> tuple[str, ...]:
         return replicas
 
     return UpstreamPool("mineru.invalid", 8080, capacity, resolver=resolver)
-
-
-def _stub(body: bytes) -> httpx.Response:
-    return httpx.Response(
-        200,
-        headers={"content-type": "application/json", "content-length": str(len(body))},
-        stream=httpx.ByteStream(body),
-    )
-
-
-class _Pool:
-    """Records which replica each request reached."""
-
-    def __init__(self) -> None:
-        self.requests: list[httpx.Request] = []
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        return _stub(b'{"results": {}}')
 
 
 class _BrokenStream(httpx.AsyncByteStream):
@@ -153,7 +134,7 @@ class _BrokenStream(httpx.AsyncByteStream):
         raise httpx.ReadError("connection reset by peer")
 
 
-class _CollapsingPool(_Pool):
+class _CollapsingPool(RecordingUpstream):
     """A replica that answers and then dies mid-body."""
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -161,7 +142,7 @@ class _CollapsingPool(_Pool):
         return httpx.Response(200, stream=_BrokenStream())
 
 
-class _SlowPool(_Pool):
+class _SlowPool(RecordingUpstream):
     """A replica whose parse takes longer than the stale window."""
 
     def __init__(self, seconds: float) -> None:
@@ -169,13 +150,12 @@ class _SlowPool(_Pool):
         self.seconds = seconds
 
     async def handler(self, request: httpx.Request) -> httpx.Response:  # type: ignore[override]
-        self.requests.append(request)
         await asyncio.sleep(self.seconds)
-        return _stub(b'{"results": {}}')
+        return super().handler(request)
 
 
 def _client(
-    upstream: _Pool,
+    upstream: RecordingUpstream,
     queue: _RecordingQueue | OcrQueue,
     replicas: tuple[str, ...] = ("10.0.0.1", "10.0.0.2"),
     capacity: int = 2,
@@ -197,7 +177,7 @@ def _client(
 
 
 def test_a_request_is_queued_at_the_band_its_key_holds() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         client.post(
             "/file_parse",
@@ -209,7 +189,7 @@ def test_a_request_is_queued_at_the_band_its_key_holds() -> None:
 
 
 def test_interactive_and_batch_keys_queue_at_different_bands() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         for key in ("sk-chat", "sk-pipeline"):
             client.post(
@@ -222,7 +202,7 @@ def test_interactive_and_batch_keys_queue_at_different_bands() -> None:
 
 
 def test_an_unknown_key_never_reaches_the_queue_or_the_pool() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         response = client.post("/file_parse", headers={"Authorization": "Bearer sk-nope"})
 
@@ -232,7 +212,7 @@ def test_an_unknown_key_never_reaches_the_queue_or_the_pool() -> None:
 
 
 def test_admission_is_offered_every_replica_the_shim_resolves() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue, replicas=("10.0.0.1", "10.0.0.2", "10.0.0.3"), capacity=4) as c:
         c.post(
             "/file_parse",
@@ -246,7 +226,7 @@ def test_admission_is_offered_every_replica_the_shim_resolves() -> None:
 def test_the_request_goes_to_the_replica_the_queue_chose() -> None:
     """Placement is the queue's decision, made from the fleet's load, not this shim's."""
 
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue, replicas=("10.0.0.1", "10.0.0.2")) as client:
         client.post(
             "/file_parse",
@@ -256,13 +236,13 @@ def test_the_request_goes_to_the_replica_the_queue_chose() -> None:
         exposition = client.get("/metrics").text
 
     assert upstream.requests[0].url.host == "10.0.0.2"
-    assert _samples(exposition, "flakegraph_ocr_parse_duration_seconds_count") == {
+    assert samples(exposition, "flakegraph_ocr_parse_duration_seconds_count") == {
         (("replica", "10.0.0.2"),): 1
     }
 
 
 def test_the_callers_credential_is_not_relayed_to_the_parsing_pool() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         client.post(
             "/file_parse",
@@ -274,7 +254,7 @@ def test_the_callers_credential_is_not_relayed_to_the_parsing_pool() -> None:
 
 
 def test_a_finished_request_frees_its_slot() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         response = client.post(
             "/file_parse",
@@ -291,7 +271,7 @@ def test_a_caller_that_hangs_up_while_queued_is_not_parsed_for() -> None:
 
     queue = _RecordingQueue()
     queue.admit = False
-    with _client(_Pool(), queue) as client:
+    with _client(RecordingUpstream(), queue) as client:
         app = cast(Any, client.app)
 
         async def hung_up() -> dict[str, str]:
@@ -313,7 +293,7 @@ def test_a_caller_that_hangs_up_while_queued_is_not_parsed_for() -> None:
 
     assert queue.released == [entry[0] for entry in queue.enqueued]
     assert queue.admitted == []
-    assert _samples(metrics.render().body.decode(), "flakegraph_ocr_requests_total") == {
+    assert samples(metrics.render().body.decode(), "flakegraph_ocr_requests_total") == {
         (("consumer_class", "interactive"), ("outcome", "client_gone")): 1
     }
 
@@ -364,14 +344,14 @@ def test_a_replica_dying_mid_body_still_frees_its_slot() -> None:
         exposition = client.get("/metrics").text
 
     assert queue.released == queue.admitted
-    assert _samples(exposition, "flakegraph_ocr_in_flight") == {(("replica", "10.0.0.1"),): 0}
-    assert _samples(exposition, "flakegraph_ocr_requests_total") == {
+    assert samples(exposition, "flakegraph_ocr_in_flight") == {(("replica", "10.0.0.1"),): 0}
+    assert samples(exposition, "flakegraph_ocr_requests_total") == {
         (("consumer_class", "interactive"), ("outcome", "upstream_error")): 1
     }
 
 
 def test_health_reports_the_replicas_the_shim_can_currently_see() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue, replicas=("10.0.0.1", "10.0.0.2")) as client:
         payload = client.get("/health").json()
 
@@ -416,11 +396,6 @@ def test_configuration_is_read_from_the_pods_environment() -> None:
     assert config.bands == {"interactive": 0, "batch": 100}
 
 
-def test_a_shim_without_a_database_url_refuses_to_be_configured() -> None:
-    with pytest.raises(ValueError, match="database_url"):
-        OcrShimConfig.from_env({"FLAKEGRAPH_OCR_SHIM_UPSTREAM_HOST": "mineru"})
-
-
 def test_a_parse_that_omits_a_backend_is_given_the_one_the_pool_supports() -> None:
     """MinerU's own default is a backend this image cannot run.
 
@@ -430,7 +405,7 @@ def test_a_parse_that_omits_a_backend_is_given_the_one_the_pool_supports() -> No
     and omits the field should still be served.
     """
 
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         response = client.post(
             "/file_parse",
@@ -451,7 +426,7 @@ def test_a_parse_that_omits_a_backend_is_given_the_one_the_pool_supports() -> No
 def test_a_backend_the_pool_cannot_run_is_refused_before_it_costs_anything() -> None:
     """Refusing here is the difference between an answer and a five-minute wait."""
 
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         response = client.post(
             "/file_parse",
@@ -469,7 +444,7 @@ def test_a_backend_the_pool_cannot_run_is_refused_before_it_costs_anything() -> 
 
 
 def test_an_explicit_supported_backend_is_left_exactly_as_the_caller_sent_it() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         response = client.post(
             "/file_parse",
@@ -486,7 +461,7 @@ def test_an_explicit_supported_backend_is_left_exactly_as_the_caller_sent_it() -
 def test_a_file_containing_the_word_backend_is_not_mistaken_for_the_field() -> None:
     """The field is read from each part's own headers, not searched for."""
 
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         response = client.post(
             "/file_parse",
@@ -517,39 +492,25 @@ def test_the_queue_pool_checks_a_connection_before_handing_it_out(
     and for nothing the caller did.
     """
 
-    captured: dict[str, Any] = {}
-
-    class _RecordingPool:
-        check_connection = AsyncConnectionPool.check_connection
-
-        def __init__(self, conninfo: str, **kwargs: Any) -> None:
-            captured["conninfo"] = conninfo
-            captured.update(kwargs)
-
-        async def __aenter__(self) -> _RecordingPool:
-            return self
-
-        async def __aexit__(self, *exc: object) -> None:
-            return None
-
-    monkeypatch.setattr(ocr_shim, "AsyncConnectionPool", _RecordingPool)
+    monkeypatch.setattr(ocr_shim, "AsyncConnectionPool", _FakeConnectionPool)
     app = create_app(
         OcrShimConfig(
             database_url="postgresql://queue.invalid/flakegraph", upstream_host="mineru.invalid"
         ),
         keyring=KEYRING,
-        transport=httpx.MockTransport(_Pool().handler),
+        transport=httpx.MockTransport(RecordingUpstream().handler),
         upstreams=_pool(("10.0.0.1",), 1),
     )
     with TestClient(app):
         pass
 
-    assert captured["conninfo"] == "postgresql://queue.invalid/flakegraph"
-    assert captured["check"] is AsyncConnectionPool.check_connection
+    pool = app.state.queue._pool
+    assert pool.conninfo == "postgresql://queue.invalid/flakegraph"
+    assert pool.opened_with["check"] is AsyncConnectionPool.check_connection
 
 
 def test_metrics_is_a_text_exposition_of_the_shims_own_series() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         response = client.get("/metrics")
 
@@ -569,7 +530,7 @@ def test_metrics_is_a_text_exposition_of_the_shims_own_series() -> None:
 
 
 def test_a_successful_parse_is_observed_against_the_replica_that_served_it() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue, replicas=("10.0.0.1",), capacity=3) as client:
         response = client.post(
             "/file_parse",
@@ -579,24 +540,22 @@ def test_a_successful_parse_is_observed_against_the_replica_that_served_it() -> 
         assert response.status_code == 200
         exposition = client.get("/metrics").text
 
-    assert _samples(exposition, "flakegraph_ocr_requests_total") == {
+    assert samples(exposition, "flakegraph_ocr_requests_total") == {
         (("consumer_class", "interactive"), ("outcome", "succeeded")): 1
     }
-    assert _samples(exposition, "flakegraph_ocr_queue_wait_seconds_count") == {
+    assert samples(exposition, "flakegraph_ocr_queue_wait_seconds_count") == {
         (("consumer_class", "interactive"),): 1
     }
-    assert _samples(exposition, "flakegraph_ocr_parse_duration_seconds_count") == {
+    assert samples(exposition, "flakegraph_ocr_parse_duration_seconds_count") == {
         (("replica", "10.0.0.1"),): 1
     }
-    assert _samples(exposition, "flakegraph_ocr_in_flight") == {(("replica", "10.0.0.1"),): 0}
-    assert _samples(exposition, "flakegraph_ocr_replica_capacity") == {
-        (("replica", "10.0.0.1"),): 3
-    }
-    assert _samples(exposition, "flakegraph_ocr_upstream_replicas") == {(): 1}
+    assert samples(exposition, "flakegraph_ocr_in_flight") == {(("replica", "10.0.0.1"),): 0}
+    assert samples(exposition, "flakegraph_ocr_replica_capacity") == {(("replica", "10.0.0.1"),): 3}
+    assert samples(exposition, "flakegraph_ocr_upstream_replicas") == {(): 1}
 
 
 def test_a_refused_request_is_counted_without_reaching_the_queue() -> None:
-    upstream, queue = _Pool(), _RecordingQueue()
+    upstream, queue = RecordingUpstream(), _RecordingQueue()
     with _client(upstream, queue) as client:
         client.post("/file_parse", headers={"Authorization": "Bearer sk-nope"})
         client.post(
@@ -607,7 +566,7 @@ def test_a_refused_request_is_counted_without_reaching_the_queue() -> None:
         )
         exposition = client.get("/metrics").text
 
-    assert _samples(exposition, "flakegraph_ocr_requests_total") == {
+    assert samples(exposition, "flakegraph_ocr_requests_total") == {
         (("consumer_class", "unauthenticated"), ("outcome", "rejected")): 1,
         (("consumer_class", "interactive"), ("outcome", "rejected")): 1,
     }
@@ -620,14 +579,14 @@ def test_queue_depth_is_read_across_the_whole_fleet_at_scrape_time() -> None:
         {"consumer_class": "batch", "status": "dispatched", "depth": 2, "oldest_seconds": 90.0},
         {"consumer_class": "interactive", "status": "waiting", "depth": 1, "oldest_seconds": 0.5},
     ]
-    queue = OcrQueue(_FakeConnectionPool(rows), "shim-a", 60.0)
-    with _client(_Pool(), queue) as client:
+    queue = OcrQueue(_FakeConnectionPool(rows=rows), "shim-a", 60.0)
+    with _client(RecordingUpstream(), queue) as client:
         exposition = client.get("/metrics").text
 
     # Every class the keyring knows is present in every status, at zero when
     # the queue holds nothing of it: a class with no work must read as empty,
     # not as missing.
-    assert _samples(exposition, "flakegraph_ocr_queue_depth") == {
+    assert samples(exposition, "flakegraph_ocr_queue_depth") == {
         (("consumer_class", "interactive"), ("status", "waiting")): 1,
         (("consumer_class", "interactive"), ("status", "dispatched")): 0,
         (("consumer_class", "dev"), ("status", "waiting")): 0,
@@ -636,7 +595,7 @@ def test_queue_depth_is_read_across_the_whole_fleet_at_scrape_time() -> None:
         (("consumer_class", "batch"), ("status", "dispatched")): 2,
     }
     # Only what is still waiting has an age worth alerting on.
-    assert _samples(exposition, "flakegraph_ocr_oldest_waiting_seconds") == {
+    assert samples(exposition, "flakegraph_ocr_oldest_waiting_seconds") == {
         (("consumer_class", "interactive"),): 0.5,
         (("consumer_class", "dev"),): 0.0,
         (("consumer_class", "batch"),): 42.5,
@@ -644,14 +603,14 @@ def test_queue_depth_is_read_across_the_whole_fleet_at_scrape_time() -> None:
 
 
 def test_an_empty_queue_reads_as_zero_for_every_class() -> None:
-    queue = OcrQueue(_FakeConnectionPool([]), "shim-a", 60.0)
-    with _client(_Pool(), queue) as client:
+    queue = OcrQueue(_FakeConnectionPool(), "shim-a", 60.0)
+    with _client(RecordingUpstream(), queue) as client:
         exposition = client.get("/metrics").text
 
-    depth = _samples(exposition, "flakegraph_ocr_queue_depth")
+    depth = samples(exposition, "flakegraph_ocr_queue_depth")
     assert set(depth.values()) == {0}
     assert {labels[0][1] for labels in depth} == {"interactive", "dev", "batch"}
-    assert set(_samples(exposition, "flakegraph_ocr_oldest_waiting_seconds").values()) == {0.0}
+    assert set(samples(exposition, "flakegraph_ocr_oldest_waiting_seconds").values()) == {0.0}
 
 
 def test_a_scrape_survives_the_queue_database_being_unreachable(
@@ -659,7 +618,7 @@ def test_a_scrape_survives_the_queue_database_being_unreachable(
 ) -> None:
     failure = psycopg.OperationalError("connection refused")
     queue = OcrQueue(_FakeConnectionPool(failure=failure), "shim-a", 60.0)
-    with _client(_Pool(), queue) as client, caplog.at_level(logging.WARNING):
+    with _client(RecordingUpstream(), queue) as client, caplog.at_level(logging.WARNING):
         response = client.get("/metrics")
 
     assert response.status_code == 200

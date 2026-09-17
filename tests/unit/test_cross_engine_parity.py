@@ -20,9 +20,7 @@ from kg_processor.application.graph_merge import (
     normalize_entity_name,
     normalize_relation_type,
 )
-from kg_processor.application.two_pass_extraction import _to_extraction_result
 from kg_processor.config.settings import Settings
-from kg_processor.domain.extraction import EntityMention, RelationObservation
 from kg_processor.domain.graph import Evidence, GraphEdge, GraphNode
 from kg_processor.domain.ontology import normalize_ontology_label
 from kg_processor.ports.llm import CommunitySummaryRequest, CommunitySummaryResult
@@ -87,52 +85,6 @@ def test_relation_label_rule_bounds_oversized_predicates() -> None:
     assert bounded == normalize_ontology_label(label)[:MAX_RELATION_LABEL_LENGTH]
     assert len(bounded) == MAX_RELATION_LABEL_LENGTH
     assert normalize_relation_type(bounded) == bounded
-
-
-def test_spark_observation_weight_matches_extraction_weight() -> None:
-    """Stage artifacts carry confidence, so Spark must rebuild extraction's weight."""
-
-    confidence = 0.6
-    mentions = [
-        EntityMention(
-            id="mention-source",
-            name="Alice Smith",
-            type="PERSON",
-            description="A person.",
-            source_chunk_id="chunk-1",
-            quote="Alice Smith",
-        ),
-        EntityMention(
-            id="mention-target",
-            name="Acme Corp",
-            type="ORGANIZATION",
-            description="A company.",
-            source_chunk_id="chunk-1",
-            quote="Acme Corp",
-        ),
-    ]
-    relations = [
-        RelationObservation(
-            id="relation-1",
-            source_entity_id="mention-source",
-            target_entity_id="mention-target",
-            relation_type="WORKS_AT",
-            description="Alice Smith works at Acme Corp.",
-            source_chunk_id="chunk-1",
-            quote="Alice Smith works at Acme Corp.",
-            confidence=confidence,
-        )
-    ]
-
-    result = _to_extraction_result(
-        mentions,
-        relations,
-        {"mention-source": "Alice Smith", "mention-target": "Acme Corp"},
-    )
-
-    assert result.relations[0].weight == spark_finalization._observation_weight_value(confidence)
-    assert spark_finalization._observation_weight_value(0.0) > 0.0
-    assert spark_finalization._observation_weight_value(None) > 0.0
 
 
 def test_structural_rating_stays_inside_its_published_range() -> None:

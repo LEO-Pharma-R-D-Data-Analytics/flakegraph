@@ -153,23 +153,9 @@ def test_structured_retry_recovers_after_multiple_empty_responses() -> None:
         ]
     )
     delays: list[float] = []
-    request = StructuredCompletionRequest(
-        task_name="test",
-        model="model",
-        system="system",
-        user="user",
-        json_schema={
-            "type": "object",
-            "properties": {"records": {"type": "array", "items": {"type": "string"}}},
-            "required": ["records"],
-            "additionalProperties": False,
-        },
-        max_tokens=100,
-        timeout_seconds=30,
-    )
 
     result = complete_structured_with_retry(
-        request,
+        _records_request(),
         provider_name="test",
         max_output_tokens=100,
         supports_seed=False,
@@ -187,20 +173,6 @@ def test_structured_retry_is_bounded_after_persistent_empty_responses() -> None:
     """Stop provider regeneration before an individual queue task can loop forever."""
 
     attempts = 0
-    request = StructuredCompletionRequest(
-        task_name="test",
-        model="model",
-        system="system",
-        user="user",
-        json_schema={
-            "type": "object",
-            "properties": {"records": {"type": "array", "items": {"type": "string"}}},
-            "required": ["records"],
-            "additionalProperties": False,
-        },
-        max_tokens=100,
-        timeout_seconds=30,
-    )
 
     def empty(*_args: object) -> ChatCompletion:
         """Count every bounded regeneration while returning invalid content."""
@@ -211,7 +183,7 @@ def test_structured_retry_is_bounded_after_persistent_empty_responses() -> None:
 
     with pytest.raises(ValueError):
         complete_structured_with_retry(
-            request,
+            _records_request(),
             provider_name="test",
             max_output_tokens=100,
             supports_seed=False,

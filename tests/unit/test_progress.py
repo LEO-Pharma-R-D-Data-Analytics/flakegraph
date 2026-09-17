@@ -71,7 +71,6 @@ def test_composite_progress_sink_isolates_one_failing_destination() -> None:
     sink.emit(event)
 
     assert second.events == [event]
-    assert sink.last_errors == [{"sink": "FailingSink", "error": "password=***"}]
 
 
 def test_progress_event_redacts_sensitive_metadata_before_json_serialization() -> None:

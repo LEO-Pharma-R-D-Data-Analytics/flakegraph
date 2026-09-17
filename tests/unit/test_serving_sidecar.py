@@ -7,80 +7,22 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from prometheus_client.parser import text_string_to_metric_families
+from serving import KEYRING, RecordingUpstream, samples, stub
 
 import kg_processor
 from kg_processor.serving.priority import ConsumerKeyring, load_keyring
 from kg_processor.serving.sidecar import SidecarConfig, create_app
 from kg_processor.serving.sizing import DeviceBudget, ModelGeometry
 
-KEYRING = ConsumerKeyring(
-    bands={"interactive": 0, "dev": 10, "batch": 100},
-    keys={"sk-chat": "interactive", "sk-tool": "dev", "sk-pipeline": "batch"},
-)
 
-
-def _stub(body: bytes, content_type: str) -> httpx.Response:
-    """Build an unread response so the sidecar can relay it as a raw stream.
-
-    ``httpx.Response`` reads eager content during construction, which would leave
-    nothing for ``aiter_raw`` to iterate. A real transport always hands back an
-    unconsumed stream, so the double has to as well.
-    """
-
-    return httpx.Response(
-        200,
-        headers={"content-type": content_type, "content-length": str(len(body))},
-        stream=httpx.ByteStream(body),
-    )
-
-
-class _Upstream:
-    """Records what the engine would have received and replies with a stub."""
-
-    def __init__(self) -> None:
-        self.requests: list[httpx.Request] = []
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        if request.url.path == "/metrics":
-            return _stub(b"vllm:num_preemptions_total 0", "text/plain")
-        return _stub(b'{"ok": true}', "application/json")
-
-    @property
-    def last_body(self) -> dict[str, object]:
-        payload: dict[str, object] = json.loads(self.requests[-1].content)
-        return payload
-
-
-def _client(upstream: _Upstream, config: SidecarConfig | None = None) -> TestClient:
+def _client(upstream: RecordingUpstream, config: SidecarConfig | None = None) -> TestClient:
     resolved = config or SidecarConfig(upstream_base_url="http://engine.invalid")
     app = create_app(resolved, keyring=KEYRING, transport=httpx.MockTransport(upstream.handler))
     return TestClient(app)
 
 
-def _sample(exposition: str, name: str, **labels: str) -> float | None:
-    """Return one sample's value from a scrape body, or ``None`` if it is absent."""
-
-    for family in text_string_to_metric_families(exposition):
-        for sample in family.samples:
-            if sample.name == name and sample.labels == labels:
-                return float(sample.value)
-    return None
-
-
-def _in_flight(exposition: str) -> dict[str, float]:
-    """Return the in-flight gauge per consumer class."""
-
-    return {
-        sample.labels["consumer_class"]: float(sample.value)
-        for family in text_string_to_metric_families(exposition)
-        for sample in family.samples
-        if sample.name == "flakegraph_sidecar_requests_in_flight"
-    }
-
-
 def test_batch_key_cannot_forge_the_interactive_band() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         response = client.post(
             "/v1/chat/completions",
@@ -93,7 +35,7 @@ def test_batch_key_cannot_forge_the_interactive_band() -> None:
 
 
 def test_each_class_is_stamped_with_its_own_band() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         for key, expected in (("sk-chat", 0), ("sk-tool", 10), ("sk-pipeline", 100)):
             client.post(
@@ -105,7 +47,7 @@ def test_each_class_is_stamped_with_its_own_band() -> None:
 
 
 def test_priority_headers_never_reach_the_engine() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         client.post(
             "/v1/completions",
@@ -119,7 +61,7 @@ def test_priority_headers_never_reach_the_engine() -> None:
 
 
 def test_priority_is_stripped_even_on_paths_that_are_not_stamped() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         client.post(
             "/tokenize",
@@ -131,7 +73,7 @@ def test_priority_is_stripped_even_on_paths_that_are_not_stamped() -> None:
 
 
 def test_an_unknown_key_is_rejected_before_the_engine_is_touched() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         response = client.post(
             "/v1/chat/completions",
@@ -144,14 +86,14 @@ def test_an_unknown_key_is_rejected_before_the_engine_is_touched() -> None:
 
 
 def test_a_missing_credential_is_rejected() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         assert client.post("/v1/chat/completions", json={}).status_code == 401
         assert client.get("/v1/models").status_code == 401
 
 
 def test_an_unknown_class_receives_the_band_served_last() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     keyring = ConsumerKeyring(
         bands={"interactive": 0, "batch": 100},
         keys={"sk-mystery": "reporting"},
@@ -172,7 +114,7 @@ def test_an_unknown_class_receives_the_band_served_last() -> None:
 
 
 def test_probe_and_scoring_paths_stay_reachable_without_a_key() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         assert client.get("/health").status_code == 200
         assert client.get("/metrics").status_code == 200
@@ -184,7 +126,7 @@ def test_probe_and_scoring_paths_stay_reachable_without_a_key() -> None:
 
 
 def test_adapter_management_is_refused_outright() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         response = client.post(
             "/load_lora_adapter",
@@ -248,7 +190,7 @@ def test_a_cold_engine_reads_as_not_ready_rather_than_crashing() -> None:
 
 
 def test_query_parameters_and_method_survive_the_hop() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         client.get("/v1/models", params={"limit": "5"}, headers={"Authorization": "Bearer sk-chat"})
 
@@ -301,7 +243,7 @@ def test_sizing_inputs_must_be_configured_as_a_pair() -> None:
 
 
 def test_an_authenticated_completion_is_counted_under_its_class_and_route() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         client.post(
             "/v1/chat/completions",
@@ -310,30 +252,19 @@ def test_an_authenticated_completion_is_counted_under_its_class_and_route() -> N
         )
         exposition = client.get("/metrics").text
 
-    assert (
-        _sample(
-            exposition,
-            "flakegraph_sidecar_requests_total",
-            consumer_class="interactive",
-            route="chat_completions",
-            status="200",
-        )
-        == 1
-    )
-    assert (
-        _sample(
-            exposition,
-            "flakegraph_sidecar_request_duration_seconds_count",
-            consumer_class="interactive",
-            route="chat_completions",
-        )
-        == 1
-    )
-    assert _in_flight(exposition) == {"interactive": 0}
+    assert samples(exposition, "flakegraph_sidecar_requests_total") == {
+        (("consumer_class", "interactive"), ("route", "chat_completions"), ("status", "200")): 1
+    }
+    assert samples(exposition, "flakegraph_sidecar_request_duration_seconds_count") == {
+        (("consumer_class", "interactive"), ("route", "chat_completions")): 1
+    }
+    assert samples(exposition, "flakegraph_sidecar_requests_in_flight") == {
+        (("consumer_class", "interactive"),): 0
+    }
 
 
 def test_a_request_without_a_usable_key_is_counted_as_unauthenticated() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         client.post(
             "/v1/embeddings",
@@ -342,22 +273,15 @@ def test_a_request_without_a_usable_key_is_counted_as_unauthenticated() -> None:
         )
         exposition = client.get("/metrics").text
 
-    assert (
-        _sample(
-            exposition,
-            "flakegraph_sidecar_requests_total",
-            consumer_class="unauthenticated",
-            route="embeddings",
-            status="401",
-        )
-        == 1
-    )
+    assert samples(exposition, "flakegraph_sidecar_requests_total") == {
+        (("consumer_class", "unauthenticated"), ("route", "embeddings"), ("status", "401")): 1
+    }
     # A key is never a label: the only series minted is the one shared class.
     assert "sk-not-issued" not in exposition
 
 
 def test_the_stamped_band_is_counted_per_class() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         for _ in range(2):
             client.post(
@@ -368,15 +292,9 @@ def test_the_stamped_band_is_counted_per_class() -> None:
         client.get("/v1/models", headers={"Authorization": "Bearer sk-pipeline"})
         exposition = client.get("/metrics").text
 
-    assert (
-        _sample(
-            exposition,
-            "flakegraph_sidecar_priority_stamped_total",
-            consumer_class="batch",
-            priority="100",
-        )
-        == 2
-    )
+    assert samples(exposition, "flakegraph_sidecar_priority_stamped_total") == {
+        (("consumer_class", "batch"), ("priority", "100")): 2
+    }
 
 
 def test_a_streamed_completion_is_measured_once_when_its_stream_ends() -> None:
@@ -384,7 +302,7 @@ def test_a_streamed_completion_is_measured_once_when_its_stream_ends() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/metrics":
-            return _stub(b"", "text/plain")
+            return stub(b"", "text/plain")
         return httpx.Response(
             200,
             headers={"content-type": "text/event-stream"},
@@ -406,20 +324,16 @@ def test_a_streamed_completion_is_measured_once_when_its_stream_ends() -> None:
             assert b"".join(response.iter_bytes()) == b"".join(chunks)
         exposition = client.get("/metrics").text
 
-    assert (
-        _sample(
-            exposition,
-            "flakegraph_sidecar_request_duration_seconds_count",
-            consumer_class="interactive",
-            route="chat_completions",
-        )
-        == 1
-    )
-    assert _in_flight(exposition) == {"interactive": 0}
+    assert samples(exposition, "flakegraph_sidecar_request_duration_seconds_count") == {
+        (("consumer_class", "interactive"), ("route", "chat_completions")): 1
+    }
+    assert samples(exposition, "flakegraph_sidecar_requests_in_flight") == {
+        (("consumer_class", "interactive"),): 0
+    }
 
 
 def test_a_scrape_relays_the_engines_series_ahead_of_the_sidecars_own() -> None:
-    upstream = _Upstream()
+    upstream = RecordingUpstream()
     with _client(upstream) as client:
         response = client.get("/metrics")
 
@@ -428,14 +342,9 @@ def test_a_scrape_relays_the_engines_series_ahead_of_the_sidecars_own() -> None:
     families = {family.name for family in text_string_to_metric_families(response.text)}
     assert "vllm:num_preemptions_total" in families
     assert "flakegraph_sidecar_requests" in families
-    assert (
-        _sample(
-            response.text,
-            "flakegraph_sidecar_build_info",
-            version=kg_processor.__version__,
-        )
-        == 1
-    )
+    assert samples(response.text, "flakegraph_sidecar_build_info") == {
+        (("version", kg_processor.__version__),): 1
+    }
     assert response.text.index("vllm:") < response.text.index("flakegraph_sidecar_")
 
 
@@ -460,7 +369,7 @@ def test_a_scrape_still_answers_when_the_engine_cannot_be_reached() -> None:
 def test_an_engine_that_times_out_leaves_nothing_in_flight() -> None:
     def hang(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/metrics":
-            return _stub(b"", "text/plain")
+            return stub(b"", "text/plain")
         raise httpx.ReadTimeout("timed out", request=request)
 
     app = create_app(
@@ -477,14 +386,9 @@ def test_an_engine_that_times_out_leaves_nothing_in_flight() -> None:
         exposition = client.get("/metrics").text
 
     assert status == 500
-    assert (
-        _sample(
-            exposition,
-            "flakegraph_sidecar_requests_total",
-            consumer_class="interactive",
-            route="chat_completions",
-            status="500",
-        )
-        == 1
-    )
-    assert _in_flight(exposition) == {"interactive": 0}
+    assert samples(exposition, "flakegraph_sidecar_requests_total") == {
+        (("consumer_class", "interactive"), ("route", "chat_completions"), ("status", "500")): 1
+    }
+    assert samples(exposition, "flakegraph_sidecar_requests_in_flight") == {
+        (("consumer_class", "interactive"),): 0
+    }

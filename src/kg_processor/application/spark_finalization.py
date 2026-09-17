@@ -2641,19 +2641,13 @@ def _normalized_relation_type(value: Column) -> Column:
     return F.udf(_normalized_relation_type_value, "string", useArrow=True)(value)
 
 
-def _observation_weight_value(confidence: float | None) -> float:
-    """Derive one relation observation's weight from its grounded confidence.
+def _observation_weight(confidence: Column) -> Column:
+    """Return the per-observation edge weight contributed by one relation row.
 
     Distributed stage artifacts persist confidence rather than the weight
     extraction derives from it, so that derivation is repeated here. The floor
     keeps a low-confidence assertion contributing measurable support.
     """
-
-    return max(_MIN_OBSERVATION_WEIGHT, confidence or 0.0)
-
-
-def _observation_weight(confidence: Column) -> Column:
-    """Return the per-observation edge weight contributed by one relation row."""
 
     from pyspark.sql import functions as F
 

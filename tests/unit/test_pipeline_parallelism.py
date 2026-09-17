@@ -62,28 +62,7 @@ def test_document_context_calls_run_concurrently_and_return_in_source_order(
 ) -> None:
     """Parallelize independent prefixes without making persisted order nondeterministic."""
 
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    settings = Settings.load(
-        overrides={
-            "job": {"job_id": "parallel-context", "graph_id": "graph"},
-            "files": {"input_path": input_dir},
-            "ocr": {"provider": "builtin_text"},
-            "llm": {"provider": "fake", "model": "fake"},
-            "embedding": {"provider": "hash", "dimension": 16},
-            "ontology": {"profile_path": "data/deep_learning_papers/ontology.yaml"},
-            "graph": {"extraction_parallelism": 3},
-            "writer": {"provider": "local_artifacts", "output_path": tmp_path / "out"},
-        }
-    )
-    pipeline = KgProcessorPipeline(
-        settings=settings,
-        file_source=build_file_source(settings),
-        ocr=build_ocr_provider(settings),
-        llm=build_llm_provider(settings),
-        embeddings=build_embedding_provider(settings),
-        writer=build_writer(settings),
-    )
+    pipeline = _context_pipeline(tmp_path, "parallel-context")
     chunks = [_context_chunk(index) for index in range(3)]
     all_started = Event()
     state_lock = Lock()
@@ -140,28 +119,7 @@ def test_all_document_context_failures_are_reported_as_degraded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    settings = Settings.load(
-        overrides={
-            "job": {"job_id": "failed-context", "graph_id": "graph"},
-            "files": {"input_path": input_dir},
-            "ocr": {"provider": "builtin_text"},
-            "llm": {"provider": "fake", "model": "fake"},
-            "embedding": {"provider": "hash", "dimension": 16},
-            "ontology": {"profile_path": "data/deep_learning_papers/ontology.yaml"},
-            "graph": {"extraction_parallelism": 3},
-            "writer": {"provider": "local_artifacts", "output_path": tmp_path / "out"},
-        }
-    )
-    pipeline = KgProcessorPipeline(
-        settings=settings,
-        file_source=build_file_source(settings),
-        ocr=build_ocr_provider(settings),
-        llm=build_llm_provider(settings),
-        embeddings=build_embedding_provider(settings),
-        writer=build_writer(settings),
-    )
+    pipeline = _context_pipeline(tmp_path, "failed-context")
 
     def fail_context(*_args: object, **_kwargs: object) -> EntityExtractionOutcome:
         raise ValueError("malformed optional context response")
@@ -185,6 +143,33 @@ def test_all_document_context_failures_are_reported_as_degraded(
         "failed_windows": 3,
         "entities": 0,
     }
+
+
+def _context_pipeline(tmp_path: Path, job_id: str) -> KgProcessorPipeline:
+    """Build a pipeline whose document-context extraction runs three windows at once."""
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    settings = Settings.load(
+        overrides={
+            "job": {"job_id": job_id, "graph_id": "graph"},
+            "files": {"input_path": input_dir},
+            "ocr": {"provider": "builtin_text"},
+            "llm": {"provider": "fake", "model": "fake"},
+            "embedding": {"provider": "hash", "dimension": 16},
+            "ontology": {"profile_path": "data/deep_learning_papers/ontology.yaml"},
+            "graph": {"extraction_parallelism": 3},
+            "writer": {"provider": "local_artifacts", "output_path": tmp_path / "out"},
+        }
+    )
+    return KgProcessorPipeline(
+        settings=settings,
+        file_source=build_file_source(settings),
+        ocr=build_ocr_provider(settings),
+        llm=build_llm_provider(settings),
+        embeddings=build_embedding_provider(settings),
+        writer=build_writer(settings),
+    )
 
 
 def _context_chunk(index: int) -> Chunk:
