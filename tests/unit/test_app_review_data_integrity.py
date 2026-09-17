@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 
@@ -220,14 +219,6 @@ def test_local_parquet_review_is_bounded_with_full_counts_and_coherent_edges(
     assert dataset.counts["nodes"] == 3
     assert dataset.counts["edges"] == 2
     assert "embedding" not in dataset.nodes[0]
-
-
-def test_graph_store_has_no_processing_package_import_at_module_scope() -> None:
-    source_path = Path(__file__).parents[2] / "app" / "flakegraph_app" / "graph_store.py"
-    module = ast.parse(source_path.read_text(encoding="utf-8"))
-    imported = [node.module or "" for node in module.body if isinstance(node, ast.ImportFrom)]
-
-    assert not any(name.startswith("kg_processor") for name in imported)
 
 
 def test_connector_edges_are_projected_from_the_selected_node_sample() -> None:

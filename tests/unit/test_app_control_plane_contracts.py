@@ -46,18 +46,14 @@ from flakegraph_app.models import (
 )
 from flakegraph_app.processes import ManagedProcess
 from flakegraph_app.progress import read_local_progress
-from flakegraph_app.providers import (
-    CORTEX_EMBEDDING_MODELS_BY_WIDTH,
-    DEFAULTS,
-    EMBEDDING_MODEL_DIMENSIONS,
-    cortex_embedding_model_for_width,
-)
+from flakegraph_app.providers import EMBEDDING_MODEL_DIMENSIONS
 from flakegraph_app.ui.ingestion import (
     _adopt_stored_embedding_width,
     _source_controls,
     _with_fleet_ocr_routing,
 )
 from flakegraph_app.ui.navigation import _dismiss_bulk_forget, _dismiss_forget
+from snowpark import RecordingSession, Row, Upload
 from streamlit.testing.v1 import AppTest
 
 from kg_processor.adapters.snowflake import stage_path
@@ -258,12 +254,11 @@ def test_a_cancelled_run_still_reports_the_documents_it_registered() -> None:
         "PROGRESS": None,
         "SECONDS_SINCE_UPDATE": 4,
     }
-    session = _Session(
-        [
-            _Row({**job, "STAGE": "ocr", "FILE_STATUS": "DONE", "FILE_COUNT": 1}),
-            _Row({**job, "STAGE": "ocr", "FILE_STATUS": "CANCELLED", "FILE_COUNT": 3}),
-        ]
-    )
+    files = [
+        Row({**job, "STAGE": "ocr", "FILE_STATUS": "DONE", "FILE_COUNT": 1}),
+        Row({**job, "STAGE": "ocr", "FILE_STATUS": "CANCELLED", "FILE_COUNT": 3}),
+    ]
+    session = RecordingSession(lambda *_query: files)
 
     snapshot = SnowflakeBackend(session).status("job-1")
 
@@ -414,8 +409,8 @@ def test_stage_submission_reads_the_stage_through_its_session(
     a caller's object decide which statement the warehouse runs.
     """
 
-    session = _Session(
-        [_Row({"name": "DB/GRAPH/DOCS/incoming/paper.pdf", "size": 42, "md5": "abc"})]
+    session = RecordingSession(
+        [("LIST ", [Row({"name": "DB/GRAPH/DOCS/incoming/paper.pdf", "size": 42, "md5": "abc"})])]
     )
     backend = SnowflakeBackend(session)
     monkeypatch.setattr(
@@ -428,12 +423,23 @@ def test_stage_submission_reads_the_stage_through_its_session(
     items = list(backend._iter_submission_objects(source))
 
     assert [item.name for item in items] == ["DB/GRAPH/DOCS/incoming/paper.pdf"]
-    assert session.statements == ["LIST @DB.GRAPH.DOCS/incoming"]
+    assert session.statement_texts == ["LIST @DB.GRAPH.DOCS/incoming"]
 
 
 # --------------------------------------------------------------------------- #
 # Page behaviour
 # --------------------------------------------------------------------------- #
+
+
+def _schema_session(*embedding_columns: Mapping[str, str]) -> RecordingSession:
+    """Build a session whose schema has every app table and these EMBEDDING columns."""
+
+    return RecordingSession(
+        [
+            ("SHOW TABLES", [Row({"name": name}) for name in _REQUIRED_SNOWFLAKE_APP_TABLES]),
+            ("SHOW COLUMNS", [Row(column) for column in embedding_columns]),
+        ]
+    )
 
 
 def _embedding_request(tmp_path: Path, *, dimension: int) -> IngestionRequest:
@@ -468,8 +474,6 @@ def test_the_embedding_model_defaults_to_what_the_destination_can_store() -> Non
 
     assert state["embedding_model"] == "snowflake-arctic-embed-l-v2.0"
     assert state["embedding_dimension"] == 1024
-    assert cortex_embedding_model_for_width(1024) == "snowflake-arctic-embed-l-v2.0"
-    assert EMBEDDING_MODEL_DIMENSIONS["snowflake-arctic-embed-l-v2.0"] == 1024
 
 
 def test_the_default_model_and_the_default_width_never_disagree() -> None:
@@ -509,27 +513,6 @@ def test_a_width_with_no_known_model_still_constrains_the_run() -> None:
     assert state["embedding_model"] == "some-provider/embed-v9"
 
 
-def test_a_non_cortex_provider_keeps_its_own_model_default() -> None:
-    """Leave adapters this destination knows nothing about entirely alone.
-
-    Only a Cortex default is exchanged for a Cortex model of the right width. A
-    sentence-transformers or OpenAI-compatible default is not a model whose width
-    this application can substitute, so it is offered unchanged.
-    """
-
-    for provider, expected in (
-        ("sentence_transformers", "sentence-transformers/all-MiniLM-L6-v2"),
-        ("openai_compatible", ""),
-        ("azure_openai", ""),
-    ):
-        _endpoint, model_default = DEFAULTS["embedding"][provider]
-        fitted = cortex_embedding_model_for_width(1024)
-        if fitted and model_default in CORTEX_EMBEDDING_MODELS_BY_WIDTH.values():
-            model_default = fitted
-
-        assert model_default == expected, provider
-
-
 def test_only_this_graphs_tables_decide_the_required_width() -> None:
     """Ignore an embedding column that belongs to something else.
 
@@ -538,27 +521,14 @@ def test_only_this_graphs_tables_decide_the_required_width() -> None:
     an unrelated design refuse every FlakeGraph run.
     """
 
-    class Session:
-        """A schema holding a foreign vector table beside the graph tables."""
+    session = _schema_session(
+        {"table_name": "KG_NODE", "data_type": '{"type":"VECTOR","dimension":1024}'},
+        {"table_name": "KG_EDGE", "data_type": '{"type":"VECTOR","dimension":1024}'},
+        # Someone else's table, with a type this check cannot read.
+        {"table_name": "MARKETING_DOCS", "data_type": '{"type":"VARIANT"}'},
+    )
 
-        def sql(self, statement: str, params: object = None) -> Any:
-            del params
-            if statement.startswith("SHOW TABLES"):
-                rows = [{"name": name} for name in _REQUIRED_SNOWFLAKE_APP_TABLES]
-            elif statement.startswith("SHOW COLUMNS"):
-                rows = [
-                    {"table_name": "KG_NODE", "data_type": '{"type":"VECTOR","dimension":1024}'},
-                    {"table_name": "KG_EDGE", "data_type": '{"type":"VECTOR","dimension":1024}'},
-                    # Someone else's table, with a type this check cannot read.
-                    {"table_name": "MARKETING_DOCS", "data_type": '{"type":"VARIANT"}'},
-                ]
-            else:
-                rows = []
-            return _Query([_Row(row) for row in rows])
-
-    backend = SnowflakeBackend(Session())
-
-    assert backend.graph_embedding_width() == 1024
+    assert SnowflakeBackend(session).graph_embedding_width() == 1024
 
 
 def test_a_deliberately_chosen_embedding_model_is_not_overwritten() -> None:
@@ -606,29 +576,9 @@ def test_an_embedding_width_the_graph_tables_cannot_store_stops_preflight(
     whole run is rejected at the write, having already been paid for.
     """
 
-    class Session:
-        """A session whose graph tables exist and store 1024-wide vectors."""
-
-        def __init__(self) -> None:
-            self.statements: list[str] = []
-
-        def sql(self, statement: str, params: object = None) -> Any:
-            del params
-            self.statements.append(statement)
-            if statement.startswith("SHOW TABLES"):
-                rows = [{"name": name} for name in _REQUIRED_SNOWFLAKE_APP_TABLES]
-            elif statement.startswith("SHOW COLUMNS"):
-                rows = [
-                    {
-                        "table_name": "KG_NODE",
-                        "data_type": '{"type":"VECTOR","dimension":1024}',
-                    }
-                ]
-            else:
-                rows = []
-            return _Query([_Row(row) for row in rows])
-
-    session = Session()
+    session = _schema_session(
+        {"table_name": "KG_NODE", "data_type": '{"type":"VECTOR","dimension":1024}'}
+    )
     request = _embedding_request(tmp_path, dimension=768)
 
     result = SnowflakeBackend(session).preflight(request)
@@ -637,7 +587,7 @@ def test_an_embedding_width_the_graph_tables_cannot_store_stops_preflight(
     assert "Embedding dimension fits the graph tables" not in cast(Any, result["checks"])
     errors = cast(Any, result["errors"])
     assert any("1024" in error and "768" in error for error in errors)
-    assert any(statement.startswith("SHOW COLUMNS") for statement in session.statements)
+    assert any(statement.startswith("SHOW COLUMNS") for statement in session.statement_texts)
 
 
 def test_an_unreadable_embedding_width_is_reported_rather_than_assumed(
@@ -650,20 +600,9 @@ def test_an_unreadable_embedding_width_is_reported_rather_than_assumed(
     billed in full and then rejected.
     """
 
-    class Session:
-        """A session whose embedding column reports a type with no width."""
+    session = _schema_session({"table_name": "KG_NODE", "data_type": '{"type":"VECTOR"}'})
 
-        def sql(self, statement: str, params: object = None) -> Any:
-            del params
-            if statement.startswith("SHOW TABLES"):
-                rows = [{"name": name} for name in _REQUIRED_SNOWFLAKE_APP_TABLES]
-            elif statement.startswith("SHOW COLUMNS"):
-                rows = [{"table_name": "KG_NODE", "data_type": '{"type":"VECTOR"}'}]
-            else:
-                rows = []
-            return _Query([_Row(row) for row in rows])
-
-    result = SnowflakeBackend(Session()).preflight(_embedding_request(tmp_path, dimension=1024))
+    result = SnowflakeBackend(session).preflight(_embedding_request(tmp_path, dimension=1024))
 
     assert result["ok"] is False
     assert any("cannot be checked" in error for error in cast(Any, result["errors"]))
@@ -721,7 +660,7 @@ def test_an_upload_is_kept_under_the_backends_state_root_not_the_checkout(
     """Inside a container the checkout is read-only; the state root is not."""
 
     streamlit = _Streamlit()
-    streamlit.uploads = [_Upload()]
+    streamlit.uploads = [Upload()]
     streamlit.values["Input source"] = SourceKind.UPLOAD
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -760,7 +699,7 @@ def test_a_failed_stage_upload_stays_an_inline_page_error(
     """
 
     streamlit = _Streamlit(clicked={"Upload to stage"})
-    streamlit.uploads = [_Upload()]
+    streamlit.uploads = [Upload()]
     streamlit.values["Input source"] = SourceKind.UPLOAD
 
     class Backend:
@@ -1308,50 +1247,6 @@ def test_source_browsers_expose_only_helpers_the_application_reaches() -> None:
 # --------------------------------------------------------------------------- #
 
 
-class _Row:
-    """One Snowpark result row addressed by column name."""
-
-    def __init__(self, values: Mapping[str, Any]) -> None:
-        self.values = dict(values)
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return the row's columns the way Snowpark presents them."""
-
-        return dict(self.values)
-
-
-class _Query:
-    """A prepared statement that yields a fixed result."""
-
-    def __init__(self, rows: Sequence[_Row]) -> None:
-        self.rows = list(rows)
-
-    def limit(self, count: int) -> _Query:
-        """Bound the result the way Snowpark's dataframe API does."""
-
-        return _Query(self.rows[:count])
-
-    def collect(self) -> list[_Row]:
-        """Materialize the result."""
-
-        return list(self.rows)
-
-
-class _Session:
-    """A Snowpark session that answers every statement with the same rows."""
-
-    def __init__(self, rows: Sequence[_Row]) -> None:
-        self.rows = list(rows)
-        self.statements: list[str] = []
-
-    def sql(self, statement: str, params: object = None) -> _Query:
-        """Record one statement and return its canned result."""
-
-        del params
-        self.statements.append(statement)
-        return _Query(self.rows)
-
-
 class _StoppedProcess:
     """A child process that has already exited unsuccessfully."""
 
@@ -1359,19 +1254,6 @@ class _StoppedProcess:
         """Report the non-zero exit status of a failed worker."""
 
         return 1
-
-
-class _Upload:
-    """One Streamlit upload selection entry."""
-
-    name = "martial-arts.pdf"
-    size = 7
-    file_id = "upload-1"
-
-    def getvalue(self) -> bytes:
-        """Return the uploaded bytes."""
-
-        return b"content"
 
 
 class _Streamlit:

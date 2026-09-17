@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import flakegraph_app.backends.snowflake as snowflake_app
 import pytest
@@ -18,6 +17,7 @@ from flakegraph_app.models import (
     SourceKind,
     StorageKind,
 )
+from snowpark import RecordingSession, Row, SubmissionSession
 
 from kg_processor.adapters.jobs.snowflake import (
     build_complete_job_if_file_queue_drained_statement,
@@ -66,7 +66,9 @@ def test_app_submission_streams_bounded_batches(
             service_identifier="DB.GRAPH.FLAKEGRAPH_APP_TEST",
         ),
     )
-    session = _SubmissionSession(5)
+    session = SubmissionSession(
+        [Row({"name": f"DB/GRAPH/DOCS/file-{index}.pdf", "size": 10}) for index in range(5)]
+    )
     backend = SnowflakeBackend(session)
     expected = RunSnapshot("job-1", "graph-1", "pending", None, None)
     monkeypatch.setattr(backend, "status", lambda *_args, **_kwargs: expected)
@@ -75,7 +77,7 @@ def test_app_submission_streams_bounded_batches(
 
     assert result == expected
     assert session.batch_sizes == [2, 2, 1]
-    assert session.list_queries == 1
+    assert session.statement_texts.count("LIST @DB.GRAPH.DOCS/incoming") == 1
 
 
 def test_app_cancel_marks_parent_terminal_before_claims(
@@ -83,7 +85,7 @@ def test_app_cancel_marks_parent_terminal_before_claims(
 ) -> None:
     """A concurrent queue-drain completion sees CANCELLED before file leases change."""
 
-    session = _RecordingSession()
+    session = RecordingSession()
     backend = SnowflakeBackend(session)
     monkeypatch.setattr(
         backend,
@@ -93,133 +95,34 @@ def test_app_cancel_marks_parent_terminal_before_claims(
 
     backend.cancel("job-1")
 
-    updates = [sql for sql in session.sql_calls if sql.startswith("UPDATE KG_JOB")]
+    updates = [sql for sql in session.statement_texts if sql.startswith("UPDATE KG_JOB")]
     assert updates[0].startswith("UPDATE KG_JOB SET STATUS = 'CANCELLED'")
     assert "STATUS IN ('QUEUED', 'CLAIMED')" in updates[1]
     # Cancelling is the owner's to do, so authorisation precedes both writes.
-    assert session.sql_calls.index(updates[0]) > 0
+    assert session.statement_texts.index(updates[0]) > 0
 
 
 def test_native_edge_projection_selects_only_endpoints_in_review_nodes() -> None:
     """Edges and nodes come from one coherent native Snowflake projection."""
 
-    session = _GraphSession()
+    # The count union and the edge projection both quote the node query, so
+    # they are answered before it.
+    session = RecordingSession(
+        [
+            ("UNION ALL", []),
+            (
+                "WITH REVIEW_NODES",
+                [Row({"ID": "edge-1", "SOURCE_NODE_ID": "node-1", "TARGET_NODE_ID": "node-2"})],
+            ),
+            ("FROM KG_NODE WHERE", [Row({"ID": "node-1"}), Row({"ID": "node-2"})]),
+        ]
+    )
     graph = SnowflakeBackend(session).load_graph("current", "graph-1")
 
-    edge_query = next(sql for sql in session.sql_calls if "WITH REVIEW_NODES" in sql)
+    edge_query = next(sql for sql in session.statement_texts if "WITH REVIEW_NODES" in sql)
     assert "SOURCE.ID = E.SOURCE_NODE_ID" in edge_query
     assert "TARGET.ID = E.TARGET_NODE_ID" in edge_query
     assert graph.edges == [{"id": "edge-1", "source_node_id": "node-1", "target_node_id": "node-2"}]
-
-
-class _Row:
-    def __init__(self, values: dict[str, object]) -> None:
-        self.values = values
-
-    def as_dict(self) -> dict[str, object]:
-        return self.values
-
-
-class _Query:
-    def __init__(self, rows: list[_Row]) -> None:
-        self.rows = rows
-
-    def collect(self) -> list[_Row]:
-        return self.rows
-
-    def to_local_iterator(self) -> Any:
-        return iter(self.rows)
-
-
-class _Writer:
-    def __init__(self, session: _SubmissionSession, rows: list[tuple[str, ...]]) -> None:
-        self.session = session
-        self.rows = rows
-
-    def mode(self, mode: str) -> _Writer:
-        assert mode == "overwrite"
-        return self
-
-    def save_as_table(self, _name: str, *, table_type: str) -> None:
-        # Stored procedures reject temporary tables; transient works in both contexts.
-        assert table_type == "transient"
-        self.session.batch_sizes.append(len(self.rows))
-
-
-class _Frame:
-    def __init__(self, writer: _Writer) -> None:
-        self.write = writer
-
-
-class _FileApi:
-    def put_stream(self, *_args: object, **_kwargs: object) -> object:
-        return SimpleNamespace(status="UPLOADED")
-
-
-class _SubmissionSession:
-    def __init__(self, object_count: int) -> None:
-        self.object_count = object_count
-        self.batch_sizes: list[int] = []
-        self.list_queries = 0
-        self.file = _FileApi()
-
-    def sql(self, sql: str, params: object = None) -> _Query:
-        del params
-        if sql.startswith("LIST "):
-            self.list_queries += 1
-            return _Query(
-                [
-                    _Row(
-                        {
-                            "name": f"DB/GRAPH/DOCS/file-{index}.pdf",
-                            "size": 10,
-                            "md5": f"checksum-{index}",
-                        }
-                    )
-                    for index in range(self.object_count)
-                ]
-            )
-        return _Query([])
-
-    def create_dataframe(self, rows: Any, schema: object) -> _Frame:
-        assert schema
-        values = list(rows)
-        return _Frame(_Writer(self, values))
-
-
-class _RecordingSession:
-    def __init__(self) -> None:
-        self.sql_calls: list[str] = []
-
-    def sql(self, sql: str, params: object = None) -> _Query:
-        del params
-        self.sql_calls.append(sql)
-        return _Query([])
-
-
-class _GraphSession(_RecordingSession):
-    def sql(self, sql: str, params: object = None) -> _Query:
-        del params
-        self.sql_calls.append(sql)
-        if "UNION ALL" in sql:
-            return _Query([])
-        if "FROM KG_NODE WHERE" in sql and "WITH REVIEW_NODES" not in sql:
-            return _Query([_Row({"ID": "node-1"}), _Row({"ID": "node-2"})])
-        if "WITH REVIEW_NODES" in sql:
-            return _Query(
-                [
-                    _Row(
-                        {
-                            "ID": "edge-1",
-                            "SOURCE_NODE_ID": "node-1",
-                            "TARGET_NODE_ID": "node-2",
-                        }
-                    )
-                ]
-            )
-        if "KG_RUN_REPORT" in sql:
-            return _Query([])
-        return _Query([])
 
 
 def _request(tmp_path: Path) -> IngestionRequest:

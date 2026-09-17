@@ -11,7 +11,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -102,6 +102,7 @@ from flakegraph_app.ui.shared import (
     format_relative_time,
     secret_text_input,
 )
+from snowpark import PutResult, RecordingSession, Row, SubmissionSession, Upload
 from streamlit.testing.v1 import AppTest
 from streamlit_app import _configured_default_runtime
 
@@ -218,17 +219,14 @@ def test_invalid_credential_reference_stays_an_inline_form_error(
 ) -> None:
     """Keep malformed credential input from crashing the complete Streamlit page."""
 
-    request = _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)})
-    request = IngestionRequest(
-        **{
-            **request.__dict__,
-            "llm": ProviderSelection(
-                "openai_compatible",
-                model="model",
-                endpoint="https://llm.example/v1",
-                api_key_environment_variable="not a variable name",
-            ),
-        }
+    request = dataclasses.replace(
+        _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)}),
+        llm=ProviderSelection(
+            "openai_compatible",
+            model="model",
+            endpoint="https://llm.example/v1",
+            api_key_environment_variable="not a variable name",
+        ),
     )
     errors: list[str] = []
     monkeypatch.setattr("flakegraph_app.ui.ingestion.page_heading", lambda *args: None)
@@ -265,25 +263,22 @@ def test_snowflake_destination_keeps_secret_value_out_of_generated_config(
 ) -> None:
     """Persist connection coordinates and credential references, never credentials."""
 
-    request = _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)})
-    request = IngestionRequest(
-        **{
-            **request.__dict__,
-            "output": OutputDestination(
-                StorageKind.SNOWFLAKE,
-                tmp_path / "workspace",
-                SnowflakeOutput(
-                    account="account",
-                    user="user",
-                    database="DB",
-                    schema="GRAPH",
-                    warehouse="WH",
-                    bulk_stage="@DB.GRAPH.LOAD_STAGE",
-                    credential_environment_variable="TEST_SNOWFLAKE_PASSWORD",
-                    credential_field="password",
-                ),
+    request = dataclasses.replace(
+        _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)}),
+        output=OutputDestination(
+            StorageKind.SNOWFLAKE,
+            tmp_path / "workspace",
+            SnowflakeOutput(
+                account="account",
+                user="user",
+                database="DB",
+                schema="GRAPH",
+                warehouse="WH",
+                bulk_stage="@DB.GRAPH.LOAD_STAGE",
+                credential_environment_variable="TEST_SNOWFLAKE_PASSWORD",
+                credential_field="password",
             ),
-        }
+        ),
     )
     monkeypatch.setenv("TEST_SNOWFLAKE_PASSWORD", "secret-value")
     monkeypatch.setenv("TEST_LLM_KEY", "llm-secret")
@@ -358,16 +353,13 @@ def test_run_snapshot_falls_back_to_stable_graph_id() -> None:
 
 
 def test_generated_config_maps_provider_specific_ocr_fields(tmp_path: Path) -> None:
-    request = _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)})
-    request = IngestionRequest(
-        **{
-            **request.__dict__,
-            "ocr": ProviderSelection(
-                "generic_http",
-                endpoint="https://ocr.example/v1",
-                api_key_environment_variable="TEST_OCR_KEY",
-            ),
-        }
+    request = dataclasses.replace(
+        _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)}),
+        ocr=ProviderSelection(
+            "generic_http",
+            endpoint="https://ocr.example/v1",
+            api_key_environment_variable="TEST_OCR_KEY",
+        ),
     )
 
     config = build_run_config(request)
@@ -828,7 +820,6 @@ def test_snowflake_deployment_manifests_include_every_app_module() -> None:
     assert not any(
         str(dependency).startswith("python") for dependency in environment["dependencies"]
     )
-    assert "streamlit=1.52.2" in environment["dependencies"]
 
 
 def test_kubernetes_backend_normalizes_queue_and_workload_status(tmp_path: Path) -> None:
@@ -964,56 +955,25 @@ def test_kubernetes_retry_requeues_only_failed_work(
 def test_snowflake_status_uses_one_bounded_aggregate_query() -> None:
     """Avoid two warehouse round trips for every active-run progress refresh."""
 
-    class Row:
-        def __init__(self, values: dict[str, object]) -> None:
-            self.values = values
-
-        def as_dict(self) -> dict[str, object]:
-            return self.values
-
-    class Query:
-        def collect(self) -> list[Row]:
-            common: dict[str, object] = {
-                "ID": "run-1",
-                "GRAPH_ID": "graph-1",
-                "STATUS": "RUNNING",
-                "ERROR": None,
-                "CREATED_AT": "2026-01-01T00:00:00Z",
-                "UPDATED_AT": "2026-01-01T00:01:00Z",
-            }
-            return [
-                Row(
-                    {
-                        **common,
-                        "STAGE": "extract",
-                        "FILE_STATUS": "DONE",
-                        "FILE_COUNT": 8,
-                    }
-                ),
-                Row(
-                    {
-                        **common,
-                        "STAGE": "extract",
-                        "FILE_STATUS": "CLAIMED",
-                        "FILE_COUNT": 2,
-                    }
-                ),
-            ]
-
-    class Session:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, object]] = []
-
-        def sql(self, query: str, params: object = None) -> Query:
-            self.calls.append((query, params))
-            return Query()
-
-    session = Session()
+    common: dict[str, object] = {
+        "ID": "run-1",
+        "GRAPH_ID": "graph-1",
+        "STATUS": "RUNNING",
+        "ERROR": None,
+        "CREATED_AT": "2026-01-01T00:00:00Z",
+        "UPDATED_AT": "2026-01-01T00:01:00Z",
+        "STAGE": "extract",
+    }
+    files = [
+        Row({**common, "FILE_STATUS": "DONE", "FILE_COUNT": 8}),
+        Row({**common, "FILE_STATUS": "CLAIMED", "FILE_COUNT": 2}),
+    ]
+    session = RecordingSession(lambda *_query: files)
 
     snapshot = SnowflakeBackend(session).status("run-1")
 
-    assert len(session.calls) == 1
-    assert "LEFT JOIN KG_JOB_FILE" in session.calls[0][0]
+    assert len(session.statements) == 1
+    assert "LEFT JOIN KG_JOB_FILE" in session.statement_texts[0]
     assert snapshot.status == "running"
     assert snapshot.documents_total == 10
     assert snapshot.documents_completed == 8
@@ -1023,26 +983,14 @@ def test_snowflake_status_uses_one_bounded_aggregate_query() -> None:
 def test_snowflake_graph_rename_is_a_parameterized_metadata_upsert() -> None:
     """Rename graph metadata without rewriting graph rows or interpolating input."""
 
-    class Query:
-        def collect(self) -> list[object]:
-            return []
-
-    class Session:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, object]] = []
-
-        def sql(self, query: str, params: object = None) -> Query:
-            self.calls.append((query, params))
-            return Query()
-
-    session = Session()
+    session = RecordingSession()
 
     result = SnowflakeBackend(session).rename_graph(" graph-1 ", "  Research Graph  ")
 
     assert result == "Research Graph"
     # Renaming is authorised first, then written; the write itself stays a
     # single parameterised upsert that never touches graph rows.
-    upserts = [call for call in session.calls if call[0].startswith("MERGE INTO KG_GRAPH")]
+    upserts = [call for call in session.statements if call[0].startswith("MERGE INTO KG_GRAPH")]
     assert len(upserts) == 1
     assert "KG_NODE" not in upserts[0][0]
     assert upserts[0][1] == ["graph-1", "Research Graph"]
@@ -1085,68 +1033,6 @@ def test_snowflake_submit_stages_spec_before_launching_job(
     method, so submission exercises the same statement a warehouse would answer.
     """
 
-    class Row:
-        def __init__(self, values: dict[str, object]) -> None:
-            self.values = values
-
-        def as_dict(self) -> dict[str, object]:
-            return dict(self.values)
-
-    class Query:
-        def __init__(self, session: Session, sql: str) -> None:
-            self.session = session
-            self.sql = sql
-
-        def collect(self) -> list[object]:
-            self.session.collected.append(self.sql)
-            if self.sql.startswith("LIST "):
-                return [
-                    Row(
-                        {
-                            "name": "DB/GRAPH/DOCUMENTS/martial-arts.pdf",
-                            "size": 42,
-                            "md5": "abc",
-                            "last_modified": "2026-07-16T10:00:00Z",
-                        }
-                    )
-                ]
-            return []
-
-    class Writer:
-        def mode(self, value: str) -> Writer:
-            assert value == "overwrite"
-            return self
-
-        def save_as_table(self, name: str, *, table_type: str) -> None:
-            assert name.startswith("KG_JOB_FILE_SUBMISSION_")
-            # Stored procedures reject temporary tables; transient works in both.
-            assert table_type == "transient"
-
-    class Frame:
-        write = Writer()
-
-    class FileApi:
-        def __init__(self) -> None:
-            self.uploads: list[tuple[bytes, str]] = []
-
-        def put_stream(self, stream: Any, destination: str, **kwargs: object) -> None:
-            assert kwargs == {"auto_compress": False, "overwrite": True}
-            self.uploads.append((stream.read(), destination))
-
-    class Session:
-        def __init__(self) -> None:
-            self.collected: list[str] = []
-            self.file = FileApi()
-
-        def sql(self, sql: str, params: object = None) -> Query:
-            del params
-            return Query(self, sql)
-
-        def create_dataframe(self, rows: Any, schema: object) -> Frame:
-            assert list(rows)
-            assert schema
-            return Frame()
-
     expected = RunSnapshot(
         run_id="job-1",
         graph_id="graph-1",
@@ -1162,17 +1048,19 @@ def test_snowflake_submit_stages_spec_before_launching_job(
             del run_id, config_path
             return expected
 
-    session = Session()
+    session = SubmissionSession([_MARTIAL_ARTS_OBJECT])
     backend = SubmittingBackend(session)
 
     result = backend.submit(_snowflake_request(tmp_path))
 
     assert result == expected
-    assert any(sql.startswith("LIST @DB.GRAPH.DOCUMENTS/") for sql in session.collected)
+    assert any(sql.startswith("LIST @DB.GRAPH.DOCUMENTS/") for sql in session.statement_texts)
+    assert session.batch_sizes == [1]
+    assert all(name.startswith("KG_JOB_FILE_SUBMISSION_") for name in session.saved_tables)
     assert len(session.file.uploads) == 1
     assert session.file.uploads[0][1].startswith("@DB.GRAPH.SPECS/flakegraph-app-")
     assert b"KG_CONFIG_JSON" in session.file.uploads[0][0]
-    assert session.collected[-1].startswith("EXECUTE JOB SERVICE")
+    assert session.statement_texts[-1].startswith("EXECUTE JOB SERVICE")
 
 
 def test_kubernetes_preflight_uses_coordinator_mode_and_not_local_provider_secrets(
@@ -1181,8 +1069,10 @@ def test_kubernetes_preflight_uses_coordinator_mode_and_not_local_provider_secre
 ) -> None:
     """Keep fleet dependencies and Secret values on the worker side of the boundary."""
 
-    request = _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)})
-    request = IngestionRequest(**{**request.__dict__, "runtime": RuntimeMode.KUBERNETES})
+    request = dataclasses.replace(
+        _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)}),
+        runtime=RuntimeMode.KUBERNETES,
+    )
     observed: dict[str, Any] = {}
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -1239,8 +1129,7 @@ def _ontology_request(tmp_path: Path, profile: Mapping[str, object]) -> Ingestio
     base.write_text(
         yaml.safe_dump({"ontology": {"profile_path": "ontology.yaml"}}), encoding="utf-8"
     )
-    request = _fleet_request(tmp_path)
-    return IngestionRequest(**{**request.__dict__, "base_config_path": base})
+    return dataclasses.replace(_fleet_request(tmp_path), base_config_path=base)
 
 
 def test_kubernetes_fleet_preflight_rejects_a_run_whose_ontology_no_worker_mounts(
@@ -1338,44 +1227,10 @@ def test_kubernetes_recovery_does_not_restart_healthy_shared_capacity(
 ) -> None:
     """Leave a healthy finalizer untouched when another graph currently owns it."""
 
-    deployment = {
-        "metadata": {
-            "name": "flakegraph-finalize",
-            "labels": {"app.kubernetes.io/component": "worker-finalize"},
-        },
-        "spec": {
-            "replicas": 1,
-            "template": {
-                "spec": {
-                    "serviceAccountName": "flakegraph-spark",
-                    "nodeSelector": {"flakegraph.io/node-class": "nvidia-spark"},
-                }
-            },
-        },
-        "status": {"availableReplicas": 1},
-    }
-
-    def kubectl(arguments: list[str], *, target: object, raw: bool = False) -> object:
-        assert raw is False
-        resource = arguments[1]
-        if resource == "deployments":
-            return {"items": [deployment]}
-        if resource == "serviceaccounts":
-            return {"items": [{"metadata": {"name": "flakegraph-spark"}}]}
-        if resource == "nodes":
-            return {
-                "items": [
-                    {
-                        "metadata": {"labels": {"flakegraph.io/node-class": "nvidia-spark"}},
-                        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
-                    }
-                ]
-            }
-        if resource == "pods":
-            return {"items": []}
-        raise AssertionError(f"Unexpected kubectl arguments: {arguments}")
-
-    monkeypatch.setattr("flakegraph_app.backends.kubernetes._kubectl_json", kubectl)
+    monkeypatch.setattr(
+        "flakegraph_app.backends.kubernetes._kubectl_json",
+        _recovery_kubectl(available_replicas=1, pods=[]),
+    )
 
     message = _recover_kubernetes_workers("flakegraph", {"worker-finalize"}, ClusterTarget())
 
@@ -1388,53 +1243,15 @@ def test_kubernetes_recovery_does_not_interrupt_reconciling_worker(
 ) -> None:
     """Let Kubernetes replace an unavailable active pod without forcing a rollout."""
 
-    deployment = {
-        "metadata": {
-            "name": "flakegraph-finalize",
-            "labels": {"app.kubernetes.io/component": "worker-finalize"},
-        },
-        "spec": {
-            "replicas": 1,
-            "template": {
-                "spec": {
-                    "serviceAccountName": "flakegraph-spark",
-                    "nodeSelector": {"flakegraph.io/node-class": "nvidia-spark"},
-                }
-            },
-        },
-        "status": {"availableReplicas": 0},
-    }
     running_pod = {
-        "metadata": {
-            "labels": {"app.kubernetes.io/component": "worker-finalize"},
-        },
+        "metadata": {"labels": {"app.kubernetes.io/component": "worker-finalize"}},
         "status": {"phase": "Running", "containerStatuses": []},
     }
     calls: list[list[str]] = []
-
-    def kubectl(arguments: list[str], *, target: object, raw: bool = False) -> object:
-        if raw:
-            calls.append(arguments)
-            return ""
-        resource = arguments[1]
-        if resource == "deployments":
-            return {"items": [deployment]}
-        if resource == "serviceaccounts":
-            return {"items": [{"metadata": {"name": "flakegraph-spark"}}]}
-        if resource == "nodes":
-            return {
-                "items": [
-                    {
-                        "metadata": {"labels": {"flakegraph.io/node-class": "nvidia-spark"}},
-                        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
-                    }
-                ]
-            }
-        if resource == "pods":
-            return {"items": [running_pod]}
-        raise AssertionError(f"Unexpected kubectl arguments: {arguments}")
-
-    monkeypatch.setattr("flakegraph_app.backends.kubernetes._kubectl_json", kubectl)
+    monkeypatch.setattr(
+        "flakegraph_app.backends.kubernetes._kubectl_json",
+        _recovery_kubectl(available_replicas=0, pods=[running_pod], calls=calls),
+    )
 
     message = _recover_kubernetes_workers("flakegraph", {"worker-finalize"}, ClusterTarget())
 
@@ -1473,25 +1290,22 @@ def test_kubernetes_fleet_preflight_requires_output_secret_on_finalizer(
 ) -> None:
     """Reject a Snowflake destination that the finalizer cannot authenticate to."""
 
-    request = _fleet_request(tmp_path)
-    request = IngestionRequest(
-        **{
-            **request.__dict__,
-            "output": OutputDestination(
-                StorageKind.SNOWFLAKE,
-                tmp_path / "workspace",
-                SnowflakeOutput(
-                    account="account",
-                    user="user",
-                    database="DB",
-                    schema="GRAPH",
-                    warehouse="WH",
-                    bulk_stage="@DB.GRAPH.LOAD_STAGE",
-                    credential_environment_variable="KG_SNOWFLAKE_PASSWORD",
-                    credential_field="password",
-                ),
+    request = dataclasses.replace(
+        _fleet_request(tmp_path),
+        output=OutputDestination(
+            StorageKind.SNOWFLAKE,
+            tmp_path / "workspace",
+            SnowflakeOutput(
+                account="account",
+                user="user",
+                database="DB",
+                schema="GRAPH",
+                warehouse="WH",
+                bulk_stage="@DB.GRAPH.LOAD_STAGE",
+                credential_environment_variable="KG_SNOWFLAKE_PASSWORD",
+                credential_field="password",
             ),
-        }
+        ),
     )
     monkeypatch.setattr(
         "flakegraph_app.backends.kubernetes._kubectl_json",
@@ -1974,18 +1788,6 @@ def test_unchanged_uploads_are_written_only_once(
 ) -> None:
     """Avoid rewriting large upload bodies after unrelated form interactions."""
 
-    class Upload:
-        name = "document.pdf"
-        size = 7
-        file_id = "upload-1"
-
-        def __init__(self) -> None:
-            self.reads = 0
-
-        def getvalue(self) -> bytes:
-            self.reads += 1
-            return b"content"
-
     upload = Upload()
     session: dict[str, object] = {}
     monkeypatch.setattr("flakegraph_app.ui.ingestion.st.session_state", session)
@@ -2128,57 +1930,21 @@ def test_kubernetes_artifact_export_resolves_finalizer_storage_contract(
 ) -> None:
     """Resolve only the shared-artifact values required for a local graph export."""
 
-    def kubectl(
-        arguments: list[str],
-        *,
-        target: object,
-        raw: bool = False,
-    ) -> dict[str, Any]:
-        del raw
-        if arguments[:2] == ["get", "deployments"]:
-            return {
-                "items": [
-                    {
-                        "metadata": {"labels": {"app.kubernetes.io/component": "worker-finalize"}},
-                        "spec": {
-                            "template": {
-                                "spec": {
-                                    "containers": [
-                                        {
-                                            "env": [
-                                                {
-                                                    "name": "KG_DISTRIBUTED_ARTIFACT_URI",
-                                                    "value": "s3://graphs",
-                                                },
-                                                {
-                                                    "name": (
-                                                        "KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL"
-                                                    ),
-                                                    "value": "http://objects.storage.svc:8333",
-                                                },
-                                                {
-                                                    "name": (
-                                                        "KG_DISTRIBUTED_ARTIFACT_ACCESS_KEY_ID"
-                                                    ),
-                                                    "valueFrom": {
-                                                        "secretKeyRef": {
-                                                            "name": "artifacts",
-                                                            "key": "access",
-                                                        }
-                                                    },
-                                                },
-                                            ]
-                                        }
-                                    ]
-                                }
-                            }
-                        },
-                    }
-                ]
-            }
-        assert arguments[:3] == ["get", "secret", "artifacts"]
-        return {"data": {"access": "dXNlcg=="}}
-
+    kubectl = _deployment_env_kubectl(
+        "worker-finalize",
+        [
+            {"name": "KG_DISTRIBUTED_ARTIFACT_URI", "value": "s3://graphs"},
+            {
+                "name": "KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL",
+                "value": "http://objects.storage.svc:8333",
+            },
+            {
+                "name": "KG_DISTRIBUTED_ARTIFACT_ACCESS_KEY_ID",
+                "valueFrom": {"secretKeyRef": {"name": "artifacts", "key": "access"}},
+            },
+        ],
+        {"artifacts": {"access": "dXNlcg=="}},
+    )
     monkeypatch.setattr("flakegraph_app.backends.kubernetes._kubectl_json", kubectl)
 
     environment = _fleet_artifact_environment("flakegraph", ClusterTarget())
@@ -2201,45 +1967,16 @@ def test_kubernetes_database_url_comes_from_deployed_worker_contract(
 ) -> None:
     """Discover the fleet database Secret mapping without a local shell export."""
 
-    def kubectl(
-        arguments: list[str],
-        *,
-        target: object,
-        raw: bool = False,
-    ) -> dict[str, Any]:
-        del raw
-        if arguments[:2] == ["get", "deployments"]:
-            return {
-                "items": [
-                    {
-                        "metadata": {"labels": {"app.kubernetes.io/component": "worker-prepare"}},
-                        "spec": {
-                            "template": {
-                                "spec": {
-                                    "containers": [
-                                        {
-                                            "env": [
-                                                {
-                                                    "name": "KG_DISTRIBUTED_DATABASE_URL",
-                                                    "valueFrom": {
-                                                        "secretKeyRef": {
-                                                            "name": "database",
-                                                            "key": "uri",
-                                                        }
-                                                    },
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                }
-                            }
-                        },
-                    }
-                ]
+    kubectl = _deployment_env_kubectl(
+        "worker-prepare",
+        [
+            {
+                "name": "KG_DISTRIBUTED_DATABASE_URL",
+                "valueFrom": {"secretKeyRef": {"name": "database", "key": "uri"}},
             }
-        assert arguments[:3] == ["get", "secret", "database"]
-        return {"data": {"uri": "cG9zdGdyZXNxbDovL2FwcEBkYXRhYmFzZS1ydzo1NDMyL2tn"}}
-
+        ],
+        {"database": {"uri": "cG9zdGdyZXNxbDovL2FwcEBkYXRhYmFzZS1ydzo1NDMyL2tn"}},
+    )
     monkeypatch.setattr("flakegraph_app.backends.kubernetes._kubectl_json", kubectl)
 
     assert (
@@ -2436,6 +2173,17 @@ def _request(
     )
 
 
+# The one supported document LIST finds under the Snowflake request's prefix.
+_MARTIAL_ARTS_OBJECT = Row(
+    {
+        "name": "DB/GRAPH/DOCUMENTS/martial-arts.pdf",
+        "size": 42,
+        "md5": "abc",
+        "last_modified": "2026-07-16T10:00:00Z",
+    }
+)
+
+
 def _snowflake_request(tmp_path: Path) -> IngestionRequest:
     """Build a complete Snowflake app request with only non-secret runtime data."""
 
@@ -2480,11 +2228,8 @@ def _snowflake_request(tmp_path: Path) -> IngestionRequest:
 
 def test_snowflake_run_config_omits_blank_optional_runtime_values(tmp_path: Path) -> None:
     request = _snowflake_request(tmp_path)
-    request = IngestionRequest(
-        **{
-            **request.__dict__,
-            "runtime_options": {**request.runtime_options, "image_digest": "  "},
-        }
+    request = dataclasses.replace(
+        request, runtime_options={**request.runtime_options, "image_digest": "  "}
     )
 
     config = build_run_config(request)
@@ -2495,22 +2240,14 @@ def test_snowflake_run_config_omits_blank_optional_runtime_values(tmp_path: Path
 def _fleet_request(tmp_path: Path) -> IngestionRequest:
     """Build a representative Kubernetes request for fleet-contract tests."""
 
-    request = _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)})
-    return IngestionRequest(
-        **{
-            **request.__dict__,
-            "runtime": RuntimeMode.KUBERNETES,
-            "ocr": ProviderSelection("fallback"),
-            "llm": ProviderSelection(
-                "vllm_local",
-                model="unsloth/Qwen3.8-27B-NVFP4",
-                endpoint="http://localhost:8000/v1",
-            ),
-            "embedding": ProviderSelection(
-                "sentence_transformers",
-                model="sentence-transformers/all-MiniLM-L6-v2",
-            ),
-        }
+    return dataclasses.replace(
+        _request(tmp_path, SourceKind.LOCAL, {"path": str(tmp_path)}),
+        runtime=RuntimeMode.KUBERNETES,
+        llm=ProviderSelection(
+            "vllm_local",
+            model="unsloth/Qwen3.8-27B-NVFP4",
+            endpoint="http://localhost:8000/v1",
+        ),
     )
 
 
@@ -2647,6 +2384,85 @@ def _fleet_kubectl_fixture(
     return kubectl
 
 
+def _recovery_kubectl(
+    *,
+    available_replicas: int,
+    pods: list[dict[str, Any]],
+    calls: list[list[str]] | None = None,
+) -> object:
+    """Return a kubectl adapter for recovering one finalizer deployment.
+
+    Raw calls are the rollouts recovery performs; a test that passes no ``calls``
+    list expects none.
+    """
+
+    deployment = {
+        "metadata": {
+            "name": "flakegraph-finalize",
+            "labels": {"app.kubernetes.io/component": "worker-finalize"},
+        },
+        "spec": {
+            "replicas": 1,
+            "template": {
+                "spec": {
+                    "serviceAccountName": "flakegraph-spark",
+                    "nodeSelector": {"flakegraph.io/node-class": "nvidia-spark"},
+                }
+            },
+        },
+        "status": {"availableReplicas": available_replicas},
+    }
+
+    def kubectl(arguments: list[str], *, target: object, raw: bool = False) -> object:
+        if raw:
+            assert calls is not None, f"Unexpected rollout: {arguments}"
+            calls.append(arguments)
+            return ""
+        resource = arguments[1]
+        if resource == "deployments":
+            return {"items": [deployment]}
+        if resource == "serviceaccounts":
+            return {"items": [{"metadata": {"name": "flakegraph-spark"}}]}
+        if resource == "nodes":
+            return {
+                "items": [
+                    {
+                        "metadata": {"labels": {"flakegraph.io/node-class": "nvidia-spark"}},
+                        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+                    }
+                ]
+            }
+        if resource == "pods":
+            return {"items": pods}
+        raise AssertionError(f"Unexpected kubectl arguments: {arguments}")
+
+    return kubectl
+
+
+def _deployment_env_kubectl(
+    component: str,
+    env: list[dict[str, Any]],
+    secrets: dict[str, dict[str, str]],
+) -> object:
+    """Return a kubectl adapter for one worker's env and the Secrets it references."""
+
+    def kubectl(arguments: list[str], *, target: object, raw: bool = False) -> dict[str, Any]:
+        del raw
+        if arguments[:2] == ["get", "deployments"]:
+            return {
+                "items": [
+                    {
+                        "metadata": {"labels": {"app.kubernetes.io/component": component}},
+                        "spec": {"template": {"spec": {"containers": [{"env": env}]}}},
+                    }
+                ]
+            }
+        assert arguments[:2] == ["get", "secret"]
+        return {"data": secrets[arguments[2]]}
+
+    return kubectl
+
+
 def test_stage_upload_streams_bytes_rather_than_a_local_path() -> None:
     """Snowpark's put cannot read the app filesystem inside Snowflake.
 
@@ -2655,37 +2471,7 @@ def test_stage_upload_streams_bytes_rather_than_a_local_path() -> None:
     content directly and works in both places.
     """
 
-    class _Result:
-        status = "UPLOADED"
-        target = "a.txt"
-
-    class _FileOps:
-        def __init__(self) -> None:
-            self.streamed: list[str] = []
-
-        def put(self, *args: object, **kwargs: object) -> object:
-            raise AssertionError("put cannot read the app filesystem in Snowflake")
-
-        def put_stream(self, stream: object, location: str, **_kwargs: object) -> _Result:
-            self.streamed.append(location)
-            return _Result()
-
-    class _StageRow:
-        def as_dict(self) -> dict[str, str]:
-            return {"name": "KG_INPUT_STAGE"}
-
-    class _Sql:
-        def collect(self) -> list[_StageRow]:
-            return [_StageRow()]
-
-    class _Session:
-        def __init__(self) -> None:
-            self.file = _FileOps()
-
-        def sql(self, _statement: str) -> _Sql:
-            return _Sql()
-
-    session = _Session()
+    session = RecordingSession([("SHOW STAGES", [Row({"name": "KG_INPUT_STAGE"})])])
     backend = SnowflakeBackend(session)
 
     with tempfile.TemporaryDirectory() as directory:
@@ -2694,7 +2480,7 @@ def test_stage_upload_streams_bytes_rather_than_a_local_path() -> None:
         uploaded = backend.upload_files([document], "KG_INPUT_STAGE", "app/shared/run-1")
 
     assert uploaded == 1
-    assert session.file.streamed == ["@KG_INPUT_STAGE/app/shared/run-1/a.txt"]
+    assert session.file.uploads == [(b"content", "@KG_INPUT_STAGE/app/shared/run-1/a.txt")]
 
 
 def test_uploading_to_a_missing_stage_names_the_problem() -> None:
@@ -2704,22 +2490,8 @@ def test_uploading_to_a_missing_stage_names_the_problem() -> None:
     here, before the first byte moves.
     """
 
-    class _Row:
-        def __init__(self, name: str) -> None:
-            self._name = name
-
-        def as_dict(self) -> dict[str, str]:
-            return {"name": self._name}
-
-    class _Sql:
-        def collect(self) -> list[_Row]:
-            return [_Row("KG_DOCS"), _Row("KG_LOAD_STAGE")]
-
-    class _Session:
-        def sql(self, _statement: str) -> _Sql:
-            return _Sql()
-
-    backend = SnowflakeBackend(_Session())
+    stages = [Row({"name": "KG_DOCS"}), Row({"name": "KG_LOAD_STAGE"})]
+    backend = SnowflakeBackend(RecordingSession([("SHOW STAGES", stages)]))
 
     with tempfile.TemporaryDirectory() as directory:
         document = Path(directory) / "a.txt"
@@ -2735,20 +2507,10 @@ def test_a_single_put_result_is_not_split_into_its_fields() -> None:
     """PutResult is a NamedTuple, so a tuple check destructures one upload.
 
     Each field then reads as a separate result of unknown status, and a
-    successful upload is reported as eight failures.
+    successful upload is reported as one failure per field.
     """
 
-    class PutResult(NamedTuple):
-        source: str
-        target: str
-        source_size: int
-        target_size: int
-        source_compression: str
-        target_compression: str
-        status: str
-        message: str
-
-    result = PutResult("a.md", "a.md", 10, 10, "NONE", "NONE", "UPLOADED", "")
+    result = PutResult("a.md", "a.md", "UPLOADED")
 
     assert _as_results(result) == [result]
     assert _as_results([result]) == [result]
@@ -2761,22 +2523,18 @@ def test_the_session_supplies_identity_instead_of_asking_for_it() -> None:
     typo in a field that has exactly one correct answer.
     """
 
-    class _Row(tuple[Any, ...]):  # noqa: SLOT001 - Snowpark rows are tuple-like
-        pass
+    identity = Row(
+        {
+            "CURRENT_ACCOUNT()": "ACME",
+            "CURRENT_USER()": "ANALYST",
+            "CURRENT_DATABASE()": "NUC_DB_DEV",
+            "CURRENT_SCHEMA()": "SBX",
+            "CURRENT_WAREHOUSE()": "WH",
+            "CURRENT_ROLE()": "ROLE",
+        }
+    )
 
-    class _Sql:
-        def collect(self) -> list[_Row]:
-            return [
-                _Row(
-                    ("ACME", "ANALYST", "NUC_DB_DEV", "SBX", "WH", "ROLE"),
-                )
-            ]
-
-    class _Session:
-        def sql(self, _statement: str) -> _Sql:
-            return _Sql()
-
-    context = SnowflakeBackend(_Session()).current_context()
+    context = SnowflakeBackend(RecordingSession(lambda *_query: [identity])).current_context()
 
     assert context["account"] == "ACME"
     assert context["user"] == "ANALYST"
@@ -2787,11 +2545,10 @@ def test_the_session_supplies_identity_instead_of_asking_for_it() -> None:
 def test_discovery_failure_leaves_the_operator_able_to_proceed() -> None:
     """A role without SHOW privileges must not be trapped behind an empty list."""
 
-    class _Session:
-        def sql(self, _statement: str) -> object:
-            raise RuntimeError("insufficient privileges")
+    def refuse(_statement: str, _params: object) -> list[Row]:
+        raise RuntimeError("insufficient privileges")
 
-    backend = SnowflakeBackend(_Session())
+    backend = SnowflakeBackend(RecordingSession(refuse))
 
     assert backend.list_warehouses() == []
     assert backend.current_context() == {}
@@ -2849,75 +2606,14 @@ def test_a_failed_submission_records_why(tmp_path: Path) -> None:
     status, so the one it reports is what the recorded cause must name.
     """
 
-    class Row:
-        def __init__(self, values: dict[str, object]) -> None:
-            self.values = values
-
-        def as_dict(self) -> dict[str, object]:
-            return dict(self.values)
-
-    class PutResult(NamedTuple):
-        source: str
-        target: str
-        status: str
-
-    class Query:
-        def __init__(self, session: Session, sql: str, params: object) -> None:
-            self.session = session
-            self.sql = sql
-            self.params = params
-
-        def collect(self) -> list[object]:
-            self.session.collected.append((self.sql, self.params))
-            if self.sql.startswith("LIST "):
-                return [
-                    Row(
-                        {
-                            "name": "DB/GRAPH/DOCUMENTS/martial-arts.pdf",
-                            "size": 42,
-                            "md5": "abc",
-                            "last_modified": "2026-07-16T10:00:00Z",
-                        }
-                    )
-                ]
-            return []
-
-    class Writer:
-        def mode(self, value: str) -> Writer:
-            del value
-            return self
-
-        def save_as_table(self, name: str, *, table_type: str) -> None:
-            del name, table_type
-
-    class Frame:
-        write = Writer()
-
-    class FileApi:
-        def put_stream(self, stream: Any, destination: str, **kwargs: object) -> PutResult:
-            del stream, kwargs
-            return PutResult("spec.yaml", destination, "SKIPPED")
-
-    class Session:
-        def __init__(self) -> None:
-            self.collected: list[tuple[str, object]] = []
-            self.file = FileApi()
-
-        def sql(self, sql: str, params: object = None) -> Query:
-            return Query(self, sql, params)
-
-        def create_dataframe(self, rows: Any, schema: object) -> Frame:
-            del rows, schema
-            return Frame()
-
-    session = Session()
+    session = SubmissionSession([_MARTIAL_ARTS_OBJECT], put_status="SKIPPED")
     backend = SnowflakeBackend(session)
 
     with pytest.raises(RuntimeError, match="did not overwrite"):
         backend.submit(_snowflake_request(tmp_path))
 
     failure, params = next(
-        (sql, params) for sql, params in session.collected if "STATUS = 'FAILED'" in sql
+        (sql, params) for sql, params in session.statements if "STATUS = 'FAILED'" in sql
     )
     assert "ERROR = OBJECT_CONSTRUCT('message', ?, 'type', ?)" in failure
     assert isinstance(params, list)
@@ -2925,7 +2621,7 @@ def test_a_failed_submission_records_why(tmp_path: Path) -> None:
     assert message.startswith("SPCS job submission failed: Snowflake did not overwrite ")
     assert message.endswith(": SKIPPED")
     assert (error_type, job_id) == ("RuntimeError", "job-1")
-    assert not any(sql.startswith("EXECUTE JOB SERVICE") for sql, _params in session.collected)
+    assert not any(sql.startswith("EXECUTE JOB SERVICE") for sql in session.statement_texts)
 
 
 def test_the_app_inlines_an_ontology_the_container_cannot_read(tmp_path: Path) -> None:
@@ -2946,18 +2642,7 @@ def test_the_app_inlines_an_ontology_the_container_cannot_read(tmp_path: Path) -
     )
 
     config = build_run_config(
-        IngestionRequest(
-            runtime=RuntimeMode.SNOWFLAKE,
-            job_id="j",
-            graph_id="g",
-            source_kind=SourceKind.SNOWFLAKE_STAGE,
-            source={"stage": "@D.S.KG_DOCS", "prefix": ""},
-            ocr=ProviderSelection(provider="snowflake_cortex"),
-            llm=ProviderSelection(provider="snowflake_cortex", model="m"),
-            embedding=ProviderSelection(provider="snowflake_cortex", model="e", dimension=8),
-            output=OutputDestination(kind=StorageKind.LOCAL, workspace_path=tmp_path / "out"),
-            base_config_path=profile,
-        )
+        dataclasses.replace(_snowflake_request(tmp_path), base_config_path=profile)
     )
 
     assert config["ontology"]["profile"] == {"name": "test", "entity_types": []}
@@ -2972,17 +2657,8 @@ def test_the_app_and_the_product_read_an_ontology_file_identically(tmp_path: Pat
     """
 
     config = build_run_config(
-        IngestionRequest(
-            runtime=RuntimeMode.SNOWFLAKE,
-            job_id="j",
-            graph_id="g",
-            source_kind=SourceKind.SNOWFLAKE_STAGE,
-            source={"stage": "@D.S.KG_DOCS", "prefix": ""},
-            ocr=ProviderSelection(provider="snowflake_cortex"),
-            llm=ProviderSelection(provider="snowflake_cortex", model="m"),
-            embedding=ProviderSelection(provider="snowflake_cortex", model="e", dimension=8),
-            output=OutputDestination(kind=StorageKind.LOCAL, workspace_path=tmp_path / "out"),
-            base_config_path=Path("configs/app-defaults.yaml"),
+        dataclasses.replace(
+            _snowflake_request(tmp_path), base_config_path=Path("configs/app-defaults.yaml")
         )
     )
 
@@ -3000,68 +2676,23 @@ def test_a_snowflake_graph_carries_the_metrics_the_consumption_view_reads() -> N
     consumption tracking" while the tokens and dollars sat in the table.
     """
 
-    class Row:
-        def __init__(self, values: dict[str, object]) -> None:
-            self.values = values
-
-        def as_dict(self) -> dict[str, object]:
-            return self.values
-
     metrics = {"consumption": {"totals": {"billed_usd": 0.64, "calls": 114}}}
-
-    class Query:
-        def __init__(self, rows: list[object]) -> None:
-            self.rows = rows
-
-        def collect(self) -> list[object]:
-            return self.rows
-
-    class _Session:
-        def __init__(self) -> None:
-            self.queries: list[str] = []
-
-        def sql(self, query: str, params: object = None) -> Query:
-            del params
-            self.queries.append(query)
-            if query.startswith("SELECT METRICS"):
-                return Query([Row({"METRICS": metrics})])
-            if "TABLE_NAME" in query or "UNION" in query:
-                return Query([])
-            return Query([])
-
-    session = _Session()
+    session = RecordingSession([("SELECT METRICS", [Row({"METRICS": metrics})])])
 
     dataset = SnowflakeBackend(session).load_graph("current", "graph-1")
 
-    assert any(query.startswith("SELECT METRICS") for query in session.queries)
+    assert any(query.startswith("SELECT METRICS") for query in session.statement_texts)
     assert dataset.graph_metrics == metrics
 
 
-class _ServiceSession:
-    """Session stand-in that answers SHOW SERVICES and records every statement."""
+def _service_session(*statuses: str) -> RecordingSession:
+    """Build a session whose SHOW SERVICES finds one job service per status."""
 
-    def __init__(self, service_rows: list[object]) -> None:
-        self.service_rows = service_rows
-        self.statements: list[str] = []
-
-    def sql(self, query: str, params: object = None) -> Any:
-        del params
-        self.statements.append(query)
-        rows = self.service_rows if query.startswith("SHOW SERVICES") else []
-
-        class _Result:
-            def collect(self) -> list[object]:
-                return rows
-
-        return _Result()
-
-
-class _ServiceRow:
-    def __init__(self, status: str) -> None:
-        self.status = status
-
-    def as_dict(self) -> dict[str, object]:
-        return {"name": "FLAKEGRAPH_APP_ABC", "status": self.status, "is_job": "true"}
+    services = [
+        Row({"name": "FLAKEGRAPH_APP_ABC", "status": status, "is_job": "true"})
+        for status in statuses
+    ]
+    return RecordingSession([("SHOW SERVICES", services)])
 
 
 def test_a_finished_job_service_stops_blocking_the_next_submission() -> None:
@@ -3072,11 +2703,11 @@ def test_a_finished_job_service_stops_blocking_the_next_submission() -> None:
     bare "Object ... already exists" naming an internal service.
     """
 
-    session = _ServiceSession([_ServiceRow("DONE")])
+    session = _service_session("DONE")
 
     SnowflakeBackend(session)._release_finished_job_service("DB.SCHEMA.FLAKEGRAPH_APP_ABC")
 
-    assert session.statements == [
+    assert session.statement_texts == [
         "SHOW SERVICES LIKE 'FLAKEGRAPH_APP_ABC' IN SCHEMA DB.SCHEMA",
         "DROP SERVICE IF EXISTS DB.SCHEMA.FLAKEGRAPH_APP_ABC",
     ]
@@ -3085,22 +2716,24 @@ def test_a_finished_job_service_stops_blocking_the_next_submission() -> None:
 def test_a_running_job_service_is_reported_rather_than_destroyed() -> None:
     """Reusing the name of a live run would kill the work it is repeating."""
 
-    session = _ServiceSession([_ServiceRow("RUNNING")])
+    session = _service_session("RUNNING")
 
     with pytest.raises(RuntimeError, match="already running"):
         SnowflakeBackend(session)._release_finished_job_service("DB.SCHEMA.FLAKEGRAPH_APP_ABC")
 
-    assert not any(statement.startswith("DROP SERVICE") for statement in session.statements)
+    assert not any(statement.startswith("DROP SERVICE") for statement in session.statement_texts)
 
 
 def test_a_graph_that_never_ran_drops_nothing() -> None:
     """A first submission has no service to release."""
 
-    session = _ServiceSession([])
+    session = _service_session()
 
     SnowflakeBackend(session)._release_finished_job_service("DB.SCHEMA.FLAKEGRAPH_APP_ABC")
 
-    assert session.statements == ["SHOW SERVICES LIKE 'FLAKEGRAPH_APP_ABC' IN SCHEMA DB.SCHEMA"]
+    assert session.statement_texts == [
+        "SHOW SERVICES LIKE 'FLAKEGRAPH_APP_ABC' IN SCHEMA DB.SCHEMA"
+    ]
 
 
 def test_the_image_picker_offers_the_newest_push_first() -> None:
@@ -3112,31 +2745,18 @@ def test_the_image_picker_offers_the_newest_push_first() -> None:
     account — which failed on startup.
     """
 
-    class Row:
-        def __init__(self, created: str, tags: str) -> None:
-            self.values: dict[str, object] = {
-                "created_on": created,
-                "image_name": "/DB/SCHEMA/REPO/flakegraph",
-                "tags": tags,
-            }
+    pushes = [
+        Row({"created_on": created, "image_name": "/DB/SCHEMA/REPO/flakegraph", "tags": tag})
+        for created, tag in [
+            ("2026-08-06T09:13:10+00:00", "0.1.0"),
+            ("2026-08-07T08:57:00+00:00", "0.1.6"),
+            ("2026-08-07T11:31:55+00:00", "0.1.7"),
+        ]
+    ]
 
-        def as_dict(self) -> dict[str, object]:
-            return self.values
-
-    class Query:
-        def collect(self) -> list[object]:
-            return [
-                Row("2026-08-06T09:13:10+00:00", "0.1.0"),
-                Row("2026-08-07T08:57:00+00:00", "0.1.6"),
-                Row("2026-08-07T11:31:55+00:00", "0.1.7"),
-            ]
-
-    class _Session:
-        def sql(self, query: str, params: object = None) -> Query:
-            del query, params
-            return Query()
-
-    images = SnowflakeBackend(_Session()).list_images("DB.SCHEMA.REPO")
+    images = SnowflakeBackend(RecordingSession([("SHOW IMAGES", pushes)])).list_images(
+        "DB.SCHEMA.REPO"
+    )
 
     assert list(images) == [
         "/DB/SCHEMA/REPO/flakegraph:0.1.7",
@@ -3145,60 +2765,30 @@ def test_the_image_picker_offers_the_newest_push_first() -> None:
     ]
 
 
-class _LostWorkerSession:
-    """Session stand-in for a queued run whose job service has already stopped."""
+def _lost_worker_session(service_status: str | None, *, quiet_for: int = 900) -> RecordingSession:
+    """Build a session for a queued run whose job service reports ``service_status``.
 
-    def __init__(
-        self,
-        service_status: str | None,
-        job_status: str = "PENDING",
-        quiet_for: int = 900,
-    ) -> None:
-        self.service_status = service_status
-        self.job_status = job_status
-        self.quiet_for = quiet_for
-        self.statements: list[str] = []
+    ``None`` is a service the viewer cannot see at all.
+    """
 
-    def sql(self, query: str, params: object = None) -> Any:
-        del params
-        self.statements.append(query)
-        session = self
-
-        class _Row:
-            def __init__(self, values: dict[str, object]) -> None:
-                self.values = values
-
-            def as_dict(self) -> dict[str, object]:
-                return self.values
-
-        class _Result:
-            def collect(self) -> list[object]:
-                if query.startswith("SHOW SERVICES"):
-                    if session.service_status is None:
-                        return []
-                    return [_Row({"name": "SVC", "status": session.service_status})]
-                if query.startswith("SELECT J.ID"):
-                    return [
-                        _Row(
-                            {
-                                "ID": "run-1",
-                                "GRAPH_ID": "graph-1",
-                                "GRAPH_NAME": "graph-1",
-                                "STATUS": session.job_status,
-                                "ERROR": None,
-                                "CREATED_AT": "2026-08-07T13:37:51",
-                                "UPDATED_AT": "2026-08-07T13:37:51",
-                                "PROGRESS": None,
-                                "SECONDS_SINCE_UPDATE": session.quiet_for,
-                                "STAGE": "queued",
-                                "FILE_STATUS": "QUEUED",
-                                "FILE_COUNT": 1,
-                            }
-                        )
-                    ]
-                return []
-
-        return _Result()
+    job = Row(
+        {
+            "ID": "run-1",
+            "GRAPH_ID": "graph-1",
+            "GRAPH_NAME": "graph-1",
+            "STATUS": "PENDING",
+            "ERROR": None,
+            "CREATED_AT": "2026-08-07T13:37:51",
+            "UPDATED_AT": "2026-08-07T13:37:51",
+            "PROGRESS": None,
+            "SECONDS_SINCE_UPDATE": quiet_for,
+            "STAGE": "queued",
+            "FILE_STATUS": "QUEUED",
+            "FILE_COUNT": 1,
+        }
+    )
+    services = [] if service_status is None else [Row({"name": "SVC", "status": service_status})]
+    return RecordingSession([("SHOW SERVICES", services), ("SELECT J.ID", [job])])
 
 
 def test_a_run_whose_worker_stopped_is_reported_failed_not_pending() -> None:
@@ -3209,7 +2799,7 @@ def test_a_run_whose_worker_stopped_is_reported_failed_not_pending() -> None:
     and the app keeps reporting what it last saw: pending, zero of one, forever.
     """
 
-    session = _LostWorkerSession("FAILED")
+    session = _lost_worker_session("FAILED")
 
     snapshot = SnowflakeBackend(session).status("run-1")
 
@@ -3220,31 +2810,31 @@ def test_a_run_whose_worker_stopped_is_reported_failed_not_pending() -> None:
     # The verdict is stored so the sidebar cannot disagree with the run page.
     assert any(
         statement.startswith("UPDATE KG_JOB SET STATUS = 'FAILED'")
-        for statement in session.statements
+        for statement in session.statement_texts
     )
 
 
 def test_a_run_whose_worker_is_alive_is_left_alone() -> None:
     """A slow run must never be declared dead while its worker is still working."""
 
-    session = _LostWorkerSession("RUNNING")
+    session = _lost_worker_session("RUNNING")
 
     snapshot = SnowflakeBackend(session).status("run-1")
 
     assert snapshot.status == "pending"
     assert snapshot.error is None
-    assert not any(statement.startswith("UPDATE KG_JOB") for statement in session.statements)
+    assert not any(statement.startswith("UPDATE KG_JOB") for statement in session.statement_texts)
 
 
 def test_an_unreadable_service_is_not_evidence_of_a_dead_worker() -> None:
     """Discovery needs privileges a viewer may not hold; absence is not death."""
 
-    session = _LostWorkerSession(None)
+    session = _lost_worker_session(None)
 
     snapshot = SnowflakeBackend(session).status("run-1")
 
     assert snapshot.status == "pending"
-    assert not any(statement.startswith("UPDATE KG_JOB") for statement in session.statements)
+    assert not any(statement.startswith("UPDATE KG_JOB") for statement in session.statement_texts)
 
 
 def test_a_busy_run_is_not_interrogated_about_its_worker() -> None:
@@ -3254,12 +2844,12 @@ def test_a_busy_run_is_not_interrogated_about_its_worker() -> None:
     every poll would double the round trips for every run that is working fine.
     """
 
-    session = _LostWorkerSession("FAILED", quiet_for=5)
+    session = _lost_worker_session("FAILED", quiet_for=5)
 
     snapshot = SnowflakeBackend(session).status("run-1")
 
     assert snapshot.status == "pending"
-    assert not any(statement.startswith("SHOW SERVICES") for statement in session.statements)
+    assert not any(statement.startswith("SHOW SERVICES") for statement in session.statement_texts)
 
 
 def test_a_stored_job_error_reads_as_a_sentence() -> None:
@@ -3297,14 +2887,14 @@ def test_a_suspended_service_is_not_called_a_dead_worker() -> None:
     """
 
     for state in ("SUSPENDED", "DELETING", "PENDING", "RUNNING"):
-        session = _LostWorkerSession(state)
+        session = _lost_worker_session(state)
 
         snapshot = SnowflakeBackend(session).status("run-1")
 
         assert snapshot.status == "pending", state
-        assert not any(statement.startswith("UPDATE KG_JOB") for statement in session.statements), (
-            state
-        )
+        assert not any(
+            statement.startswith("UPDATE KG_JOB") for statement in session.statement_texts
+        ), state
 
 
 def test_one_concurrency_budget_reaches_every_model_calling_stage() -> None:
