@@ -173,10 +173,6 @@ class _SlowPool(_Pool):
         await asyncio.sleep(self.seconds)
         return _stub(b'{"results": {}}')
 
-    @property
-    def hosts(self) -> list[str]:
-        return [request.url.host for request in self.requests]
-
 
 def _client(
     upstream: _Pool,

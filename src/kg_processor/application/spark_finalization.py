@@ -2812,7 +2812,7 @@ def _adaptive_provider_partitions(
     make an otherwise small graph wait for long retry tails. The minimum of two
     tasks per slot still supplies work stealing. At corpus scale the maximum of 256
     tasks per slot bounds scheduler metadata; only those capped partitions contain
-    multiple batches and use bounded inner concurrency.
+    more than one batch, which then run one after another.
     """
 
     if row_count < 0:
