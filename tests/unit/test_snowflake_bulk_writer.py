@@ -3,13 +3,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import Any, cast
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from snowflake_fakes import CONFIG, FakeConnection, FakeCursor, sample_batch
 
-from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
+from kg_processor.adapters.distributed.local_blob import LocalBlobStore
 from kg_processor.adapters.writers.snowflake_bulk import (
     SnowflakeBulkWriter,
     build_bulk_merge_statement,
@@ -25,64 +26,6 @@ from kg_processor.adapters.writers.snowflake_direct import (
 )
 from kg_processor.adapters.writers.snowflake_manifest import SnowflakeManifestWriter, _empty_batch
 from kg_processor.domain.finalization import DatasetFile, DatasetTableManifest, GraphDatasetManifest
-from kg_processor.domain.graph import (
-    Chunk,
-    Community,
-    CommunityFinding,
-    EntitySource,
-    Evidence,
-    GraphEdge,
-    GraphNode,
-    GraphWriteBatch,
-)
-
-
-class FakeCursor:
-    def __init__(self) -> None:
-        self.executed: list[tuple[str, Sequence[object] | None]] = []
-        self.closed = False
-
-    def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-        self.executed.append((sql, params))
-        return None
-
-    def fetchone(self) -> Sequence[object] | None:
-        return None
-
-    def fetchall(self) -> list[object]:
-        return []
-
-    def close(self) -> object:
-        self.closed = True
-        return None
-
-
-class FakeConnection:
-    def __init__(self) -> None:
-        self.cursor_instance = FakeCursor()
-        self.committed = False
-        self.rolled_back = False
-        self.closed = False
-        self.autocommit_calls: list[bool] = []
-
-    def cursor(self) -> FakeCursor:
-        return self.cursor_instance
-
-    def commit(self) -> object:
-        self.committed = True
-        return None
-
-    def rollback(self) -> object:
-        self.rolled_back = True
-        return None
-
-    def autocommit(self, enabled: bool) -> object:
-        self.autocommit_calls.append(enabled)
-        return None
-
-    def close(self) -> object:
-        self.closed = True
-        return None
 
 
 def test_manifest_batch_preserves_configured_relation_weight_cap() -> None:
@@ -97,36 +40,8 @@ def test_manifest_batch_preserves_configured_relation_weight_cap() -> None:
     assert _empty_batch(manifest).relation_weight_max == 3.5
 
 
-class MemoryBlobStore:
-    """Minimal immutable blob adapter for manifest publication tests."""
-
-    def __init__(self, payloads: dict[str, bytes]) -> None:
-        self.payloads = payloads
-
-    def initialize(self) -> None:
-        """Nothing to create for an in-memory store."""
-
-    def put(self, key: str, payload: bytes, media_type: str) -> str:
-        """Store one payload under a deterministic test URI."""
-
-        _ = media_type
-        uri = f"memory://{key}"
-        self.payloads[uri] = payload
-        return uri
-
-    def get(self, uri: str) -> bytes:
-        """Return a previously registered Parquet payload."""
-
-        return self.payloads[uri]
-
-    def download_to(self, uri: str, destination: BinaryIO) -> None:
-        """Write a registered payload into the caller's file."""
-
-        destination.write(self.payloads[uri])
-
-
 def test_bulk_load_files_write_string_parquet_rows(tmp_path: Path) -> None:
-    rows_by_table = build_snowflake_rows(_sample_batch())
+    rows_by_table = build_snowflake_rows(sample_batch())
 
     load_files = write_bulk_load_files(
         rows_by_table,
@@ -295,17 +210,13 @@ def test_bulk_sql_builders_cast_from_staging_columns(tmp_path: Path) -> None:
 
 
 def test_snowflake_bulk_writer_executes_put_copy_and_merge(tmp_path: Path) -> None:
-    batch = _sample_batch()
+    batch = sample_batch()
     connection = FakeConnection()
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     writer = SnowflakeBulkWriter(
-        _config(),
+        CONFIG,
         embedding_dimension=2,
         bulk_stage="@DB.SCHEMA.KG_LOAD_STAGE",
-        connector_factory=factory,
+        connector_factory=lambda **_: connection,
         local_temp_dir=tmp_path,
         load_id="LOAD123",
     )
@@ -341,16 +252,16 @@ def test_snowflake_bulk_writer_executes_put_copy_and_merge(tmp_path: Path) -> No
 
 
 def test_snowflake_bulk_file_batch_preserves_shared_node_identity(tmp_path: Path) -> None:
-    batch = _sample_batch().model_copy(
+    batch = sample_batch().model_copy(
         update={"write_scope": "file_batch", "reindex_file_ids": ["file_1"]}
     )
     connection = FakeConnection()
 
     SnowflakeBulkWriter(
-        _config(),
+        CONFIG,
         embedding_dimension=2,
         bulk_stage="@DB.SCHEMA.KG_LOAD_STAGE",
-        connector_factory=lambda **_kwargs: connection,
+        connector_factory=lambda **_: connection,
         local_temp_dir=tmp_path,
         load_id="IDENTITY",
     ).write(batch)
@@ -367,16 +278,16 @@ def test_snowflake_bulk_file_batch_preserves_shared_node_identity(tmp_path: Path
         assert f"{field} = source.{field}" not in update_clause
 
 
-def test_manifest_publication_fence_uses_qmark_bindings() -> None:
+def test_manifest_publication_fence_uses_qmark_bindings(tmp_path: Path) -> None:
     class _FenceCursor(FakeCursor):
         def fetchone(self) -> Sequence[object] | None:
             return ["publication-1"]
 
     writer = SnowflakeManifestWriter(
-        _config(),
+        CONFIG,
         embedding_dimension=2,
         bulk_stage="@DB.SCHEMA.KG_LOAD_STAGE",
-        blob_store=MemoryBlobStore({}),
+        blob_store=LocalBlobStore(tmp_path.as_uri()),
         publication_id="publication-1",
         publication_generation=3,
     )
@@ -388,7 +299,7 @@ def test_manifest_publication_fence_uses_qmark_bindings() -> None:
     assert cursor.executed[1][1] == ("graph-1", 3)
 
 
-def test_manifest_writer_streams_partitions_before_one_transactional_merge() -> None:
+def test_manifest_writer_streams_partitions_before_one_transactional_merge(tmp_path: Path) -> None:
     """Exercise the Spark-manifest path without materializing unrelated graph tables."""
 
     buffer = BytesIO()
@@ -410,7 +321,8 @@ def test_manifest_writer_streams_partitions_before_one_transactional_merge() -> 
         ),
         buffer,
     )
-    uri = "memory://documents.parquet"
+    store = LocalBlobStore(tmp_path.as_uri())
+    uri = store.put("documents.parquet", buffer.getvalue(), "application/octet-stream")
     manifest = GraphDatasetManifest(
         run_id="run-1",
         graph_id="graph-1",
@@ -426,15 +338,12 @@ def test_manifest_writer_streams_partitions_before_one_transactional_merge() -> 
     )
     connection = FakeConnection()
 
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     SnowflakeManifestWriter(
-        _config(),
+        CONFIG,
         embedding_dimension=2,
         bulk_stage="@DB.SCHEMA.KG_LOAD_STAGE",
-        blob_store=MemoryBlobStore({uri: buffer.getvalue()}),
-        connector_factory=factory,
+        blob_store=store,
+        connector_factory=lambda **_: connection,
     ).write(manifest)
 
     statements = [sql for sql, _params in connection.cursor_instance.executed]
@@ -445,160 +354,7 @@ def test_manifest_writer_streams_partitions_before_one_transactional_merge() -> 
     assert sum(sql.startswith("MERGE INTO KG_RUN_REPORT") for sql in statements) == 1
 
 
-def _sample_batch() -> GraphWriteBatch:
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=0,
-        end_offset=32,
-        token_count=6,
-        content_hash="hash",
-        section_path=["Intro"],
-        block_ids=["block_1"],
-        asset_ids=["asset_1"],
-        ocr_generation_id="ocr-run-1",
-        embedding=[0.1, 0.2],
-    )
-    node = GraphNode(
-        id="node_1",
-        graph_id="graph",
-        normalized_name="alicesmith",
-        name="Alice Smith",
-        primary_type="PERSON",
-        types=["PERSON"],
-        description="Alice Smith is mentioned.",
-        embedding=[0.1, 0.2],
-        source_chunk_ids=["chunk_1"],
-        degree=1,
-        rank=1.0,
-    )
-    edge = GraphEdge(
-        id="edge_1",
-        graph_id="graph",
-        source_node_id="node_1",
-        target_node_id="node_2",
-        relation_type="works_at",
-        description="Alice works at Acme.",
-        weight=1.0,
-        source_file_id="file_1",
-        source_chunk_ids=["chunk_1"],
-        embedding=[0.1, 0.2],
-    )
-    evidence = Evidence(
-        id="evidence_1",
-        graph_id="graph",
-        subject_id="node_1",
-        subject_kind="node",
-        file_id="file_1",
-        chunk_id="chunk_1",
-        page_number=1,
-        start_offset=0,
-        end_offset=32,
-        quote="Alice Smith works at Acme Corp.",
-    )
-    source = EntitySource(
-        id="source_1",
-        graph_id="graph",
-        node_id="node_1",
-        file_id="file_1",
-        per_file_description="Alice Smith is mentioned.",
-        mention_count=1,
-    )
-    community = Community(
-        id="community_1",
-        graph_id="graph",
-        stable_key="stable",
-        level=0,
-        title="Alice",
-        summary="Alice community",
-        rating=5,
-        rating_explanation="Important Alice cluster.",
-        member_node_ids=["node_1"],
-        suggested_questions=["Who is Alice linked to?"],
-        embedding=[0.1, 0.2],
-    )
-    finding = CommunityFinding(
-        id="finding_1",
-        community_id="community_1",
-        summary="Finding",
-        explanation="Explanation",
-    )
-    return GraphWriteBatch(
-        graph_id="graph",
-        documents=[
-            {
-                "file_id": "file_1",
-                "checksum": "checksum",
-                "source_uri": "file:///file.txt",
-                "mime_type": "text/plain",
-                "size_bytes": 32,
-                "ocr_provider": "builtin_text",
-            }
-        ],
-        pages=[
-            {
-                "file_id": "file_1",
-                "page_number": 1,
-                "markdown": "Alice Smith works at Acme Corp.",
-                "raw_text": "Alice Smith works at Acme Corp.",
-                "detected_language": "en",
-            }
-        ],
-        blocks=[
-            {
-                "id": "block_1",
-                "graph_id": "graph",
-                "file_id": "file_1",
-                "page_number": 1,
-                "kind": "paragraph",
-                "text": "Alice Smith works at Acme Corp.",
-                "bbox": [0.0, 1.0, 2.0, 3.0],
-                "metadata": {"layout": "body"},
-            }
-        ],
-        assets=[
-            {
-                "id": "asset_1",
-                "graph_id": "graph",
-                "file_id": "file_1",
-                "kind": "image",
-                "page_number": 1,
-                "uri": "file:///asset.png",
-                "metadata": {"layout": "figure"},
-            }
-        ],
-        chunks=[chunk],
-        nodes=[node],
-        edges=[edge],
-        evidence=[evidence],
-        entity_sources=[source],
-        communities=[community],
-        community_findings=[finding],
-        run_report={"job_id": "job", "nodes": 1},
-        graph_metrics={"counts": {"nodes": 1}},
-        extraction_trace=[{"stage": "ocr", "file_id": "file_1"}],
-    )
-
-
-def _config() -> SnowflakeConnectionConfig:
-    return SnowflakeConnectionConfig(
-        account="account",
-        host=None,
-        user="user",
-        password="password",
-        authenticator=None,
-        private_key_path=None,
-        database="DB",
-        schema_name="SCHEMA",
-        role="ROLE",
-        warehouse="WH",
-    )
-
-
-def test_manifest_publication_rebuilds_edges_from_durable_observations() -> None:
+def test_manifest_publication_rebuilds_edges_from_durable_observations(tmp_path: Path) -> None:
     """Canonical edge aggregates must be derived the same way in every writer.
 
     A manifest carries KG_EDGE_OBSERVATION rows as the authoritative per-file
@@ -626,7 +382,8 @@ def test_manifest_publication_rebuilds_edges_from_durable_observations() -> None
         ),
         buffer,
     )
-    uri = "memory://edge-observations.parquet"
+    store = LocalBlobStore(tmp_path.as_uri())
+    uri = store.put("edge-observations.parquet", buffer.getvalue(), "application/octet-stream")
     manifest = GraphDatasetManifest(
         run_id="run-1",
         graph_id="graph-1",
@@ -641,15 +398,12 @@ def test_manifest_publication_rebuilds_edges_from_durable_observations() -> None
     )
     connection = FakeConnection()
 
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     SnowflakeManifestWriter(
-        _config(),
+        CONFIG,
         embedding_dimension=2,
         bulk_stage="@DB.SCHEMA.KG_LOAD_STAGE",
-        blob_store=MemoryBlobStore({uri: buffer.getvalue()}),
-        connector_factory=factory,
+        blob_store=store,
+        connector_factory=lambda **_: connection,
     ).write(manifest)
 
     statements = [sql for sql, _params in connection.cursor_instance.executed]

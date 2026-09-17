@@ -1,92 +1,41 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+from snowflake_fakes import CONFIG, FakeConnection
 
 from kg_processor.adapters.ocr.snowflake_cortex import SnowflakeCortexOcrProvider
-from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
 from kg_processor.domain.documents import InputFile
 from kg_processor.ports.ocr import OcrOptions
-
-
-class FakeCursor:
-    def __init__(self, row: Sequence[object]) -> None:
-        self.row = row
-        self.executed: list[tuple[str, Sequence[object] | None]] = []
-        self.timeouts: list[int | None] = []
-        self.closed = False
-
-    def execute(
-        self,
-        sql: str,
-        params: Sequence[object] | None = None,
-        *,
-        timeout: int | None = None,
-    ) -> object:
-        self.executed.append((sql, params))
-        self.timeouts.append(timeout)
-        return None
-
-    def fetchone(self) -> Sequence[object] | None:
-        return self.row
-
-    def fetchall(self) -> list[object]:
-        return []
-
-    def close(self) -> object:
-        self.closed = True
-        return None
-
-
-class FakeConnection:
-    def __init__(self, row: Sequence[object]) -> None:
-        self.cursor_instance = FakeCursor(row)
-        self.closed = False
-
-    def cursor(self) -> FakeCursor:
-        return self.cursor_instance
-
-    def commit(self) -> object:
-        return None
-
-    def rollback(self) -> object:
-        return None
-
-    def close(self) -> object:
-        self.closed = True
-        return None
 
 
 def test_snowflake_cortex_ocr_parses_stage_file_with_options_and_assets() -> None:
     connection = FakeConnection(
         [
-            {
-                "value": {
-                    "pages": [
-                        {"index": 0, "content": "# Page 1\nAlice"},
-                        {"index": 1, "content": "# Page 2\nAcme"},
-                    ],
-                    "images": [
-                        {
-                            "image_id": "img-1",
-                            "page_index": 0,
-                            "image_base64": "abc123",
-                            "bbox": [1, 2, 3, 4],
-                        }
-                    ],
-                },
-                "metadata": {"document_size": 100},
-            }
+            [
+                {
+                    "value": {
+                        "pages": [
+                            {"index": 0, "content": "# Page 1\nAlice"},
+                            {"index": 1, "content": "# Page 2\nAcme"},
+                        ],
+                        "images": [
+                            {
+                                "image_id": "img-1",
+                                "page_index": 0,
+                                "image_base64": "abc123",
+                                "bbox": [1, 2, 3, 4],
+                            }
+                        ],
+                    },
+                    "metadata": {"document_size": 100},
+                }
+            ]
         ]
     )
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    provider = SnowflakeCortexOcrProvider(_config(), connector_factory=factory)
+    provider = SnowflakeCortexOcrProvider(CONFIG, connector_factory=lambda **_: connection)
 
     document = provider.parse(
         _input_file("@DB.SCHEMA.DOC_STAGE/docs/a.pdf"),
@@ -120,24 +69,16 @@ def test_snowflake_cortex_ocr_parses_stage_file_with_options_and_assets() -> Non
 
 
 def test_snowflake_cortex_ocr_raises_returned_error() -> None:
-    connection = FakeConnection([{"error": {"message": "cannot parse"}}])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    provider = SnowflakeCortexOcrProvider(_config(), connector_factory=factory)
+    connection = FakeConnection([[{"error": {"message": "cannot parse"}}]])
+    provider = SnowflakeCortexOcrProvider(CONFIG, connector_factory=lambda **_: connection)
 
     with pytest.raises(RuntimeError, match="AI_PARSE_DOCUMENT failed"):
         provider.parse(_input_file("@DOC_STAGE/docs/a.pdf"), OcrOptions())
 
 
 def test_snowflake_cortex_ocr_omits_page_options_for_text_inputs() -> None:
-    connection = FakeConnection([{"value": {"content": "Plain text"}, "metadata": {}}])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    provider = SnowflakeCortexOcrProvider(_config(), connector_factory=factory)
+    connection = FakeConnection([[{"value": {"content": "Plain text"}, "metadata": {}}]])
+    provider = SnowflakeCortexOcrProvider(CONFIG, connector_factory=lambda **_: connection)
 
     document = provider.parse(
         _input_file(
@@ -159,28 +100,26 @@ def test_snowflake_cortex_ocr_redacts_every_inline_blob_field() -> None:
 
     connection = FakeConnection(
         [
-            {
-                "value": {
-                    "content": "Alice",
-                    "images": [
-                        {
-                            "image_id": "img-1",
-                            "bytes": "0011",
-                            "content_bytes": "2233",
-                            "image_base64": "4455",
-                            "caption": "Figure 1",
-                        }
-                    ],
-                },
-                "metadata": {},
-            }
+            [
+                {
+                    "value": {
+                        "content": "Alice",
+                        "images": [
+                            {
+                                "image_id": "img-1",
+                                "bytes": "0011",
+                                "content_bytes": "2233",
+                                "image_base64": "4455",
+                                "caption": "Figure 1",
+                            }
+                        ],
+                    },
+                    "metadata": {},
+                }
+            ]
         ]
     )
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    provider = SnowflakeCortexOcrProvider(_config(), connector_factory=factory)
+    provider = SnowflakeCortexOcrProvider(CONFIG, connector_factory=lambda **_: connection)
 
     document = provider.parse(_input_file("@DOC_STAGE/docs/a.pdf"), OcrOptions())
 
@@ -195,13 +134,9 @@ def test_snowflake_cortex_ocr_rejects_a_document_that_parsed_to_nothing() -> Non
     """An empty parse contributes nothing to the graph and is not a success."""
 
     connection = FakeConnection(
-        [{"value": {"pages": [{"index": 0, "content": "   "}]}, "metadata": {}}]
+        [[{"value": {"pages": [{"index": 0, "content": "   "}]}, "metadata": {}}]]
     )
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    provider = SnowflakeCortexOcrProvider(_config(), connector_factory=factory)
+    provider = SnowflakeCortexOcrProvider(CONFIG, connector_factory=lambda **_: connection)
 
     with pytest.raises(RuntimeError, match="returned no text"):
         provider.parse(_input_file("@DOC_STAGE/docs/a.pdf"), OcrOptions())
@@ -214,12 +149,8 @@ def test_snowflake_cortex_ocr_rejects_an_unrecognized_response_shape() -> None:
     response structure itself while the run reported success.
     """
 
-    connection = FakeConnection([{"value": {"document": {"blocks": ["Alice"]}}, "metadata": {}}])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    provider = SnowflakeCortexOcrProvider(_config(), connector_factory=factory)
+    connection = FakeConnection([[{"value": {"document": {"blocks": ["Alice"]}}, "metadata": {}}]])
+    provider = SnowflakeCortexOcrProvider(CONFIG, connector_factory=lambda **_: connection)
 
     with pytest.raises(RuntimeError, match="unrecognized response") as error:
         provider.parse(_input_file("@DOC_STAGE/docs/a.pdf"), OcrOptions())
@@ -241,19 +172,4 @@ def _input_file(
         checksum="checksum",
         mime_type=mime_type,
         size_bytes=10,
-    )
-
-
-def _config() -> SnowflakeConnectionConfig:
-    return SnowflakeConnectionConfig(
-        account="account",
-        host=None,
-        user="user",
-        password="password",
-        authenticator=None,
-        private_key_path=None,
-        database="DB",
-        schema_name="SCHEMA",
-        role="ROLE",
-        warehouse="WH",
     )

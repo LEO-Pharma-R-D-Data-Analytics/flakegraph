@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from snowflake_fakes import CONFIG, FakeConnection, FakeCursor
 
 from kg_processor.adapters.jobs.snowflake import (
     SnowflakeJobFileProgressSink,
@@ -31,91 +32,14 @@ from kg_processor.adapters.jobs.snowflake import (
     build_select_claimed_job_statement,
     build_update_job_file_progress_statement,
 )
-from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
 from kg_processor.application.progress import ProgressEvent
 from kg_processor.domain.documents import InputFile
 from kg_processor.domain.jobs import JobFileResult
 
 
-class FakeCursor:
-    def __init__(
-        self,
-        rows: list[Sequence[object] | None],
-        all_rows: list[Sequence[object]] | None = None,
-        rowcount: int = 1,
-    ) -> None:
-        self.rows = rows
-        self.all_rows = all_rows or []
-        self.index = 0
-        self.executed: list[tuple[str, Sequence[object] | None]] = []
-        self.executed_many: list[tuple[str, Sequence[Sequence[object]], dict[str, object]]] = []
-        self.closed = False
-        self.rowcount = rowcount
-
-    def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-        self.executed.append((sql, params))
-        return None
-
-    def executemany(
-        self,
-        sql: str,
-        params: Sequence[Sequence[object]],
-        **kwargs: object,
-    ) -> object:
-        """Capture a bulk submission without emulating connector internals."""
-
-        self.executed_many.append((sql, params, kwargs))
-        self.rowcount = len(params)
-        return None
-
-    def fetchone(self) -> Sequence[object] | None:
-        row = self.rows[self.index] if self.index < len(self.rows) else None
-        self.index += 1
-        return row
-
-    def fetchall(self) -> list[object]:
-        return list(self.all_rows)
-
-    def close(self) -> object:
-        self.closed = True
-        return None
-
-
-class FakeConnection:
-    def __init__(
-        self,
-        rows: list[Sequence[object] | None],
-        all_rows: list[Sequence[object]] | None = None,
-        rowcount: int = 1,
-    ) -> None:
-        self.cursor_instance = FakeCursor(rows, all_rows, rowcount)
-        self.committed = False
-        self.rolled_back = False
-        self.closed = False
-
-    def cursor(self) -> FakeCursor:
-        return self.cursor_instance
-
-    def commit(self) -> object:
-        self.committed = True
-        return None
-
-    def rollback(self) -> object:
-        self.rolled_back = True
-        return None
-
-    def close(self) -> object:
-        self.closed = True
-        return None
-
-
 def test_snowflake_job_manager_claims_available_job() -> None:
     connection = FakeConnection([("job_1", "RUNNING", "worker_1")])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     result = manager.claim_job("job_1", "graph", "worker_1", 900, {"safe": True})
 
@@ -135,11 +59,7 @@ def test_snowflake_job_manager_claims_available_job() -> None:
 
 def test_snowflake_job_manager_returns_not_claimed_when_row_is_not_owned() -> None:
     connection = FakeConnection([None])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     result = manager.claim_job("job_1", "graph", "worker_1", 900, {})
 
@@ -151,12 +71,8 @@ def test_snowflake_job_manager_returns_not_claimed_when_row_is_not_owned() -> No
 def test_snowflake_job_manager_submits_files_in_one_idempotent_merge() -> None:
     """Verify queue submission persists provenance without changing existing statuses."""
 
-    connection = FakeConnection([])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    connection = FakeConnection()
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
     files = [
         InputFile(
             id="file_1",
@@ -210,21 +126,17 @@ def test_snowflake_job_manager_rejects_empty_submission_before_connecting() -> N
     def factory(**_kwargs: object) -> FakeConnection:
         raise AssertionError("empty submission must not connect")
 
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=factory)
 
     with pytest.raises(ValueError, match="no input files"):
         manager.submit_job_files("job_1", "graph", [], {})
 
 
 def test_snowflake_job_manager_completes_and_fails_running_job() -> None:
-    complete_connection = FakeConnection([])
-    fail_connection = FakeConnection([])
+    complete_connection = FakeConnection(rowcount=1)
+    fail_connection = FakeConnection(rowcount=1)
     connections = [complete_connection, fail_connection]
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connections.pop(0)
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connections.pop(0))
 
     manager.complete_job("job_1", "worker_1", {"files_processed": 1})
     manager.close()
@@ -238,12 +150,8 @@ def test_snowflake_job_manager_completes_and_fails_running_job() -> None:
 
 
 def test_snowflake_job_manager_rejects_completion_after_lease_loss() -> None:
-    connection = FakeConnection([], rowcount=0)
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    connection = FakeConnection(rowcount=0)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     with pytest.raises(RuntimeError, match="no longer owned"):
         manager.complete_job("job_1", "stale_worker", {"files_processed": 1})
@@ -253,12 +161,8 @@ def test_snowflake_job_manager_rejects_completion_after_lease_loss() -> None:
 
 
 def test_snowflake_job_manager_heartbeats_running_job() -> None:
-    connection = FakeConnection([])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    connection = FakeConnection(rowcount=1)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     manager.heartbeat_job("job_1", "worker_1", 900)
 
@@ -271,25 +175,22 @@ def test_snowflake_job_manager_heartbeats_running_job() -> None:
 
 def test_snowflake_job_manager_claims_file_batch() -> None:
     connection = FakeConnection(
-        [],
-        all_rows=[
-            (
-                "job_1",
-                "graph",
-                "file_1",
-                "@DB.SCHEMA.DOC_STAGE/input/a.pdf",
-                "checksum-a",
-                "CLAIMED",
-                "worker_1",
-                2,
-            )
+        result_sets=[
+            [
+                (
+                    "job_1",
+                    "graph",
+                    "file_1",
+                    "@DB.SCHEMA.DOC_STAGE/input/a.pdf",
+                    "checksum-a",
+                    "CLAIMED",
+                    "worker_1",
+                    2,
+                )
+            ]
         ],
     )
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     claims = manager.claim_job_files("job_1", "graph", "worker_1", 900, 25)
 
@@ -324,11 +225,7 @@ def test_snowflake_job_manager_detects_complete_file_queue_ownership(
     """Only a worker owning every queue row may publish graph-wide artifacts."""
 
     connection = FakeConnection([counts])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     owns_queue = manager.worker_owns_entire_file_queue(
         "job_1",
@@ -352,15 +249,11 @@ def test_snowflake_job_manager_detects_complete_file_queue_ownership(
 
 
 def test_snowflake_job_manager_completes_and_fails_claimed_files() -> None:
-    complete_connection = FakeConnection([])
-    fail_connection = FakeConnection([])
-    drain_connection = FakeConnection([])
+    complete_connection = FakeConnection()
+    fail_connection = FakeConnection()
+    drain_connection = FakeConnection(rowcount=1)
     connections = [complete_connection, fail_connection, drain_connection]
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connections.pop(0)
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connections.pop(0))
 
     manager.complete_job_files(
         "job_1",
@@ -424,12 +317,8 @@ def test_snowflake_job_manager_completes_and_fails_claimed_files() -> None:
 
 
 def test_snowflake_job_manager_heartbeats_claimed_files() -> None:
-    connection = FakeConnection([])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    connection = FakeConnection(rowcount=1)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     manager.heartbeat_job_files("job_1", "graph", "worker_1", ["file_1", "file_2"], 900)
 
@@ -441,12 +330,8 @@ def test_snowflake_job_manager_heartbeats_claimed_files() -> None:
 
 
 def test_snowflake_job_manager_updates_claimed_file_progress() -> None:
-    connection = FakeConnection([])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    connection = FakeConnection()
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     manager.update_job_file_progress(
         "job_1",
@@ -464,9 +349,9 @@ def test_snowflake_job_manager_updates_claimed_file_progress() -> None:
 
 
 def test_snowflake_job_file_progress_sink_targets_claimed_rows() -> None:
-    manager = FakeProgressManager()
+    manager = _RecordingProgressManager()
     sink = SnowflakeJobFileProgressSink(
-        cast(SnowflakeJobManager, manager),
+        cast(Any, manager),
         "job_1",
         "graph",
         "worker_1",
@@ -506,6 +391,13 @@ def test_snowflake_job_file_progress_sink_targets_claimed_rows() -> None:
     assert manager.updates == [
         ("job_1", "graph", "worker_1", ["file_1"], "ocr"),
         ("job_1", "graph", "worker_1", ["file_1", "file_2"], "merge"),
+    ]
+    # Every event also lands on the job row, the unclaimed file's included: the
+    # job-level stage is graph-wide and does not depend on who owns the file.
+    assert [(p["stage"], p["status"]) for p in manager.progress_payloads] == [
+        ("ocr", "started"),
+        ("merge", "completed"),
+        ("ocr", "started"),
     ]
 
 
@@ -552,63 +444,6 @@ def test_heartbeat_statements_reject_non_positive_limits() -> None:
         build_update_job_file_progress_statement(0)
 
 
-def _config() -> SnowflakeConnectionConfig:
-    return SnowflakeConnectionConfig(
-        account="account",
-        host=None,
-        user="user",
-        password="password",
-        authenticator=None,
-        private_key_path=None,
-        database="DB",
-        schema_name="SCHEMA",
-        role="ROLE",
-        warehouse="WH",
-    )
-
-
-class FakeProgressManager:
-    def __init__(self) -> None:
-        self.updates: list[tuple[str, str, str, list[str], str]] = []
-
-    def update_job_file_progress(
-        self,
-        job_id: str,
-        graph_id: str,
-        worker_id: str,
-        file_ids: list[str],
-        stage: str,
-    ) -> None:
-        self.updates.append((job_id, graph_id, worker_id, file_ids, stage))
-
-
-class SequencedCursor(FakeCursor):
-    """Return a different result set per fetchall, for before/after comparisons."""
-
-    def __init__(self, result_sets: list[list[Sequence[object]]]) -> None:
-        super().__init__([])
-        self.result_sets = result_sets
-        self.fetch_index = 0
-
-    def fetchall(self) -> list[object]:
-        if self.fetch_index < len(self.result_sets):
-            rows = self.result_sets[self.fetch_index]
-            self.fetch_index += 1
-            return list(rows)
-        return []
-
-
-class SequencedConnection(FakeConnection):
-    cursor_instance: SequencedCursor
-
-    def __init__(self, result_sets: list[list[Sequence[object]]]) -> None:
-        super().__init__([])
-        self.cursor_instance = SequencedCursor(result_sets)
-
-    def cursor(self) -> SequencedCursor:
-        return self.cursor_instance
-
-
 def test_retry_statement_respects_the_attempt_budget() -> None:
     """A poisoned document must not be retried forever by repeating the command."""
 
@@ -641,17 +476,13 @@ def test_job_reset_targets_settled_jobs_only() -> None:
 
 
 def test_retry_requeues_failed_files_and_reports_exhausted_rows() -> None:
-    connection = SequencedConnection(
-        [
+    connection = FakeConnection(
+        result_sets=[
             [("FAILED", 10)],
             [("QUEUED", 8), ("FAILED", 2)],
         ]
     )
-
-    def factory(**_kwargs: object) -> SequencedConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     result = manager.retry_failed_job_files("job_1", "graph_1", 3)
 
@@ -664,12 +495,8 @@ def test_retry_requeues_failed_files_and_reports_exhausted_rows() -> None:
 
 
 def test_queue_status_counts_are_reported_per_status() -> None:
-    connection = FakeConnection([], all_rows=[("DONE", 7), ("FAILED", 3)])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=factory)
+    connection = FakeConnection(result_sets=[[("DONE", 7), ("FAILED", 3)]])
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     assert manager.count_job_files_by_status("job_1", "graph_1") == {"DONE": 7, "FAILED": 3}
 
@@ -794,107 +621,31 @@ def test_file_stage_and_job_progress_agree_on_one_stage_name() -> None:
     assert file_stages == payload_stages == {"graph_extraction"}
 
 
-class _TransactionLoggingCursor:
-    """Record statements in the same ordered log as its connection's transaction events."""
+class _FailingCursor(FakeCursor):
+    """Lose the session partway through a claim, after ``fail_after`` statements."""
 
-    def __init__(
-        self,
-        log: list[tuple[str, object]],
-        rows: list[Sequence[object] | None],
-        all_rows: list[Sequence[object]],
-        fail_after: int | None,
-    ) -> None:
-        self.log = log
-        self.rows = rows
-        self.all_rows = all_rows
-        self.index = 0
-        self.executed = 0
+    def __init__(self, fail_after: int) -> None:
+        super().__init__()
         self.fail_after = fail_after
-        self.closed = False
 
-    def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-        """Log the statement and optionally emulate a mid-claim connector failure."""
-
-        self.executed += 1
-        self.log.append(("execute", sql))
-        if self.fail_after is not None and self.executed > self.fail_after:
-            raise RuntimeError("connector lost the session")
-        return None
-
-    def fetchone(self) -> Sequence[object] | None:
-        """Return the next prepared row for a confirming single-row read."""
-
-        row = self.rows[self.index] if self.index < len(self.rows) else None
-        self.index += 1
-        return row
-
-    def fetchall(self) -> list[object]:
-        """Return the prepared rows for a confirming batch read."""
-
-        return list(self.all_rows)
-
-    def close(self) -> object:
-        """Record cursor release without emulating connector internals."""
-
-        self.closed = True
-        return None
-
-
-class _TransactionLoggingConnection:
-    """Expose the connector autocommit hook and order every transaction event."""
-
-    def __init__(
+    def execute(
         self,
-        rows: list[Sequence[object] | None] | None = None,
-        all_rows: list[Sequence[object]] | None = None,
-        fail_after: int | None = None,
-    ) -> None:
-        self.log: list[tuple[str, object]] = []
-        self.cursor_instance = _TransactionLoggingCursor(
-            self.log,
-            rows or [],
-            all_rows or [],
-            fail_after,
-        )
-
-    def cursor(self) -> _TransactionLoggingCursor:
-        """Return the single cursor whose statements share the connection log."""
-
-        return self.cursor_instance
-
-    def autocommit(self, enabled: bool) -> None:
-        """Record the connector's transaction-mode toggle."""
-
-        self.log.append(("autocommit", enabled))
-
-    def commit(self) -> object:
-        """Record a commit."""
-
-        self.log.append(("commit", None))
-        return None
-
-    def rollback(self) -> object:
-        """Record a rollback."""
-
-        self.log.append(("rollback", None))
-        return None
-
-    def close(self) -> object:
-        """Record connection release."""
-
-        self.log.append(("close", None))
+        sql: str,
+        params: Sequence[object] | None = None,
+        *,
+        timeout: int | None = None,
+    ) -> object:
+        super().execute(sql, params, timeout=timeout)
+        if len(self.executed) > self.fail_after:
+            raise RuntimeError("connector lost the session")
         return None
 
 
 def test_job_claim_opens_a_transaction_before_its_first_statement() -> None:
     """The insert, the lease claim, and the confirming read must commit as one unit."""
 
-    connection = _TransactionLoggingConnection(rows=[("job_1", "RUNNING", "worker_1")])
-
-    def factory(**_kwargs: object) -> _TransactionLoggingConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=cast(Any, factory))
+    connection = FakeConnection([("job_1", "RUNNING", "worker_1")])
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     result = manager.claim_job("job_1", "graph", "worker_1", 900, {"safe": True})
 
@@ -907,12 +658,8 @@ def test_job_claim_opens_a_transaction_before_its_first_statement() -> None:
 def test_file_claim_opens_a_transaction_before_its_first_statement() -> None:
     """Claiming file rows and reading them back must commit as one unit."""
 
-    connection = _TransactionLoggingConnection(all_rows=[])
-
-    def factory(**_kwargs: object) -> _TransactionLoggingConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=cast(Any, factory))
+    connection = FakeConnection()
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     assert manager.claim_job_files("job_1", "graph", "worker_1", 900, 4) == []
     assert connection.log[0] == ("autocommit", False)
@@ -923,12 +670,8 @@ def test_file_claim_opens_a_transaction_before_its_first_statement() -> None:
 def test_a_failed_claim_confirmation_releases_the_rows_it_claimed() -> None:
     """A read that fails after the claim must not strand rows on an unaware worker."""
 
-    connection = _TransactionLoggingConnection(fail_after=2)
-
-    def factory(**_kwargs: object) -> _TransactionLoggingConnection:
-        return connection
-
-    manager = SnowflakeJobManager(_config(), connector_factory=cast(Any, factory))
+    connection = FakeConnection(cursor=_FailingCursor(fail_after=2))
+    manager = SnowflakeJobManager(CONFIG, connector_factory=lambda **_: connection)
 
     with pytest.raises(RuntimeError):
         manager.claim_job_files("job_1", "graph", "worker_1", 900, 4)

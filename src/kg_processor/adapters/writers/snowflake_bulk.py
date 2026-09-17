@@ -302,11 +302,7 @@ def validate_put_result(cursor: object) -> None:
         raise RuntimeError("Snowflake PUT did not expose an upload result")
     rows = list(fetchall())
     if not rows:
-        # Tiny connector fakes predating PUT status validation have no DB-API
-        # description. Real Snowflake PUT statements always return result rows.
-        if hasattr(cursor, "description"):
-            raise RuntimeError("Snowflake PUT returned no upload status")
-        return
+        raise RuntimeError("Snowflake PUT returned no upload status")
     failures: list[str] = []
     for row in rows:
         status = _put_status(row)

@@ -3,15 +3,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from snowflake_fakes import FakeConnection, FakeCursor
+
 from kg_processor.application.snowflake_access import (
     REQUIRED_SNOWFLAKE_COLUMNS,
     REQUIRED_SNOWFLAKE_TABLES,
     run_snowflake_access_check,
 )
-from kg_processor.config.settings import Settings
+from kg_processor.config.settings import Settings, _deep_update
 
 
-class FakeCursor:
+class AccessCheckCursor(FakeCursor):
+    """Answer every access-check statement the way a correctly provisioned account does."""
+
     def __init__(
         self,
         visible_tables: set[str] | None = None,
@@ -19,65 +23,74 @@ class FakeCursor:
         fail_document_stage: bool = False,
         stored_embedding_dimension: int = 1024,
     ) -> None:
+        super().__init__()
         self.visible_tables = visible_tables or set(REQUIRED_SNOWFLAKE_TABLES)
         self.visible_columns = visible_columns or {
             table: set(REQUIRED_SNOWFLAKE_COLUMNS[table]) for table in self.visible_tables
         }
         self.fail_document_stage = fail_document_stage
         self.stored_embedding_dimension = stored_embedding_dimension
-        self.executed: list[tuple[str, Sequence[object] | None]] = []
-        self.fetchone_result: Sequence[object] | None = None
-        self.fetchall_result: list[Sequence[object]] = []
-        self.closed = False
 
-    def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-        self.executed.append((sql, params))
-        self.fetchone_result = None
-        self.fetchall_result = []
+    def execute(
+        self,
+        sql: str,
+        params: Sequence[object] | None = None,
+        *,
+        timeout: int | None = None,
+    ) -> object:
+        super().execute(sql, params, timeout=timeout)
+        self.rows = []
+        self.result_sets = []
         if sql.startswith("SELECT CURRENT_ACCOUNT"):
-            self.fetchone_result = [
-                "EXAMPLE_ACCOUNT",
-                "AWS_EU_CENTRAL_1",
-                "USER",
-                "KG_PROCESSOR_ROLE",
-                "KG_DB",
-                "GRAPH",
-                "WH",
+            self.rows = [
+                [
+                    "EXAMPLE_ACCOUNT",
+                    "AWS_EU_CENTRAL_1",
+                    "USER",
+                    "KG_PROCESSOR_ROLE",
+                    "KG_DB",
+                    "GRAPH",
+                    "WH",
+                ]
             ]
         elif "INFORMATION_SCHEMA.TABLES" in sql:
-            self.fetchall_result = [(table,) for table in sorted(self.visible_tables)]
+            self.result_sets = [[(table,) for table in sorted(self.visible_tables)]]
         elif "INFORMATION_SCHEMA.COLUMNS" in sql:
-            self.fetchall_result = [
-                (table, column)
-                for table, columns in sorted(self.visible_columns.items())
-                for column in sorted(columns)
+            self.result_sets = [
+                [
+                    (table, column)
+                    for table, columns in sorted(self.visible_columns.items())
+                    for column in sorted(columns)
+                ]
             ]
         elif sql.startswith("SHOW COLUMNS LIKE 'EMBEDDING'"):
-            self.fetchall_result = [
-                (
-                    "created",
-                    table,
-                    "EMBEDDING",
-                    '{"type":"VECTOR","nullable":true,'
-                    '"vectorElementType":{"type":"REAL","nullable":false},'
-                    f'"dimension":{self.stored_embedding_dimension}}}',
-                )
-                for table in sorted(self.visible_tables)
+            self.result_sets = [
+                [
+                    (
+                        "created",
+                        table,
+                        "EMBEDDING",
+                        '{"type":"VECTOR","nullable":true,'
+                        '"vectorElementType":{"type":"REAL","nullable":false},'
+                        f'"dimension":{self.stored_embedding_dimension}}}',
+                    )
+                    for table in sorted(self.visible_tables)
+                ]
             ]
         elif sql.startswith("SHOW WAREHOUSES"):
-            self.fetchall_result = [("created", "WH")]
+            self.result_sets = [[("created", "WH")]]
         elif sql.startswith("LIST @KG_DB.GRAPH.KG_DOCS"):
             if self.fail_document_stage:
                 raise RuntimeError("stage not authorized")
-            self.fetchall_result = [("kg_docs/incoming/canary.pdf", 123, "checksum-canary")]
+            self.result_sets = [[("kg_docs/incoming/canary.pdf", 123, "checksum-canary")]]
         elif sql.startswith("LIST @KG_DB.GRAPH.KG_LOAD_STAGE") or sql.startswith(
             "LIST @KG_DB.GRAPH.KG_SERVICE_SPECS"
         ):
-            self.fetchall_result = []
+            self.result_sets = [[]]
         elif sql.startswith("SHOW COMPUTE POOLS"):
-            self.fetchall_result = [("KG_PROCESSOR_CPU_POOL",)]
+            self.result_sets = [[("KG_PROCESSOR_CPU_POOL",)]]
         elif sql.startswith("SHOW IMAGE REPOSITORIES"):
-            self.fetchall_result = [("KG_IMAGES",)]
+            self.result_sets = [[("KG_IMAGES",)]]
         elif sql.startswith("SELECT AI_"):
             self._configure_ai_result(sql)
         else:
@@ -88,50 +101,18 @@ class FakeCursor:
         """Return the minimal shape expected from each Cortex canary call."""
 
         if sql.startswith("SELECT AI_COMPLETE"):
-            self.fetchone_result = [{"structured_output": {"ok": True}}]
+            self.rows = [[{"structured_output": {"ok": True}}]]
         elif sql.startswith("SELECT AI_PARSE_DOCUMENT"):
-            self.fetchone_result = [{"value": {"pages": [{"content": "canary"}]}}]
+            self.rows = [[{"value": {"pages": [{"content": "canary"}]}}]]
         else:
-            self.fetchone_result = [[0.1, 0.2, 0.3]]
-
-    def fetchone(self) -> Sequence[object] | None:
-        return self.fetchone_result
-
-    def fetchall(self) -> list[object]:
-        return list(self.fetchall_result)
-
-    def close(self) -> object:
-        self.closed = True
-        return None
-
-
-class FakeConnection:
-    def __init__(self, cursor: FakeCursor) -> None:
-        self.cursor_instance = cursor
-        self.closed = False
-
-    def cursor(self) -> FakeCursor:
-        return self.cursor_instance
-
-    def commit(self) -> object:
-        return None
-
-    def rollback(self) -> object:
-        return None
-
-    def close(self) -> object:
-        self.closed = True
-        return None
+            self.rows = [[[0.1, 0.2, 0.3]]]
 
 
 def test_snowflake_access_check_reports_configured_objects_and_cortex_access() -> None:
-    cursor = FakeCursor()
-    connection = FakeConnection(cursor)
+    cursor = AccessCheckCursor()
+    connection = FakeConnection(cursor=cursor)
 
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    report = run_snowflake_access_check(_settings(), connector_factory=factory)
+    report = run_snowflake_access_check(_settings(), connector_factory=lambda **_: connection)
 
     assert report.ok
     assert {check.name for check in report.checks} == {
@@ -173,16 +154,14 @@ def test_snowflake_access_check_reports_configured_objects_and_cortex_access() -
 
 
 def test_snowflake_access_check_reports_missing_table_and_stage_error() -> None:
-    cursor = FakeCursor(
+    cursor = AccessCheckCursor(
         visible_tables=set(REQUIRED_SNOWFLAKE_TABLES) - {"KG_NODE"},
         fail_document_stage=True,
     )
-    connection = FakeConnection(cursor)
 
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    report = run_snowflake_access_check(_settings(), connector_factory=factory)
+    report = run_snowflake_access_check(
+        _settings(), connector_factory=lambda **_: FakeConnection(cursor=cursor)
+    )
 
     assert not report.ok
     target_tables = next(check for check in report.checks if check.name == "target_tables")
@@ -195,13 +174,11 @@ def test_snowflake_access_check_reports_missing_table_and_stage_error() -> None:
 def test_snowflake_access_check_reports_missing_required_column() -> None:
     visible_columns = {table: set(columns) for table, columns in REQUIRED_SNOWFLAKE_COLUMNS.items()}
     visible_columns["KG_NODE"].remove("NAME")
-    cursor = FakeCursor(visible_columns=visible_columns)
-    connection = FakeConnection(cursor)
+    cursor = AccessCheckCursor(visible_columns=visible_columns)
 
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    report = run_snowflake_access_check(_settings(), connector_factory=factory)
+    report = run_snowflake_access_check(
+        _settings(), connector_factory=lambda **_: FakeConnection(cursor=cursor)
+    )
 
     assert not report.ok
     target_columns = next(check for check in report.checks if check.name == "target_table_columns")
@@ -209,15 +186,11 @@ def test_snowflake_access_check_reports_missing_required_column() -> None:
 
 
 def test_snowflake_access_check_rejects_unsafe_bulk_stage_location() -> None:
-    cursor = FakeCursor()
-    connection = FakeConnection(cursor)
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
+    cursor = AccessCheckCursor()
 
     report = run_snowflake_access_check(
         _settings({"snowflake": {"bulk_stage": "@KG_DB.GRAPH.KG_LOAD_STAGE;DROP"}}),
-        connector_factory=factory,
+        connector_factory=lambda **_: FakeConnection(cursor=cursor),
     )
 
     bulk_stage = next(check for check in report.checks if check.name == "bulk_stage")
@@ -240,15 +213,9 @@ def test_snowflake_access_check_reports_connection_failure() -> None:
 
 
 def test_snowflake_access_check_rejects_system_compute_pool_for_spcs_job() -> None:
-    cursor = FakeCursor()
-    connection = FakeConnection(cursor)
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     report = run_snowflake_access_check(
         _settings({"snowflake": {"compute_pool": "SYSTEM_COMPUTE_POOL_GPU"}}),
-        connector_factory=factory,
+        connector_factory=lambda **_: FakeConnection(cursor=AccessCheckCursor()),
     )
 
     compute_pool = next(check for check in report.checks if check.name == "compute_pool")
@@ -289,17 +256,7 @@ def _settings(overrides: dict[str, Any] | None = None) -> Settings:
             "service_spec_stage": "@KG_DB.GRAPH.KG_SERVICE_SPECS",
         },
     }
-    if overrides:
-        _deep_update(base, overrides)
-    return Settings.load(overrides=base)
-
-
-def _deep_update(base: dict[str, Any], update: dict[str, Any]) -> None:
-    for key, value in update.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_update(base[key], value)
-        else:
-            base[key] = value
+    return Settings.load(overrides=_deep_update(base, overrides or {}))
 
 
 def test_an_embedding_width_the_target_tables_cannot_store_is_reported_before_the_run() -> None:
@@ -310,10 +267,10 @@ def test_an_embedding_width_the_target_tables_cannot_store_is_reported_before_th
     extracted and summarised, and the whole run is then rejected at the write.
     """
 
-    cursor = FakeCursor(stored_embedding_dimension=1024)
+    cursor = AccessCheckCursor(stored_embedding_dimension=1024)
     settings = _settings({"embedding": {"dimension": 768}})
 
-    report = run_snowflake_access_check(settings, lambda **_kwargs: FakeConnection(cursor))
+    report = run_snowflake_access_check(settings, lambda **_: FakeConnection(cursor=cursor))
 
     check = next(item for item in report.checks if item.name == "embedding_dimension")
     assert not check.ok
@@ -327,9 +284,9 @@ def test_an_embedding_width_the_target_tables_cannot_store_is_reported_before_th
 def test_a_matching_embedding_width_passes_without_comment() -> None:
     """Say nothing when the configured width is the one the tables already store."""
 
-    cursor = FakeCursor(stored_embedding_dimension=1024)
+    cursor = AccessCheckCursor(stored_embedding_dimension=1024)
 
-    report = run_snowflake_access_check(_settings(), lambda **_kwargs: FakeConnection(cursor))
+    report = run_snowflake_access_check(_settings(), lambda **_: FakeConnection(cursor=cursor))
 
     check = next(item for item in report.checks if item.name == "embedding_dimension")
     assert check.ok

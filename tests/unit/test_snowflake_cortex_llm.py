@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
 
 import pytest
+from snowflake_fakes import CONFIG, FakeConnection
 
 from kg_processor.adapters.llm.snowflake_cortex import (
     SnowflakeCortexLlmProvider,
@@ -12,67 +12,11 @@ from kg_processor.adapters.llm.snowflake_cortex import (
     _structured_payload,
     _unwrap_completion_result,
 )
-from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
 from kg_processor.ports.llm import (
     CommunitySummaryRequest,
     DescriptionMergeRequest,
     StructuredCompletionRequest,
 )
-
-
-class FakeCursor:
-    """Record bound SQL calls and return deterministic connector rows."""
-
-    def __init__(self, rows: list[Sequence[object]]) -> None:
-        self.rows = rows
-        self.index = 0
-        self.executed: list[tuple[str, Sequence[object] | None]] = []
-        self.timeouts: list[int | None] = []
-        self.closed = False
-
-    def execute(
-        self,
-        sql: str,
-        params: Sequence[object] | None = None,
-        *,
-        timeout: int | None = None,
-    ) -> object:
-        self.executed.append((sql, params))
-        self.timeouts.append(timeout)
-        return None
-
-    def fetchone(self) -> Sequence[object] | None:
-        row = self.rows[self.index]
-        self.index += 1
-        return row
-
-    def fetchall(self) -> list[object]:
-        return []
-
-    def close(self) -> object:
-        self.closed = True
-        return None
-
-
-class FakeConnection:
-    """Expose the cursor methods used by the Snowflake adapter."""
-
-    def __init__(self, rows: list[Sequence[object]]) -> None:
-        self.cursor_instance = FakeCursor(rows)
-        self.closed = False
-
-    def cursor(self) -> FakeCursor:
-        return self.cursor_instance
-
-    def commit(self) -> object:
-        return None
-
-    def rollback(self) -> object:
-        return None
-
-    def close(self) -> object:
-        self.closed = True
-        return None
 
 
 def test_snowflake_cortex_executes_provider_neutral_structured_completion() -> None:
@@ -147,14 +91,10 @@ def test_snowflake_cortex_bounds_enrichment_calls_without_a_request_timeout() ->
     """Enrichment carries no per-request timeout, so the adapter's own applies."""
 
     connection = FakeConnection([[{"structured_output": {"description": "Grounded."}}]])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     provider = SnowflakeCortexLlmProvider(
-        _config(),
+        CONFIG,
         "llama3.3-70b",
-        connector_factory=factory,
+        connector_factory=lambda **_: connection,
         timeout_seconds=77,
     )
 
@@ -414,24 +354,6 @@ def test_snowflake_cortex_removes_only_unsupported_schema_constraints() -> None:
 def _provider(connection: FakeConnection) -> SnowflakeCortexLlmProvider:
     """Build an adapter bound to a deterministic fake connection."""
 
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
-    return SnowflakeCortexLlmProvider(_config(), "llama3.3-70b", connector_factory=factory)
-
-
-def _config() -> SnowflakeConnectionConfig:
-    """Return the complete connection settings required by the adapter."""
-
-    return SnowflakeConnectionConfig(
-        account="account",
-        host=None,
-        user="user",
-        password="password",
-        authenticator=None,
-        private_key_path=None,
-        database="DB",
-        schema_name="SCHEMA",
-        role="ROLE",
-        warehouse="WH",
+    return SnowflakeCortexLlmProvider(
+        CONFIG, "llama3.3-70b", connector_factory=lambda **_: connection
     )

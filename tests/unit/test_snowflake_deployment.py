@@ -14,7 +14,7 @@ from kg_processor.application.snowflake_deployment import (
     render_snowflake_setup_sql,
     render_spcs_service_spec_yaml,
 )
-from kg_processor.config.settings import Settings
+from kg_processor.config.settings import Settings, _deep_update
 
 _DIGEST = "sha256:" + "a" * 64
 
@@ -358,17 +358,7 @@ def _settings(overrides: dict[str, Any] | None = None) -> Settings:
             "service_spec_stage": "@KG_DB.GRAPH.KG_SERVICE_SPECS",
         },
     }
-    if overrides:
-        _deep_update(base, overrides)
-    return Settings.load(overrides=base)
-
-
-def _deep_update(base: dict[str, Any], update: dict[str, Any]) -> None:
-    for key, value in update.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_update(base[key], value)
-        else:
-            base[key] = value
+    return Settings.load(overrides=_deep_update(base, overrides or {}))
 
 
 def test_spcs_runtime_configuration_reloads_through_settings() -> None:

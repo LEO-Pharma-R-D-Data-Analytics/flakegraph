@@ -2,71 +2,56 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import pytest
+from snowflake_fakes import FakeConnection, FakeCursor
 
 from kg_processor.application.snowflake_export import export_snowflake_graph
 from kg_processor.application.snowflake_schema import snowflake_schema_columns
 from kg_processor.config.settings import Settings
 
-_ROWS: dict[str, list[Sequence[object]]] = {
+_ROWS: dict[str, list[object]] = {
     "KG_NODE": [
         ("node-1", "g1", "aikido", "Aikido", "CONCEPT", None, None, None, None, None, 1, 0.5),
     ],
     "KG_EDGE": [
         (
-            "edge-1", "g1", "node-1", "node-2", "RELATED_TO", None,
-            1.0, 0.9, None, None, None, 1, None,
+            "edge-1",
+            "g1",
+            "node-1",
+            "node-2",
+            "RELATED_TO",
+            None,
+            1.0,
+            0.9,
+            None,
+            None,
+            None,
+            1,
+            None,
         ),
     ],
 }
 
 
-class FakeCursor:
-    def __init__(self) -> None:
-        self.executed: list[tuple[str, Sequence[object] | None]] = []
-        self._rows: list[Sequence[object]] = []
-        self.closed = False
+class ExportCursor(FakeCursor):
+    """Answer each table read with that table's rows, so every export has data to write."""
 
-    def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-        self.executed.append((sql, params))
-        self._rows = []
-        for table, rows in _ROWS.items():
-            if f".{table} " in sql:
-                self._rows = list(rows)
+    def execute(
+        self,
+        sql: str,
+        params: Sequence[object] | None = None,
+        *,
+        timeout: int | None = None,
+    ) -> object:
+        super().execute(sql, params, timeout=timeout)
+        self.result_sets = [rows for table, rows in _ROWS.items() if f".{table} " in sql]
         return None
 
-    def fetchall(self) -> list[Any]:
-        return list(self._rows)
 
-    def fetchone(self) -> Sequence[object] | None:
-        return self._rows[0] if self._rows else None
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class FakeConnection:
-    def __init__(self) -> None:
-        self.cursors: list[FakeCursor] = []
-        self.closed = False
-
-    def cursor(self) -> FakeCursor:
-        cursor = FakeCursor()
-        self.cursors.append(cursor)
-        return cursor
-
-    def commit(self) -> object:
-        return None
-
-    def rollback(self) -> object:
-        return None
-
-    def close(self) -> object:
-        self.closed = True
-        return None
+def _connection() -> FakeConnection:
+    return FakeConnection(cursor=ExportCursor())
 
 
 def _settings() -> Settings:
@@ -91,7 +76,7 @@ def test_export_writes_every_inspection_artifact(tmp_path: Path) -> None:
     would silently understate a graph during gold evaluation.
     """
 
-    connection = FakeConnection()
+    connection = _connection()
     output = tmp_path / "kg"
 
     result = export_snowflake_graph(
@@ -123,9 +108,7 @@ def test_export_uses_lower_case_artifact_columns(tmp_path: Path) -> None:
 
     output = tmp_path / "kg"
 
-    export_snowflake_graph(
-        _settings(), "g1", output, connector_factory=lambda **_: FakeConnection()
-    )
+    export_snowflake_graph(_settings(), "g1", output, connector_factory=lambda **_: _connection())
 
     nodes = pd.read_parquet(output / "nodes.parquet")
 
@@ -139,9 +122,7 @@ def test_export_excludes_bookkeeping_columns(tmp_path: Path) -> None:
 
     output = tmp_path / "kg"
 
-    export_snowflake_graph(
-        _settings(), "g1", output, connector_factory=lambda **_: FakeConnection()
-    )
+    export_snowflake_graph(_settings(), "g1", output, connector_factory=lambda **_: _connection())
 
     nodes = pd.read_parquet(output / "nodes.parquet")
 
@@ -152,13 +133,13 @@ def test_export_excludes_bookkeeping_columns(tmp_path: Path) -> None:
 def test_export_scopes_every_read_to_the_requested_graph(tmp_path: Path) -> None:
     """A shared schema holds many graphs, so an unscoped read would merge them."""
 
-    connection = FakeConnection()
+    connection = _connection()
 
     export_snowflake_graph(
         _settings(), "g1", tmp_path / "kg", connector_factory=lambda **_: connection
     )
 
-    statements = [entry for cursor in connection.cursors for entry in cursor.executed]
+    statements = connection.cursor_instance.executed
 
     assert statements
     for sql, params in statements:
@@ -169,7 +150,7 @@ def test_export_scopes_every_read_to_the_requested_graph(tmp_path: Path) -> None
 def test_export_rejects_empty_graph_id(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="graph id"):
         export_snowflake_graph(
-            _settings(), "", tmp_path / "kg", connector_factory=lambda **_: FakeConnection()
+            _settings(), "", tmp_path / "kg", connector_factory=lambda **_: _connection()
         )
 
 
@@ -200,7 +181,7 @@ def test_export_rejects_a_name_that_is_not_an_identifier(
 
     with pytest.raises(ValueError, match="must be an unquoted identifier"):
         export_snowflake_graph(
-            settings, "g1", tmp_path / "kg", connector_factory=lambda **_: FakeConnection()
+            settings, "g1", tmp_path / "kg", connector_factory=lambda **_: _connection()
         )
 
 
@@ -217,12 +198,12 @@ def test_export_accepts_a_lower_case_configured_name(tmp_path: Path) -> None:
             }
         }
     )
-    connection = FakeConnection()
+    connection = _connection()
 
     export_snowflake_graph(
         settings, "g1", tmp_path / "kg", connector_factory=lambda **_: connection
     )
 
     assert all(
-        "EXAMPLE_DB.EXAMPLE_SCHEMA." in sql for sql, _ in connection.cursors[0].executed
+        "EXAMPLE_DB.EXAMPLE_SCHEMA." in sql for sql, _ in connection.cursor_instance.executed
     )

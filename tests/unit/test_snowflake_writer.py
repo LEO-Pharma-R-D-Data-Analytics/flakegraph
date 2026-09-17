@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from snowflake_fakes import CONFIG, FakeConnection, FakeCursor, sample_batch
 
 from kg_processor.adapters.writers.snowflake_direct import (
     ColumnSpec,
-    SnowflakeConnectionConfig,
     SnowflakeDirectWriter,
     build_edge_reconciliation_statements,
     build_merge_statement,
@@ -22,65 +21,7 @@ from kg_processor.application.snowflake_schema import (
 )
 from kg_processor.config.preflight import run_preflight
 from kg_processor.config.settings import Settings
-from kg_processor.domain.graph import (
-    Chunk,
-    Community,
-    CommunityFinding,
-    EntitySource,
-    Evidence,
-    GraphEdge,
-    GraphNode,
-    GraphWriteBatch,
-)
 from kg_processor.domain.ids import stable_id
-
-
-class FakeCursor:
-    def __init__(self) -> None:
-        self.executed: list[tuple[str, Sequence[object] | None]] = []
-        self.closed = False
-
-    def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-        self.executed.append((sql, params))
-        return None
-
-    def fetchone(self) -> Sequence[object] | None:
-        return None
-
-    def fetchall(self) -> list[object]:
-        return []
-
-    def close(self) -> object:
-        self.closed = True
-        return None
-
-
-class FakeConnection:
-    def __init__(self) -> None:
-        self.cursor_instance = FakeCursor()
-        self.committed = False
-        self.rolled_back = False
-        self.closed = False
-        self.autocommit_calls: list[bool] = []
-
-    def cursor(self) -> FakeCursor:
-        return self.cursor_instance
-
-    def commit(self) -> object:
-        self.committed = True
-        return None
-
-    def rollback(self) -> object:
-        self.rolled_back = True
-        return None
-
-    def autocommit(self, enabled: bool) -> object:
-        self.autocommit_calls.append(enabled)
-        return None
-
-    def close(self) -> object:
-        self.closed = True
-        return None
 
 
 def test_snowflake_schema_uses_configured_vector_dimension() -> None:
@@ -145,7 +86,7 @@ def test_merge_statement_casts_arrays_variants_and_vectors() -> None:
 
 
 def test_build_snowflake_rows_maps_graph_batch() -> None:
-    batch = _sample_batch()
+    batch = sample_batch()
 
     rows = build_snowflake_rows(batch)
 
@@ -184,7 +125,7 @@ def test_build_snowflake_rows_maps_graph_batch() -> None:
 
 
 def test_snowflake_row_mapping_redacts_sensitive_variant_artifacts() -> None:
-    batch = _sample_batch().model_copy(
+    batch = sample_batch().model_copy(
         update={
             "run_report": {
                 "job_id": "job",
@@ -221,7 +162,7 @@ def test_snowflake_row_mapping_redacts_sensitive_variant_artifacts() -> None:
 
 
 def test_reindex_delete_statements_remove_graph_snapshot_and_current_job_rows() -> None:
-    batch = _sample_batch()
+    batch = sample_batch()
 
     statements = build_reindex_delete_statements(batch)
 
@@ -242,7 +183,7 @@ def test_reindex_delete_statements_for_file_batch_are_file_scoped() -> None:
     Run diagnostics remain scoped by run identity.
     """
 
-    batch = _sample_batch().model_copy(
+    batch = sample_batch().model_copy(
         update={
             "write_scope": "file_batch",
             "reindex_file_ids": ["file_1"],
@@ -280,27 +221,12 @@ def test_reindex_delete_statements_for_file_batch_are_file_scoped() -> None:
 
 
 def test_snowflake_direct_writer_executes_schema_and_merges() -> None:
-    batch = _sample_batch()
+    batch = sample_batch()
     connection = FakeConnection()
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     writer = SnowflakeDirectWriter(
-        SnowflakeConnectionConfig(
-            account="account",
-            host=None,
-            user="user",
-            password="password",
-            authenticator=None,
-            private_key_path=None,
-            database="DB",
-            schema_name="SCHEMA",
-            role="ROLE",
-            warehouse="WH",
-        ),
+        CONFIG,
         embedding_dimension=2,
-        connector_factory=factory,
+        connector_factory=lambda **_: connection,
     )
 
     writer.write(batch)
@@ -321,29 +247,14 @@ def test_snowflake_direct_writer_executes_schema_and_merges() -> None:
 
 
 def test_file_batch_writer_does_not_clobber_shared_node_identity_fields() -> None:
-    batch = _sample_batch().model_copy(
+    batch = sample_batch().model_copy(
         update={"write_scope": "file_batch", "reindex_file_ids": ["file_1"]}
     )
     connection = FakeConnection()
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     SnowflakeDirectWriter(
-        SnowflakeConnectionConfig(
-            account="account",
-            host=None,
-            user="user",
-            password="password",
-            authenticator=None,
-            private_key_path=None,
-            database="DB",
-            schema_name="SCHEMA",
-            role="ROLE",
-            warehouse="WH",
-        ),
+        CONFIG,
         embedding_dimension=2,
-        connector_factory=factory,
+        connector_factory=lambda **_: connection,
     ).write(batch)
 
     node_merge = next(
@@ -387,7 +298,7 @@ def test_edge_reconciliation_rebuilds_canonical_rows_from_observations() -> None
     Aggregate files, weights, and evidence counts must be recomputed.
     """
 
-    statements = build_edge_reconciliation_statements(_sample_batch())
+    statements = build_edge_reconciliation_statements(sample_batch())
 
     assert len(statements) == 2
     aggregate_sql, aggregate_params = statements[0]
@@ -401,7 +312,7 @@ def test_edge_reconciliation_rebuilds_canonical_rows_from_observations() -> None
 def test_file_batch_node_reconciliation_uses_durable_per_file_support() -> None:
     """Rebuild shared node fields and remove unsupported nodes after a file reindex."""
 
-    batch = _sample_batch().model_copy(update={"write_scope": "file_batch"})
+    batch = sample_batch().model_copy(update={"write_scope": "file_batch"})
 
     statements = build_node_reconciliation_statements(batch)
 
@@ -434,144 +345,6 @@ def test_file_batch_node_merge_preserves_fields_rebuilt_after_observation_merge(
     assert "DEGREE =" not in update_clause
 
 
-def _sample_batch() -> GraphWriteBatch:
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=0,
-        end_offset=32,
-        token_count=6,
-        content_hash="hash",
-        section_path=["Intro"],
-        block_ids=["block_1"],
-        asset_ids=["asset_1"],
-        ocr_generation_id="ocr-run-1",
-        embedding=[0.1, 0.2],
-    )
-    node = GraphNode(
-        id="node_1",
-        graph_id="graph",
-        normalized_name="alicesmith",
-        name="Alice Smith",
-        primary_type="PERSON",
-        types=["PERSON"],
-        description="Alice Smith is mentioned.",
-        embedding=[0.1, 0.2],
-        source_chunk_ids=["chunk_1"],
-        degree=1,
-        rank=1.0,
-    )
-    edge = GraphEdge(
-        id="edge_1",
-        graph_id="graph",
-        source_node_id="node_1",
-        target_node_id="node_2",
-        relation_type="works_at",
-        description="Alice works at Acme.",
-        weight=1.0,
-        source_file_id="file_1",
-        source_chunk_ids=["chunk_1"],
-        embedding=[0.1, 0.2],
-    )
-    evidence = Evidence(
-        id="evidence_1",
-        graph_id="graph",
-        subject_id="node_1",
-        subject_kind="node",
-        file_id="file_1",
-        chunk_id="chunk_1",
-        page_number=1,
-        start_offset=0,
-        end_offset=32,
-        quote="Alice Smith works at Acme Corp.",
-    )
-    source = EntitySource(
-        id="source_1",
-        graph_id="graph",
-        node_id="node_1",
-        file_id="file_1",
-        per_file_description="Alice Smith is mentioned.",
-        mention_count=1,
-    )
-    community = Community(
-        id="community_1",
-        graph_id="graph",
-        stable_key="stable",
-        level=0,
-        title="Alice",
-        summary="Alice community",
-        rating=5,
-        rating_explanation="Important Alice cluster.",
-        member_node_ids=["node_1"],
-        suggested_questions=["Who is Alice linked to?"],
-        embedding=[0.1, 0.2],
-    )
-    finding = CommunityFinding(
-        id="finding_1",
-        community_id="community_1",
-        summary="Finding",
-        explanation="Explanation",
-    )
-    return GraphWriteBatch(
-        graph_id="graph",
-        documents=[
-            {
-                "file_id": "file_1",
-                "checksum": "checksum",
-                "source_uri": "file:///sample.txt",
-                "mime_type": "text/plain",
-                "size_bytes": 32,
-                "ocr_provider": "builtin_text",
-            }
-        ],
-        pages=[
-            {
-                "file_id": "file_1",
-                "page_number": 1,
-                "markdown": "Alice Smith works at Acme Corp.",
-                "raw_text": "Alice Smith works at Acme Corp.",
-                "detected_language": "en",
-            }
-        ],
-        blocks=[
-            {
-                "id": "block_1",
-                "graph_id": "graph",
-                "file_id": "file_1",
-                "page_number": 1,
-                "kind": "paragraph",
-                "text": "Alice Smith works at Acme Corp.",
-                "bbox": [0.0, 1.0, 2.0, 3.0],
-                "metadata": {"layout": "body"},
-            }
-        ],
-        assets=[
-            {
-                "id": "asset_1",
-                "graph_id": "graph",
-                "file_id": "file_1",
-                "kind": "image",
-                "page_number": 1,
-                "uri": "file:///asset.png",
-                "metadata": {"layout": "figure"},
-            }
-        ],
-        chunks=[chunk],
-        nodes=[node],
-        edges=[edge],
-        evidence=[evidence],
-        entity_sources=[source],
-        communities=[community],
-        community_findings=[finding],
-        run_report={"job_id": "job", "graph_id": "graph", "run_id": "run_1"},
-        graph_metrics={"counts": {"nodes": 1}},
-        extraction_trace=[{"stage": "ocr", "file_id": "file_1"}],
-    )
-
-
 def test_direct_writer_releases_the_session_when_no_cursor_can_be_opened() -> None:
     """A connection that outlives a failed write holds a Snowflake session open."""
 
@@ -582,28 +355,13 @@ def test_direct_writer_releases_the_session_when_no_cursor_can_be_opened() -> No
             raise RuntimeError("session is no longer usable")
 
     connection = _CursorlessConnection()
-
-    def factory(**_kwargs: object) -> _CursorlessConnection:
-        return connection
-
     writer = SnowflakeDirectWriter(
-        SnowflakeConnectionConfig(
-            account="account",
-            host=None,
-            user="user",
-            password="password",
-            authenticator=None,
-            private_key_path=None,
-            database="DB",
-            schema_name="SCHEMA",
-            role="ROLE",
-            warehouse="WH",
-        ),
+        CONFIG,
         embedding_dimension=2,
-        connector_factory=cast(Any, factory),
+        connector_factory=lambda **_: connection,
     )
 
     with pytest.raises(RuntimeError, match="session is no longer usable"):
-        writer.write(_sample_batch())
+        writer.write(sample_batch())
 
     assert connection.closed

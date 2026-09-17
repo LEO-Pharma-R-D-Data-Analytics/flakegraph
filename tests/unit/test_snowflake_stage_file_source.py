@@ -6,77 +6,36 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from snowflake_fakes import CONFIG, FakeConnection, FakeCursor
+
 from kg_processor.adapters.files.common import build_local_input_file
 from kg_processor.adapters.files.manifest import ManifestFileSource
 from kg_processor.adapters.files.snowflake_stage import SnowflakeStageFileSource
-from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
 from kg_processor.config.settings import Settings
 from kg_processor.domain.ids import stable_id
 from kg_processor.factories import build_file_source
 
 
-class FakeCursor:
-    def __init__(self, rows: list[object]) -> None:
-        self.rows = rows
-        self.executed: list[tuple[str, Sequence[object] | None]] = []
-        self.closed = False
-
-    def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-        self.executed.append((sql, params))
-        return None
-
-    def fetchone(self) -> Sequence[object] | None:
-        return None
-
-    def fetchall(self) -> list[object]:
-        return self.rows
-
-    def close(self) -> object:
-        self.closed = True
-        return None
-
-
-class FakeConnection:
-    def __init__(self, rows: list[object]) -> None:
-        self.cursor_instance = FakeCursor(rows)
-        self.closed = False
-
-    def cursor(self) -> FakeCursor:
-        return self.cursor_instance
-
-    def commit(self) -> object:
-        return None
-
-    def rollback(self) -> object:
-        return None
-
-    def close(self) -> object:
-        self.closed = True
-        return None
-
-
 def test_snowflake_stage_file_source_lists_and_filters_supported_files() -> None:
     connection = FakeConnection(
-        [
-            {
-                "name": "DB.SCHEMA.DOC_STAGE/input/a.pdf",
-                "size": 42,
-                "md5": "checksum-a",
-            },
-            ("DB.SCHEMA.DOC_STAGE/input/notes.txt", 12, "checksum-b"),
-            ("DB.SCHEMA.DOC_STAGE/input/image.png", 10, "checksum-c"),
+        result_sets=[
+            [
+                {
+                    "name": "DB.SCHEMA.DOC_STAGE/input/a.pdf",
+                    "size": 42,
+                    "md5": "checksum-a",
+                },
+                ("DB.SCHEMA.DOC_STAGE/input/notes.txt", 12, "checksum-b"),
+                ("DB.SCHEMA.DOC_STAGE/input/image.png", 10, "checksum-c"),
+            ]
         ]
     )
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     source = SnowflakeStageFileSource(
-        _config(),
+        CONFIG,
         "@DB.SCHEMA.DOC_STAGE",
         prefix="input",
         include_globs=["**/*.pdf", "input/*.txt"],
-        connector_factory=factory,
+        connector_factory=lambda **_: connection,
         content_hash=False,
     )
 
@@ -96,20 +55,18 @@ def test_snowflake_stage_file_source_skips_macos_appledouble_sidecars() -> None:
     """One corpus must yield the same documents through every file source."""
 
     connection = FakeConnection(
-        [
-            ("DB.SCHEMA.DOC_STAGE/input/a.pdf", 42, "checksum-a"),
-            ("DB.SCHEMA.DOC_STAGE/input/._a.pdf", 4, "checksum-b"),
+        result_sets=[
+            [
+                ("DB.SCHEMA.DOC_STAGE/input/a.pdf", 42, "checksum-a"),
+                ("DB.SCHEMA.DOC_STAGE/input/._a.pdf", 4, "checksum-b"),
+            ]
         ]
     )
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     source = SnowflakeStageFileSource(
-        _config(),
+        CONFIG,
         "@DB.SCHEMA.DOC_STAGE",
         prefix="input",
-        connector_factory=factory,
+        connector_factory=lambda **_: connection,
         content_hash=False,
     )
 
@@ -119,17 +76,15 @@ def test_snowflake_stage_file_source_skips_macos_appledouble_sidecars() -> None:
 def test_snowflake_stage_file_source_keeps_auto_compressed_documents() -> None:
     """An AUTO_COMPRESS'd upload is the same document, not a different file type."""
 
-    connection = FakeConnection([("DB.SCHEMA.DOC_STAGE/input/a.pdf.gz", 42, "checksum-a")])
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
+    connection = FakeConnection(
+        result_sets=[[("DB.SCHEMA.DOC_STAGE/input/a.pdf.gz", 42, "checksum-a")]]
+    )
     source = SnowflakeStageFileSource(
-        _config(),
+        CONFIG,
         "@DB.SCHEMA.DOC_STAGE",
         prefix="input",
         include_globs=["**/*.pdf"],
-        connector_factory=factory,
+        connector_factory=lambda **_: connection,
         content_hash=False,
     )
 
@@ -142,21 +97,19 @@ def test_snowflake_stage_file_source_keeps_auto_compressed_documents() -> None:
 
 def test_snowflake_stage_file_source_matches_root_files_with_recursive_globs() -> None:
     connection = FakeConnection(
-        [
-            ("DB.SCHEMA.DOC_STAGE/root.pdf", 42, "checksum-a"),
-            ("DB.SCHEMA.DOC_STAGE/nested/child.pdf", 12, "checksum-b"),
-            ("DB.SCHEMA.DOC_STAGE/root.png", 10, "checksum-c"),
+        result_sets=[
+            [
+                ("DB.SCHEMA.DOC_STAGE/root.pdf", 42, "checksum-a"),
+                ("DB.SCHEMA.DOC_STAGE/nested/child.pdf", 12, "checksum-b"),
+                ("DB.SCHEMA.DOC_STAGE/root.png", 10, "checksum-c"),
+            ]
         ]
     )
-
-    def factory(**_kwargs: object) -> FakeConnection:
-        return connection
-
     source = SnowflakeStageFileSource(
-        _config(),
+        CONFIG,
         "@DB.SCHEMA.DOC_STAGE",
         include_globs=["**/*.pdf"],
-        connector_factory=factory,
+        connector_factory=lambda **_: connection,
         content_hash=False,
     )
 
@@ -165,67 +118,54 @@ def test_snowflake_stage_file_source_matches_root_files_with_recursive_globs() -
     assert [file.path for file in files] == [Path("nested/child.pdf"), Path("root.pdf")]
 
 
-def _config() -> SnowflakeConnectionConfig:
-    return SnowflakeConnectionConfig(
-        account="account",
-        host=None,
-        user="user",
-        password="password",
-        authenticator=None,
-        private_key_path=None,
-        database="DB",
-        schema_name="SCHEMA",
-        role="ROLE",
-        warehouse="WH",
-    )
-
-
 class DownloadingCursor(FakeCursor):
     """Emulate Snowflake GET by materializing the staged bytes in the target dir."""
 
     def __init__(self, rows: list[object], payloads: dict[str, bytes]) -> None:
-        super().__init__(rows)
+        super().__init__(result_sets=[rows])
         self.payloads = payloads
         self.get_statements: list[str] = []
 
-    def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-        super().execute(sql, params)
+    def execute(
+        self,
+        sql: str,
+        params: Sequence[object] | None = None,
+        *,
+        timeout: int | None = None,
+    ) -> object:
+        super().execute(sql, params, timeout=timeout)
         if sql.startswith("GET "):
             self.get_statements.append(sql)
             _, source_uri, destination = sql.split(" ", 2)
             target = Path(destination.removeprefix("file://"))
             target.mkdir(parents=True, exist_ok=True)
-            payload = self.payloads.get(source_uri, b"")
-            (target / Path(source_uri).name).write_bytes(payload)
+            self.materialize(source_uri, target)
         return None
 
+    def materialize(self, source_uri: str, target: Path) -> None:
+        (target / Path(source_uri).name).write_bytes(self.payloads.get(source_uri, b""))
 
-class DownloadingConnection(FakeConnection):
-    cursor_instance: DownloadingCursor
 
-    def __init__(self, rows: list[object], payloads: dict[str, bytes]) -> None:
-        super().__init__(rows)
-        self.cursor_instance = DownloadingCursor(rows, payloads)
+class GzipCursor(DownloadingCursor):
+    """A stage that AUTO_COMPRESS'd its objects hands GET a gzip member, named ``.gz``."""
 
-    def cursor(self) -> DownloadingCursor:
-        return self.cursor_instance
+    def materialize(self, source_uri: str, target: Path) -> None:
+        name = Path(source_uri).name
+        with gzip.open(target / (name if name.endswith(".gz") else f"{name}.gz"), "wb") as handle:
+            handle.write(self.payloads[source_uri])
 
 
 def _staged_source(payload: bytes) -> SnowflakeStageFileSource:
     uri = "@DB.SCHEMA.DOC_STAGE/input/a.txt"
-    connection = DownloadingConnection(
+    cursor = DownloadingCursor(
         [("DB.SCHEMA.DOC_STAGE/input/a.txt", len(payload), "0123456789abcdef0123456789abcdef")],
         {uri: payload},
     )
-
-    def factory(**_kwargs: object) -> DownloadingConnection:
-        return connection
-
     return SnowflakeStageFileSource(
-        _config(),
+        CONFIG,
         "@DB.SCHEMA.DOC_STAGE",
         prefix="input",
-        connector_factory=factory,
+        connector_factory=lambda **_: FakeConnection(cursor=cursor),
     )
 
 
@@ -297,19 +237,15 @@ def test_content_hashing_can_be_disabled_for_cost() -> None:
 
     payload = b"martial arts corpus fixture"
     uri = "@DB.SCHEMA.DOC_STAGE/input/a.txt"
-    connection = DownloadingConnection(
+    cursor = DownloadingCursor(
         [("DB.SCHEMA.DOC_STAGE/input/a.txt", len(payload), "0123456789abcdef0123456789abcdef")],
         {uri: payload},
     )
-
-    def factory(**_kwargs: object) -> DownloadingConnection:
-        return connection
-
     source = SnowflakeStageFileSource(
-        _config(),
+        CONFIG,
         "@DB.SCHEMA.DOC_STAGE",
         prefix="input",
-        connector_factory=factory,
+        connector_factory=lambda **_: FakeConnection(cursor=cursor),
         content_hash=False,
     )
 
@@ -317,7 +253,7 @@ def test_content_hashing_can_be_disabled_for_cost() -> None:
 
     assert file.checksum == "0123456789abcdef0123456789abcdef"
     assert file.provider_checksum is None
-    assert connection.cursor_instance.get_statements == []
+    assert cursor.get_statements == []
 
 
 def test_claimed_workers_do_not_rehash_the_whole_stage() -> None:
@@ -368,33 +304,15 @@ def test_compressed_stage_files_hash_their_original_bytes() -> None:
 
     payload = b"martial arts corpus fixture"
     uri = "@DB.SCHEMA.DOC_STAGE/input/a.txt"
-
-    class GzipCursor(DownloadingCursor):
-        def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-            if sql.startswith("GET "):
-                self.get_statements.append(sql)
-                _, _source, destination = sql.split(" ", 2)
-                target = Path(destination.removeprefix("file://"))
-                target.mkdir(parents=True, exist_ok=True)
-                with gzip.open(target / "a.txt.gz", "wb") as handle:
-                    handle.write(payload)
-                return None
-            return FakeCursor.execute(self, sql, params)
-
-    connection = DownloadingConnection(
+    cursor = GzipCursor(
         [("DB.SCHEMA.DOC_STAGE/input/a.txt", len(payload), "0123456789abcdef0123456789abcdef")],
         {uri: payload},
     )
-    connection.cursor_instance = GzipCursor(connection.cursor_instance.rows, {uri: payload})
-
-    def factory(**_kwargs: object) -> DownloadingConnection:
-        return connection
-
     source = SnowflakeStageFileSource(
-        _config(),
+        CONFIG,
         "@DB.SCHEMA.DOC_STAGE",
         prefix="input",
-        connector_factory=factory,
+        connector_factory=lambda **_: FakeConnection(cursor=cursor),
     )
 
     assert source.list_files()[0].checksum == hashlib.sha256(payload).hexdigest()
@@ -409,33 +327,15 @@ def test_auto_compressed_stage_paths_hash_the_document_they_hold() -> None:
 
     payload = b"martial arts corpus fixture"
     uri = "@DB.SCHEMA.DOC_STAGE/input/a.txt.gz"
-
-    class GzipCursor(DownloadingCursor):
-        def execute(self, sql: str, params: Sequence[object] | None = None) -> object:
-            if sql.startswith("GET "):
-                self.get_statements.append(sql)
-                _, _source, destination = sql.split(" ", 2)
-                target = Path(destination.removeprefix("file://"))
-                target.mkdir(parents=True, exist_ok=True)
-                with gzip.open(target / "a.txt.gz", "wb") as handle:
-                    handle.write(payload)
-                return None
-            return FakeCursor.execute(self, sql, params)
-
-    connection = DownloadingConnection(
+    cursor = GzipCursor(
         [("DB.SCHEMA.DOC_STAGE/input/a.txt.gz", len(payload), "0123456789abcdef0123456789abcdef")],
         {uri: payload},
     )
-    connection.cursor_instance = GzipCursor(connection.cursor_instance.rows, {uri: payload})
-
-    def factory(**_kwargs: object) -> DownloadingConnection:
-        return connection
-
     source = SnowflakeStageFileSource(
-        _config(),
+        CONFIG,
         "@DB.SCHEMA.DOC_STAGE",
         prefix="input",
-        connector_factory=factory,
+        connector_factory=lambda **_: FakeConnection(cursor=cursor),
     )
 
     file = source.list_files()[0]
