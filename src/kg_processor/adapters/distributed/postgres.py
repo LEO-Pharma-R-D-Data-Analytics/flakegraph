@@ -1625,6 +1625,9 @@ class PostgresDistributedStore:
                     *(row["updated_at"] for row in rows if row["updated_at"] is not None),
                 ]
             )
+            fleet = connection.execute(
+                "SELECT stage, config_digest FROM flakegraph_worker_fleet"
+            ).fetchall()
             return RunSummary(
                 run=RunDefinition(
                     id=str(run["id"]),
@@ -1638,6 +1641,9 @@ class PostgresDistributedStore:
                 created_at=run["created_at"],
                 updated_at=latest_update,
                 error=cast(dict[str, Any] | None, run["error_json"]),
+                fleet_config_digests={
+                    str(row["stage"]): str(row["config_digest"]) for row in fleet
+                },
             )
 
     def list_runs(self, limit: int = 100) -> list[RunOverview]:

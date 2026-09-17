@@ -152,6 +152,58 @@ def test_status_reports_active_matching_run_without_warning() -> None:
     assert diagnostics["warnings"] == []
 
 
+def test_status_names_the_stages_a_fleet_upgrade_left_this_run_without() -> None:
+    """A fleet at another digest claims nothing from the run and asks for no workers.
+
+    The run does not fail; it waits for a worker that will never come. Only a
+    stage with work still open matters: one the run has finished with can be
+    served at any digest.
+    """
+
+    settings = _settings()
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
+    digest = distributed_processing_config_digest(settings)
+    summary = _summary(
+        config_digest=digest,
+        status=RunStatus.RUNNING,
+        updated_at=now,
+        counts=[
+            TaskCount(stage=TaskStage.PREPARE_DOCUMENT, status=TaskStatus.SUCCEEDED, count=4),
+            TaskCount(stage=TaskStage.EXTRACT_ENTITY_WINDOW, status=TaskStatus.QUEUED, count=2),
+        ],
+        fleet={
+            TaskStage.PREPARE_DOCUMENT.value: "digest-after-upgrade",
+            TaskStage.EXTRACT_ENTITY_WINDOW.value: "digest-after-upgrade",
+            TaskStage.FINALIZE_GRAPH.value: digest,
+        },
+    )
+
+    diagnostics = run_status_payload(summary, settings, now=now)["diagnostics"]
+
+    assert diagnostics["state"] == "attention_required"
+    assert [item["code"] for item in diagnostics["warnings"]] == ["FLEET_DIGEST_MISMATCH"]
+    assert "extract_entity_window" in diagnostics["warnings"][0]["message"]
+    assert "prepare_document" not in diagnostics["warnings"][0]["message"]
+    assert "cancel the run" in diagnostics["warnings"][0]["remediation"]
+
+
+def test_a_fleet_at_the_runs_digest_raises_no_upgrade_warning() -> None:
+    settings = _settings()
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
+    digest = distributed_processing_config_digest(settings)
+    summary = _summary(
+        config_digest=digest,
+        status=RunStatus.RUNNING,
+        updated_at=now,
+        counts=[
+            TaskCount(stage=TaskStage.EXTRACT_ENTITY_WINDOW, status=TaskStatus.RUNNING, count=2)
+        ],
+        fleet={TaskStage.EXTRACT_ENTITY_WINDOW.value: digest},
+    )
+
+    assert run_status_payload(summary, settings, now=now)["diagnostics"]["warnings"] == []
+
+
 def test_status_identifies_running_work_that_stopped_heartbeating() -> None:
     """Surface a vanished worker while preserving automatic lease recovery."""
 
@@ -282,6 +334,7 @@ def _summary(
     updated_at: datetime,
     counts: list[TaskCount],
     error: dict[str, str] | None = None,
+    fleet: dict[str, str] | None = None,
 ) -> RunSummary:
     """Construct a bounded run response for one diagnostics scenario."""
 
@@ -298,4 +351,5 @@ def _summary(
         created_at=updated_at - timedelta(minutes=1),
         updated_at=updated_at,
         error=error,
+        fleet_config_digests=fleet or {},
     )

@@ -669,7 +669,9 @@ Every worker emits one `worker_ready` JSON event containing its eligible stages,
 provider/model identities, and semantic `config_digest`; endpoints and credentials
 are omitted. `distributed status` compares the caller's digest with the run and
 reports machine-readable diagnostics. `CONFIG_DIGEST_MISMATCH` means those
-settings cannot claim the run. `QUEUED_WORK_NOT_ADVANCING` means queued work has
+settings cannot claim the run. `FLEET_DIGEST_MISMATCH` means the workers
+serving a stage the run still has work in declared another digest — the fleet
+was upgraded past the run. `QUEUED_WORK_NOT_ADVANCING` means queued work has
 not been claimed for at least 60 seconds; inspect pod readiness and confirm that
 an eligible worker advertises the run digest.
 
@@ -816,6 +818,17 @@ Run a representative canary through OCR, extraction, finalization, export, and
 gold-set evaluation after every Kubernetes, driver, model, provider, image, or
 chart upgrade. Promote the exact image digests and values only after the canary
 and the recovery drill below succeed.
+
+### Upgrading a fleet with runs in flight
+
+A worker claims only tasks whose run was planned under its own configuration
+digest, and the demand signal counts only work the fleet can take. A change to
+provider, model, ontology, prompt, or graph settings therefore leaves every
+run in flight with no workers and no autoscaling demand: it does not fail, it
+waits. Drain first — `distributed list` should show nothing active — before a
+digest-changing upgrade. Where that was not possible, `distributed status`
+reports `FLEET_DIGEST_MISMATCH` on the run; roll the fleet back, or cancel the
+run and resubmit it under the new configuration.
 
 ## Observability
 

@@ -221,6 +221,10 @@ class RunSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     error: dict[str, Any] | None = None
+    # The configuration digest each stage's worker fleet declared at startup.
+    # A worker claims only tasks whose run digest equals its own, so a stage
+    # served at another digest is one this run's remaining work cannot leave.
+    fleet_config_digests: dict[str, str] = Field(default_factory=dict)
 
 
 class RunOverview(BaseModel):

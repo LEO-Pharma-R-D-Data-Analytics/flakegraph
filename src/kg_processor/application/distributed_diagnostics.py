@@ -85,6 +85,24 @@ def run_status_payload(
                 ),
             }
         )
+    # A fleet upgraded to another digest stops claiming this run's tasks, and
+    # stops asking for workers to do so: the demand signal counts only work
+    # the fleet can take, so the run does not fail, it waits for nothing.
+    left_behind = _stages_served_at_another_digest(result)
+    if left_behind and result.run.status not in _TERMINAL_RUN_STATUSES:
+        warnings.append(
+            {
+                "code": "FLEET_DIGEST_MISMATCH",
+                "message": (
+                    f"The fleet serving {', '.join(left_behind)} was upgraded past this run; "
+                    "no worker will claim its remaining tasks."
+                ),
+                "remediation": (
+                    "Roll the fleet back to the run's configuration, or cancel the run and "
+                    "resubmit it under the current one."
+                ),
+            }
+        )
     # Queued work that never starts has two very different causes that look
     # identical from here: no spare capacity, or no worker whose configuration
     # matches this run. Naming only the first sends an operator to inspect
@@ -172,6 +190,23 @@ def _active_task_counts(result: RunSummary | RunSnapshot) -> tuple[int, int]:
     queued = sum(task.status == TaskStatus.QUEUED for task in result.tasks)
     running = sum(task.status == TaskStatus.RUNNING for task in result.tasks)
     return queued, running
+
+
+def _stages_served_at_another_digest(result: RunSummary | RunSnapshot) -> list[str]:
+    """Name the stages with open work whose fleet declared a different digest."""
+
+    if not isinstance(result, RunSummary):
+        return []
+    open_stages = {
+        item.stage.value
+        for item in result.task_counts
+        if item.status in (TaskStatus.QUEUED, TaskStatus.RUNNING) and item.count
+    }
+    return sorted(
+        stage
+        for stage, digest in result.fleet_config_digests.items()
+        if stage in open_stages and digest != result.run.config_digest
+    )
 
 
 def _as_utc(value: datetime) -> datetime:
