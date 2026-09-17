@@ -12,7 +12,7 @@ from typing import Any, Literal
 import networkx as nx
 from pydantic import BaseModel, Field, model_validator
 
-from kg_processor.application.graph_quality import evaluate_graph_quality_rows
+from kg_processor.application.graph_quality import as_list, evaluate_graph_quality_rows
 from kg_processor.application.inspect import read_local_graph_artifacts
 from kg_processor.application.ontology import load_ontology
 from kg_processor.domain.ontology import OntologyProfile, normalize_ontology_label
@@ -302,13 +302,9 @@ def evaluate_graph_artifacts(output_path: Path, gold_path: Path) -> dict[str, An
         "hard_quality_checks": quality.ok,
     }
     if gold.evaluation_scope.entity_coverage == "exhaustive":
-        acceptance["entity_precision"] = (
-            entity_metrics["precision"] >= thresholds.entity_precision
-        )
+        acceptance["entity_precision"] = entity_metrics["precision"] >= thresholds.entity_precision
     if gold.evaluation_scope.relation_coverage == "exhaustive":
-        acceptance["triple_precision"] = (
-            triple_metrics["precision"] >= thresholds.triple_precision
-        )
+        acceptance["triple_precision"] = triple_metrics["precision"] >= thresholds.triple_precision
     return {
         "gold_name": gold.name,
         "output_path": str(output_path),
@@ -411,7 +407,7 @@ def _entity_metrics(
     for node in nodes:
         surfaces = {
             _normalize(str(surface))
-            for surface in [node.get("name", ""), *_list_value(node.get("aliases"))]
+            for surface in [node.get("name", ""), *as_list(node.get("aliases"))]
             if str(surface).strip()
         }
         candidates = {
@@ -760,7 +756,7 @@ def _structural_metrics(
         str(edge.get("source_node_id")) == str(edge.get("target_node_id")) for edge in edges
     )
     singleton_communities = sum(
-        len(_list_value(item.get("member_node_ids"))) < _MIN_COMMUNITY_SIZE for item in communities
+        len(as_list(item.get("member_node_ids"))) < _MIN_COMMUNITY_SIZE for item in communities
     )
     return {
         "nodes": len(nodes),
@@ -887,21 +883,6 @@ def _matched_or_actual(
     return f"actual:{node_names.get(node_id, node_id)}"
 
 
-def _list_value(value: object) -> list[object]:
-    """Normalize list-like artifact values, including NumPy and Pandas containers.
-
-    Unsupported scalar values become empty lists.
-    """
-
-    if isinstance(value, list | tuple | set):
-        return list(value)
-    tolist = getattr(value, "tolist", None)
-    if callable(tolist):
-        converted = tolist()
-        return list(converted) if isinstance(converted, list | tuple | set) else []
-    return []
-
-
 def _node_types(node: dict[str, Any]) -> set[str]:
     """Return every normalized node type, including its display-primary type.
 
@@ -909,7 +890,7 @@ def _node_types(node: dict[str, Any]) -> set[str]:
     complete typed representation rather than relying on one serialization.
     """
 
-    values = [node.get("primary_type", ""), *_list_value(node.get("types"))]
+    values = [node.get("primary_type", ""), *as_list(node.get("types"))]
     return {_normalize_label(str(value)) for value in values if str(value).strip()}
 
 

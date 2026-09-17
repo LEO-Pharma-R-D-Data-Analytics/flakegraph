@@ -374,7 +374,7 @@ def _singleton_community_check(communities: list[dict[str, Any]]) -> GraphQualit
     singleton_ids = [
         str(item.get("id"))
         for item in communities
-        if len(_as_list(item.get("member_node_ids"))) < _MIN_REPORTED_COMMUNITY_SIZE
+        if len(as_list(item.get("member_node_ids"))) < _MIN_REPORTED_COMMUNITY_SIZE
     ]
     return GraphQualityCheck(
         name="no_singleton_community_reports",
@@ -419,7 +419,7 @@ def _check(
     )
 
 
-def _as_list(value: object) -> list[object]:
+def as_list(value: object) -> list[object]:
     """Normalize list-like values from JSON, Arrow, NumPy, or Pandas artifacts.
 
     Unsupported scalar values become empty lists.
