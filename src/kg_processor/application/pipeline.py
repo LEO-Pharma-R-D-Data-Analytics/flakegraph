@@ -9,7 +9,6 @@ writer persistence remains one provider-independent implementation.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -50,6 +49,7 @@ from kg_processor.application.graph_quality import (
 )
 from kg_processor.application.llm_extractors import LlmEntityExtractor
 from kg_processor.application.ontology import LoadedOntology, load_ontology
+from kg_processor.application.ordered_map import ordered_map
 from kg_processor.application.progress import (
     ProgressEvent,
     ProgressSink,
@@ -71,7 +71,7 @@ from kg_processor.application.two_pass_extraction import (
 from kg_processor.application.window_errors import is_systemic_provider_error
 from kg_processor.config.settings import Settings
 from kg_processor.domain.documents import InputFile, ParsedDocument
-from kg_processor.domain.extraction import EntityMention
+from kg_processor.domain.extraction import EntityMention, ExtractionWindow
 from kg_processor.domain.graph import (
     Chunk,
     Community,
@@ -226,11 +226,7 @@ class KgProcessorPipeline:
         )
         self._emit_progress("chunking", "completed", counts={"chunks": len(chunks)})
 
-        embed_options = EmbedOptions(
-            model=self.settings.embedding.model,
-            dimension=self.settings.embedding.dimension,
-            batch_size=self.settings.embedding.batch_size,
-        )
+        embed_options = self._embed_options()
         self._embed_chunks_with_progress(chunks, embed_options)
         trace.append(
             {
@@ -264,59 +260,21 @@ class KgProcessorPipeline:
                 "metadata": extraction.provider_metadata,
             }
         )
-        filtered = self._filter_extraction(extraction, chunks, trace)
-        assembly, descriptions_merged = self._assemble_and_describe_graph(
-            chunks,
-            filtered.entities,
-            filtered.relations,
-            trace,
-        )
-        nodes = assembly.nodes
-        edges = assembly.edges
-        self._embed_graph_with_progress(nodes, edges, embed_options)
-        trace.append(
-            {
-                "stage": "graph_embeddings",
-                "nodes": len(nodes),
-                "edges": len(edges),
-            }
-        )
-        communities, findings = self._detect_and_embed_communities(
-            nodes,
-            edges,
-            assembly.evidence,
-            embed_options,
-            trace,
-        )
-        batch, quality_result = self._build_write_batch(
+        return self._finalize(
+            chunks=chunks,
+            extraction=extraction,
+            trace=trace,
+            embed_options=embed_options,
             files_seen=len(files),
             documents_processed=len(documents),
             document_rows=document_rows,
             page_rows=page_rows,
             block_rows=block_rows,
             asset_rows=asset_rows,
-            chunks=chunks,
-            extraction=extraction,
-            entities=filtered.entities,
-            relations=filtered.relations,
-            entity_filter=filtered.entity_filter,
-            relation_filter=filtered.relation_filter,
-            assembly=assembly,
-            descriptions_merged=descriptions_merged,
-            communities=communities,
-            findings=findings,
-            trace=trace,
             ocr_cache_hits=ocr_cache_hits,
             extraction_cache_hit=extraction_cache_hit,
+            write=True,
         )
-        if self.settings.graph.fail_on_quality_error and not quality_result.ok:
-            raise GraphQualityError(quality_result)
-        if batch.write_scope == "graph_snapshot" and not batch.nodes and not batch.edges:
-            raise ValueError(
-                "Extraction produced an empty graph; refusing to publish an empty graph snapshot."
-            )
-        self._write_with_progress(batch)
-        return batch
 
     def prepare_documents(self, files: list[InputFile]) -> PreparedDocumentShard:
         """Run OCR, normalization, and chunking for a durable document task.
@@ -515,6 +473,47 @@ class KgProcessorPipeline:
                 "document_shards": len(ordered),
             }
         )
+        return self._finalize(
+            chunks=chunks,
+            extraction=extraction,
+            trace=trace,
+            embed_options=embed_options,
+            files_seen=sum(shard.files_seen for shard in prepared),
+            documents_processed=sum(shard.documents_processed for shard in prepared),
+            document_rows=[row for shard in prepared for row in shard.document_rows],
+            page_rows=[row for shard in prepared for row in shard.page_rows],
+            block_rows=[row for shard in prepared for row in shard.block_rows],
+            asset_rows=[row for shard in prepared for row in shard.asset_rows],
+            ocr_cache_hits=sum(shard.ocr_cache_hits for shard in prepared),
+            extraction_cache_hit=False,
+            write=write,
+        )
+
+    def _finalize(
+        self,
+        *,
+        chunks: list[Chunk],
+        extraction: ExtractionResult,
+        trace: list[dict[str, Any]],
+        embed_options: EmbedOptions,
+        files_seen: int,
+        documents_processed: int,
+        document_rows: list[dict[str, Any]],
+        page_rows: list[dict[str, Any]],
+        block_rows: list[dict[str, Any]],
+        asset_rows: list[dict[str, Any]],
+        ocr_cache_hits: int,
+        extraction_cache_hit: bool,
+        write: bool,
+    ) -> GraphWriteBatch:
+        """Turn a resolved extraction into a published graph, the same way for every entry.
+
+        A local run and a distributed finalizer arrive here with the extraction
+        produced differently, and from this point must not differ at all: the
+        filters, assembly, embeddings, communities and quality gates are what
+        make the two paths produce the same graph for the same corpus.
+        """
+
         filtered = self._filter_extraction(extraction, chunks, trace)
         assembly, descriptions_merged = self._assemble_and_describe_graph(
             chunks,
@@ -522,7 +521,7 @@ class KgProcessorPipeline:
             filtered.relations,
             trace,
         )
-        self._embed_graph_with_progress(assembly.nodes, assembly.edges, self._embed_options())
+        self._embed_graph_with_progress(assembly.nodes, assembly.edges, embed_options)
         trace.append(
             {
                 "stage": "graph_embeddings",
@@ -534,16 +533,16 @@ class KgProcessorPipeline:
             assembly.nodes,
             assembly.edges,
             assembly.evidence,
-            self._embed_options(),
+            embed_options,
             trace,
         )
         batch, quality_result = self._build_write_batch(
-            files_seen=sum(shard.files_seen for shard in prepared),
-            documents_processed=sum(shard.documents_processed for shard in prepared),
-            document_rows=[row for shard in prepared for row in shard.document_rows],
-            page_rows=[row for shard in prepared for row in shard.page_rows],
-            block_rows=[row for shard in prepared for row in shard.block_rows],
-            asset_rows=[row for shard in prepared for row in shard.asset_rows],
+            files_seen=files_seen,
+            documents_processed=documents_processed,
+            document_rows=document_rows,
+            page_rows=page_rows,
+            block_rows=block_rows,
+            asset_rows=asset_rows,
             chunks=chunks,
             extraction=extraction,
             entities=filtered.entities,
@@ -555,8 +554,8 @@ class KgProcessorPipeline:
             communities=communities,
             findings=findings,
             trace=trace,
-            ocr_cache_hits=sum(shard.ocr_cache_hits for shard in prepared),
-            extraction_cache_hit=False,
+            ocr_cache_hits=ocr_cache_hits,
+            extraction_cache_hit=extraction_cache_hit,
         )
         if self.settings.graph.fail_on_quality_error and not quality_result.ok:
             raise GraphQualityError(quality_result)
@@ -1398,7 +1397,7 @@ class KgProcessorPipeline:
             self.cache.put_extraction_result(cache_key, extraction)
         return extraction, cache_key.id, False, context_trace
 
-    def _extract_document_context_entities(  # noqa: PLR0912
+    def _extract_document_context_entities(
         self,
         chunks: list[Chunk],
     ) -> tuple[list[EntityMention], list[dict[str, Any]]]:
@@ -1430,86 +1429,47 @@ class KgProcessorPipeline:
         if not windows:
             return [], []
 
-        def extract_window(index: int) -> tuple[int, list[EntityMention], dict[str, Any]]:
-            """Extract one document prefix and retain its deterministic source index."""
-
+        def extract_window(
+            _index: int, window: ExtractionWindow
+        ) -> tuple[list[EntityMention], dict[str, Any]]:
             outcome = extractor.extract_document_context_entities(
-                windows[index],
+                window,
                 ontology.profile,
                 model=self.settings.llm.model,
                 timeout_seconds=self.settings.llm.timeout_seconds,
                 max_entities=self.settings.graph.max_document_context_entities,
             )
-            return index, outcome.entities, outcome.trace
+            return outcome.entities, outcome.trace
+
+        failures: list[Exception] = []
+
+        def contain(
+            _index: int, window: ExtractionWindow, exc: Exception
+        ) -> tuple[list[EntityMention], dict[str, Any]]:
+            failures.append(exc)
+            return [], {
+                "stage": "document_context_error",
+                "window_id": window.id,
+                "document_id": window.document_id,
+                "error": error_metadata(exc),
+            }
 
         # A snapshot can contain many documents, and every context prompt is
         # independent. Running these calls serially delayed the already-parallel
         # body-window stage by one complete provider round trip per document. The
-        # bounded pool reuses the same throughput control as ordinary extraction;
-        # indexed collection keeps persisted entities and traces byte-order stable.
-        parallelism = min(self.settings.graph.extraction_parallelism, len(windows))
-        ordered: dict[int, tuple[list[EntityMention], dict[str, Any]]] = {}
-        if parallelism == 1:
-            failures: list[Exception] = []
-            for index in range(len(windows)):
-                try:
-                    result_index, entities, event = extract_window(index)
-                except Exception as exc:
-                    if is_systemic_provider_error(exc):
-                        raise
-                    failures.append(exc)
-                    result_index, entities, event = (
-                        index,
-                        [],
-                        {
-                            "stage": "document_context_error",
-                            "window_id": windows[index].id,
-                            "document_id": windows[index].document_id,
-                            "error": error_metadata(exc),
-                        },
-                    )
-                ordered[result_index] = (entities, event)
-                self._emit_document_context_progress(len(ordered), len(windows), entities)
-        else:
-            executor = ThreadPoolExecutor(max_workers=parallelism)
-            futures = {
-                executor.submit(extract_window, index): index for index in range(len(windows))
-            }
-            try:
-                failures = []
-                for completed, future in enumerate(as_completed(futures), start=1):
-                    index = futures[future]
-                    try:
-                        result_index, entities, event = future.result()
-                    except Exception as exc:
-                        if is_systemic_provider_error(exc):
-                            raise
-                        failures.append(exc)
-                        result_index, entities, event = (
-                            index,
-                            [],
-                            {
-                                "stage": "document_context_error",
-                                "window_id": windows[index].id,
-                                "document_id": windows[index].document_id,
-                                "error": error_metadata(exc),
-                            },
-                        )
-                    ordered[result_index] = (entities, event)
-                    self._emit_document_context_progress(completed, len(windows), entities)
-            except Exception:
-                # Do not continue spending provider capacity after one context
-                # request has made the graph run unrecoverable. Running calls retain
-                # their provider timeout while queued calls are cancelled promptly.
-                for future in futures:
-                    future.cancel()
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise
-            else:
-                executor.shutdown(wait=True)
+        # bounded pool reuses the same throughput control as ordinary extraction.
+        ordered = ordered_map(
+            windows,
+            extract_window,
+            parallelism=self.settings.graph.extraction_parallelism,
+            on_complete=lambda completed, result: self._emit_document_context_progress(
+                completed, len(windows), result[0]
+            ),
+            contain=contain,
+        )
 
-        subjects = [entity for index in range(len(windows)) for entity in ordered[index][0]]
-        trace = [ordered[index][1] for index in range(len(windows))]
+        subjects = [entity for entities, _event in ordered for entity in entities]
+        trace = [event for _entities, event in ordered]
         if failures and len(failures) == len(windows):
             trace.append(
                 {

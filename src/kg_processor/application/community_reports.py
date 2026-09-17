@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from itertools import batched
 from typing import Any
@@ -12,6 +11,7 @@ from kg_processor.application.enrichment_batching import (
     COMMUNITY_BATCH_SIZE,
     summarize_community_requests,
 )
+from kg_processor.application.ordered_map import ordered_map
 from kg_processor.application.redaction import redact_sensitive_text
 from kg_processor.application.window_errors import is_systemic_provider_error
 from kg_processor.domain.graph import Community, CommunityFinding, Evidence, GraphEdge, GraphNode
@@ -273,30 +273,25 @@ def _summarize_communities(
 
     batch_size = COMMUNITY_BATCH_SIZE if isinstance(llm, StructuredCompletionProvider) else 1
     context_batches = [list(items) for items in batched(contexts, batch_size, strict=False)]
-    if report_parallelism == 1 or len(context_batches) <= 1:
-        summaries: list[tuple[_CommunityReportContext, CommunitySummaryResult]] = []
-        for batch in context_batches:
-            results = _summarize_batch(llm, batch, model, timeout_seconds, seed)
-            summaries.extend(zip(batch, results, strict=True))
-            if report_progress is not None:
-                report_progress(len(summaries), len(contexts))
-        return summaries
-    max_workers = min(report_parallelism, len(context_batches))
-    summaries_by_index: dict[int, CommunitySummaryResult] = {}
     completed_reports = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_summarize_batch, llm, batch, model, timeout_seconds, seed): batch
-            for batch in context_batches
-        }
-        for future in as_completed(futures):
-            batch = futures[future]
-            for context, result in zip(batch, future.result(), strict=True):
-                summaries_by_index[context.index] = result
-            completed_reports += len(batch)
-            if report_progress is not None:
-                report_progress(completed_reports, len(contexts))
-    return [(context, summaries_by_index[context.index]) for context in contexts]
+
+    def report(_completed_batches: int, results: list[CommunitySummaryResult]) -> None:
+        nonlocal completed_reports
+        completed_reports += len(results)
+        if report_progress is not None:
+            report_progress(completed_reports, len(contexts))
+
+    summaries = ordered_map(
+        context_batches,
+        lambda _index, batch: _summarize_batch(llm, batch, model, timeout_seconds, seed),
+        parallelism=report_parallelism,
+        on_complete=report,
+    )
+    return [
+        (context, result)
+        for batch, results in zip(context_batches, summaries, strict=True)
+        for context, result in zip(batch, results, strict=True)
+    ]
 
 
 def _summarize_batch(

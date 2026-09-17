@@ -6,7 +6,6 @@ import math
 import re
 import unicodedata
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -16,6 +15,7 @@ from kg_processor.application.extraction_contracts import (
     ResolutionDecisionCandidateBatch,
     entity_resolution_request,
 )
+from kg_processor.application.ordered_map import ordered_map
 from kg_processor.domain.extraction import (
     EntityMention,
     ResolutionCandidate,
@@ -492,59 +492,29 @@ def _adjudicate_batches(
 
     if parallelism <= 0:
         raise ValueError("resolution adjudication parallelism must be positive")
-    if not batches:
-        return []
 
-    results: list[_AdjudicationBatchResult] = []
     failures = 0
     total_candidates = sum(len(batch) for batch in batches)
 
-    def record(result: _AdjudicationBatchResult) -> None:
-        """Accumulate one completed batch and publish aggregate failure progress.
+    def record(completed: int, result: _AdjudicationBatchResult) -> None:
+        """Publish aggregate failure progress as each batch completes.
 
         The closure updates state only on the orchestration thread.
         """
 
         nonlocal failures
-        results.append(result)
         failures += result.response is None
         if progress is not None:
-            progress(len(results), len(batches), total_candidates, failures)
+            progress(completed, len(batches), total_candidates, failures)
 
-    if parallelism == 1 or len(batches) == 1:
-        for index, batch in enumerate(batches):
-            record(
-                _adjudicate_batch(
-                    index,
-                    batch,
-                    mentions,
-                    llm,
-                    model,
-                    timeout_seconds,
-                    seed,
-                )
-            )
-    else:
-        max_workers = min(parallelism, len(batches))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    _adjudicate_batch,
-                    index,
-                    batch,
-                    mentions,
-                    llm,
-                    model,
-                    timeout_seconds,
-                    seed,
-                ): index
-                for index, batch in enumerate(batches)
-            }
-            for future in as_completed(futures):
-                record(future.result())
-
-    # Provider completion order must never affect merge order or trace output.
-    return sorted(results, key=lambda result: result.index)
+    return ordered_map(
+        batches,
+        lambda index, batch: _adjudicate_batch(
+            index, batch, mentions, llm, model, timeout_seconds, seed
+        ),
+        parallelism=parallelism,
+        on_complete=record,
+    )
 
 
 def _adjudicate_batch(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +24,7 @@ from kg_processor.application.llm_extractors import (
     LlmRelationExtractor,
     LlmRelationVerifier,
 )
+from kg_processor.application.ordered_map import ordered_map
 from kg_processor.application.progress import error_metadata
 from kg_processor.application.prompt_registry import TWO_PASS_PROMPT_REVISION
 from kg_processor.application.redaction import redact_sensitive_text
@@ -383,7 +383,7 @@ def resolve_extraction_observations(
     return dedupe_extraction_result(extraction)
 
 
-def _run_window_stage(  # noqa: PLR0912
+def _run_window_stage(
     windows: list[ExtractionWindow],
     settings: GraphSettings,
     operation: Callable[[ExtractionWindow], _WindowResult],
@@ -395,53 +395,26 @@ def _run_window_stage(  # noqa: PLR0912
     ensures provider latency cannot change deduplication or persisted trace order.
     """
 
-    if settings.extraction_parallelism == 1 or len(windows) <= 1:
-        results: list[_WindowResult] = []
-        failures: list[Exception] = []
-        for window in windows:
-            try:
-                result = operation(window)
-            except Exception as exc:
-                if is_systemic_provider_error(exc):
-                    raise
-                failures.append(exc)
-                result = _failed_window_result(window, exc)
-            results.append(result)
-            if progress:
-                progress(len(results), len(windows), len(result.entities), len(result.relations))
-        if windows and len(failures) == len(windows):
-            raise RuntimeError(_all_windows_failed_message(windows, failures)) from failures[0]
-        return results
+    failures: list[Exception] = []
 
-    results_by_index: dict[int, _WindowResult] = {}
-    parallel_failures: list[Exception] = []
-    max_workers = min(settings.extraction_parallelism, len(windows))
-    executor = ThreadPoolExecutor(max_workers=max_workers)
-    try:
-        futures = {
-            executor.submit(operation, window): index for index, window in enumerate(windows)
-        }
-        for completed, future in enumerate(as_completed(futures), start=1):
-            index = futures[future]
-            try:
-                result = future.result()
-            except Exception as exc:
-                if is_systemic_provider_error(exc):
-                    for pending in futures:
-                        pending.cancel()
-                    raise
-                parallel_failures.append(exc)
-                result = _failed_window_result(windows[index], exc)
-            results_by_index[index] = result
-            if progress:
-                progress(completed, len(windows), len(result.entities), len(result.relations))
-    finally:
-        executor.shutdown(wait=True)
-    if windows and len(parallel_failures) == len(windows):
-        raise RuntimeError(
-            _all_windows_failed_message(windows, parallel_failures)
-        ) from parallel_failures[0]
-    return [results_by_index[index] for index in range(len(windows))]
+    def contain(_index: int, window: ExtractionWindow, exc: Exception) -> _WindowResult:
+        failures.append(exc)
+        return _failed_window_result(window, exc)
+
+    def report(completed: int, result: _WindowResult) -> None:
+        if progress:
+            progress(completed, len(windows), len(result.entities), len(result.relations))
+
+    results = ordered_map(
+        windows,
+        lambda _index, window: operation(window),
+        parallelism=settings.extraction_parallelism,
+        on_complete=report,
+        contain=contain,
+    )
+    if windows and len(failures) == len(windows):
+        raise RuntimeError(_all_windows_failed_message(windows, failures)) from failures[0]
+    return results
 
 
 _WINDOW_FAILURE_DETAIL_LIMIT = 300
