@@ -58,12 +58,8 @@ def merge_description_requests(
     recovered individually so batching cannot silently delete node descriptions.
     """
 
-    if not requests:
-        return []
-    if len(requests) == 1 or not isinstance(llm, StructuredCompletionProvider):
-        if len(requests) > 1:
-            return [llm.merge_entity_description(request) for request in requests]
-        return [llm.merge_entity_description(requests[0])]
+    if len(requests) <= 1 or not isinstance(llm, StructuredCompletionProvider):
+        return [llm.merge_entity_description(request) for request in requests]
     records = [
         {"record_id": _record_id(index), **request.model_dump(mode="json")}
         for index, request in enumerate(requests)
@@ -124,12 +120,8 @@ def summarize_community_requests(
     contract and is not used to rank the persisted graph.
     """
 
-    if not requests:
-        return []
-    if len(requests) == 1 or not isinstance(llm, StructuredCompletionProvider):
-        if len(requests) > 1:
-            return [llm.summarize_community(request) for request in requests]
-        return [llm.summarize_community(requests[0])]
+    if len(requests) <= 1 or not isinstance(llm, StructuredCompletionProvider):
+        return [llm.summarize_community(request) for request in requests]
     records = [
         {"record_id": _record_id(index), **request.model_dump(mode="json")}
         for index, request in enumerate(requests)

@@ -8,6 +8,7 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from itertools import batched
 
 from kg_processor.application.entity_names import identity_surface_match
 from kg_processor.application.extraction_contracts import (
@@ -222,7 +223,9 @@ def resolve_entity_mentions(  # noqa: PLR0912,PLR0915 - branches record distinct
     failed_adjudication_batches = 0
     if uncertain:
         batch_metadata: list[dict[str, object]] = []
-        batches = _candidate_batches(uncertain, adjudication_batch_size)
+        batches = [
+            list(batch) for batch in batched(uncertain, adjudication_batch_size, strict=False)
+        ]
         batch_results = _adjudicate_batches(
             batches,
             resolution_mentions,
@@ -342,7 +345,7 @@ def adjudicate_resolution_candidates(
     """
 
     decisions: list[ResolutionDecision] = []
-    batches = _candidate_batches(candidates, batch_size)
+    batches = [list(batch) for batch in batched(candidates, batch_size, strict=False)]
     for result in _adjudicate_batches(
         batches,
         mentions,
@@ -490,9 +493,6 @@ def _adjudicate_batches(
     results are sorted by batch index so scheduling cannot alter merge or trace order.
     """
 
-    if parallelism <= 0:
-        raise ValueError("resolution adjudication parallelism must be positive")
-
     failures = 0
     total_candidates = sum(len(batch) for batch in batches)
 
@@ -560,20 +560,6 @@ def _adjudicate_batch(
         response=response,
         provider_metadata=dict(completion.provider_metadata),
     )
-
-
-def _candidate_batches(
-    candidates: list[ResolutionCandidate],
-    size: int,
-) -> list[list[ResolutionCandidate]]:
-    """Partition ordered identity candidates into positive-sized provider request batches.
-
-    Candidate order is preserved across every slice.
-    """
-
-    if size <= 0:
-        raise ValueError("resolution adjudication batch size must be positive")
-    return [candidates[index : index + size] for index in range(0, len(candidates), size)]
 
 
 class UnionFind:
