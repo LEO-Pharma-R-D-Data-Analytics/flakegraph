@@ -238,8 +238,6 @@ def resolve_entity_mentions(  # noqa: PLR0912,PLR0915 - branches record distinct
         )
         for batch_result in batch_results:
             if batch_result.response is None:
-                # Resolution is conservative enrichment. A malformed batch must
-                # keep candidates distinct, not invalidate grounded extraction.
                 failed_adjudication_batches += 1
                 batch_metadata.append(
                     {
@@ -248,37 +246,15 @@ def resolve_entity_mentions(  # noqa: PLR0912,PLR0915 - branches record distinct
                         "error_type": batch_result.error_type,
                     }
                 )
-                decisions.extend(
-                    ResolutionDecision(
-                        left_id=candidate.left_id,
-                        right_id=candidate.right_id,
-                        same_entity=False,
-                        confidence=0.0,
-                        reason="llm_resolution_format_error",
-                    )
-                    for candidate in batch_result.candidates
+            else:
+                batch_metadata.append(
+                    {
+                        "batch_index": batch_result.index,
+                        "status": "completed",
+                        **batch_result.provider_metadata,
+                    }
                 )
-                continue
-            response_by_pair = {
-                _pair_key(item.left_id, item.right_id): item
-                for item in batch_result.response.decisions
-            }
-            batch_metadata.append(
-                {
-                    "batch_index": batch_result.index,
-                    "status": "completed",
-                    **batch_result.provider_metadata,
-                }
-            )
-            for candidate in batch_result.candidates:
-                response_item = response_by_pair.get(
-                    _pair_key(candidate.left_id, candidate.right_id)
-                )
-                decision = _resolution_decision(
-                    candidate,
-                    response_item,
-                    llm_merge_min_confidence,
-                )
+            for decision in _batch_decisions(batch_result, llm_merge_min_confidence):
                 if decision.same_entity:
                     if _cluster_initialism_conflict(
                         union_find,
@@ -356,30 +332,42 @@ def adjudicate_resolution_candidates(
         parallelism=1,
         progress=None,
     ):
-        if result.response is None:
-            decisions.extend(
-                ResolutionDecision(
-                    left_id=candidate.left_id,
-                    right_id=candidate.right_id,
-                    same_entity=False,
-                    confidence=0.0,
-                    reason="llm_resolution_format_error",
-                )
-                for candidate in result.candidates
-            )
-            continue
-        response_by_pair = {
-            _pair_key(item.left_id, item.right_id): item for item in result.response.decisions
-        }
-        decisions.extend(
-            _resolution_decision(
-                candidate,
-                response_by_pair.get(_pair_key(candidate.left_id, candidate.right_id)),
-                minimum_merge_confidence,
+        decisions.extend(_batch_decisions(result, minimum_merge_confidence))
+    return decisions
+
+
+def _batch_decisions(
+    result: _AdjudicationBatchResult,
+    minimum_confidence: float,
+) -> list[ResolutionDecision]:
+    """Turn one adjudicated batch into a decision per candidate pair.
+
+    Resolution is conservative enrichment. A malformed batch keeps its
+    candidates distinct rather than invalidating grounded extraction.
+    """
+
+    if result.response is None:
+        return [
+            ResolutionDecision(
+                left_id=candidate.left_id,
+                right_id=candidate.right_id,
+                same_entity=False,
+                confidence=0.0,
+                reason="llm_resolution_format_error",
             )
             for candidate in result.candidates
+        ]
+    response_by_pair = {
+        _pair_key(item.left_id, item.right_id): item for item in result.response.decisions
+    }
+    return [
+        _resolution_decision(
+            candidate,
+            response_by_pair.get(_pair_key(candidate.left_id, candidate.right_id)),
+            minimum_confidence,
         )
-    return decisions
+        for candidate in result.candidates
+    ]
 
 
 def _resolution_decision(
