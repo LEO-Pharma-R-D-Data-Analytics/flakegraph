@@ -6,8 +6,6 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from pydantic import BaseModel
-
 _NON_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_-]+")
 
 
@@ -21,15 +19,6 @@ def strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(schema)
     _close_objects(normalized)
     return normalized
-
-
-def pydantic_response_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """Build a provider-ready strict schema from a typed Pydantic response model.
-
-    The original Pydantic schema remains untouched for reuse and introspection.
-    """
-
-    return strict_json_schema(model.model_json_schema())
 
 
 def response_schema_name(task_name: str) -> str:

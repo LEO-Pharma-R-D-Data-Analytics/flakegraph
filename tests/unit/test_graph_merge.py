@@ -3,9 +3,7 @@ from __future__ import annotations
 import pytest
 
 from kg_processor.application.graph_filter import (
-    filter_entities,
     filter_entities_with_decisions,
-    filter_relations,
     filter_relations_with_decisions,
 )
 from kg_processor.application.graph_merge import (
@@ -85,8 +83,8 @@ def test_assemble_graph_deduplicates_entities_and_tracks_evidence() -> None:
         )
     ]
 
-    filtered_entities = filter_entities(entities, {chunk.id: chunk})
-    filtered_relations = filter_relations(relations, filtered_entities)
+    filtered_entities = filter_entities_with_decisions(entities, {chunk.id: chunk}).kept
+    filtered_relations = filter_relations_with_decisions(relations, filtered_entities).kept
     nodes, edges, evidence, sources = assemble_graph(
         "graph", [chunk], filtered_entities, filtered_relations, relation_weight_max=10
     )

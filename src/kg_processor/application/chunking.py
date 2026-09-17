@@ -130,20 +130,6 @@ def _split_text(
     return chunks
 
 
-def _section_path_for_offset(text: str, offset: int) -> list[str]:
-    stack: list[str] = []
-    for match in _HEADING_RE.finditer(text):
-        if match.start() > offset:
-            break
-        level = len(match.group(1))
-        title = " ".join(match.group(2).strip().split())
-        if not title:
-            continue
-        stack = stack[: level - 1]
-        stack.append(title)
-    return stack
-
-
 def _block_ids_for_parts(
     blocks: list[LayoutBlock],
     page_text: str,

@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from kg_processor.application.structured_output import (
-    pydantic_response_schema,
-    response_schema_name,
-)
+from kg_processor.application.structured_output import response_schema_name, strict_json_schema
 
 
 class _NestedRecord(BaseModel):
@@ -35,7 +32,7 @@ class _DefaultedResponse(BaseModel):
 def test_strict_schema_closes_every_object_and_requires_all_fields() -> None:
     """Require strict schema conversion to close and fully require every nested object."""
 
-    schema = pydantic_response_schema(_Response)
+    schema = strict_json_schema(_Response.model_json_schema())
 
     assert schema["additionalProperties"] is False
     assert schema["required"] == ["records"]
@@ -60,7 +57,7 @@ def test_response_schema_name_is_provider_safe_and_bounded() -> None:
 def test_strict_schema_removes_provider_unsupported_defaults() -> None:
     """Keep default behavior in Pydantic without emitting unsupported schema keywords."""
 
-    schema = pydantic_response_schema(_DefaultedResponse)
+    schema = strict_json_schema(_DefaultedResponse.model_json_schema())
 
     assert "default" not in schema["properties"]["label"]
     assert schema["required"] == ["label"]

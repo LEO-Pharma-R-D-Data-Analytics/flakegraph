@@ -49,15 +49,6 @@ class EntityMention(BaseModel):
     end_offset: int | None = Field(default=None, ge=0)
 
 
-class EntityMentionBatch(BaseModel):
-    """Hold grounded entity mentions from one extraction or targeted gleaning call.
-
-    The wrapper gives provider-neutral stages a stable typed batch contract.
-    """
-
-    entities: list[EntityMention] = Field(default_factory=list)
-
-
 class EntityExtractionOutcome(BaseModel):
     """Return grounded entities together with record-level provider diagnostics.
 
@@ -92,15 +83,6 @@ class RelationObservation(BaseModel):
     end_offset: int | None = Field(default=None, ge=0)
 
 
-class RelationObservationBatch(BaseModel):
-    """Hold grounded relation observations returned by one extraction-stage call.
-
-    It separates provider-call batching from later graph-wide deduplication.
-    """
-
-    relations: list[RelationObservation] = Field(default_factory=list)
-
-
 class RelationExtractionOutcome(BaseModel):
     """Return accepted relation observations and record-level rejection diagnostics.
 
@@ -122,15 +104,6 @@ class VerificationDecision(BaseModel):
     verdict: Literal["supported", "contradicted", "insufficient"]
     confidence: float = Field(ge=0.0, le=1.0)
     explanation: str
-
-
-class VerificationDecisionBatch(BaseModel):
-    """Hold reconciled semantic-verification decisions for candidate relations.
-
-    Orchestration ensures omitted IDs become conservative insufficient decisions.
-    """
-
-    decisions: list[VerificationDecision] = Field(default_factory=list)
 
 
 class VerificationOutcome(BaseModel):
@@ -167,15 +140,6 @@ class ResolutionDecision(BaseModel):
     canonical_name: str | None = None
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     reason: str
-
-
-class ResolutionDecisionBatch(BaseModel):
-    """Hold structured LLM judgments for a bounded set of uncertain identity pairs.
-
-    Confidence policy is applied after this untrusted response is reconciled.
-    """
-
-    decisions: list[ResolutionDecision] = Field(default_factory=list)
 
 
 class ExtractionObservations(BaseModel):

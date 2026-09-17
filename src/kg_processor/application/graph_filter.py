@@ -97,24 +97,6 @@ class _EntityEndpointIndex:
     aliases: dict[tuple[str, str], set[tuple[str, str]]]
 
 
-def filter_entities(
-    entities: list[ExtractedEntity],
-    chunks_by_id: dict[str, Chunk],
-    min_confidence: float = 0.0,
-    min_name_length: int = 2,
-    blocklist: list[str] | None = None,
-) -> list[ExtractedEntity]:
-    """Return only entity observations that pass grounding and quality filters."""
-
-    return filter_entities_with_decisions(
-        entities,
-        chunks_by_id,
-        min_confidence,
-        min_name_length,
-        blocklist,
-    ).kept
-
-
 def filter_entities_with_decisions(
     entities: list[ExtractedEntity],
     chunks_by_id: dict[str, Chunk],
@@ -172,24 +154,6 @@ def _is_latin_only_name(value: str) -> bool:
     return bool(letters) and all(
         "LATIN" in unicodedata.name(character, "") for character in letters
     )
-
-
-def filter_relations(
-    relations: list[ExtractedRelation],
-    entities: list[ExtractedEntity],
-    chunks_by_id: dict[str, Chunk] | None = None,
-    min_confidence: float = 0.0,
-    require_endpoint_grounding: bool = True,
-) -> list[ExtractedRelation]:
-    """Return only relation observations that pass endpoint and quality filters."""
-
-    return filter_relations_with_decisions(
-        relations,
-        entities,
-        chunks_by_id,
-        min_confidence,
-        require_endpoint_grounding,
-    ).kept
 
 
 def filter_relations_with_decisions(

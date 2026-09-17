@@ -188,12 +188,6 @@ def _initialism(normalized: str) -> str:
     return "".join(token[0] for token in tokens)
 
 
-def _compact(normalized: str) -> str:
-    """Remove spaces from an already normalized entity surface for exact acronym comparison."""
-
-    return "".join(normalized.split())
-
-
 def _singularized_tokens(normalized: str) -> tuple[str, ...]:
     """Return tokens with only an unambiguous regular plural suffix removed.
 

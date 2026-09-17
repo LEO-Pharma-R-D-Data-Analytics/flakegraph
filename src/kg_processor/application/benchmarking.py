@@ -289,19 +289,6 @@ def _number(mapping: Mapping[str, Any], key: str) -> float:
     return float(value)
 
 
-def _nested_number(mapping: Mapping[str, Any], path: tuple[str, ...]) -> float:
-    """Read a numeric value from a known nested evaluation metric path."""
-
-    current: Any = mapping
-    for key in path[:-1]:
-        if not isinstance(current, Mapping):
-            raise ValueError(f"benchmark metric '{'.'.join(path)}' is missing")
-        current = current.get(key)
-    if not isinstance(current, Mapping):
-        raise ValueError(f"benchmark metric '{'.'.join(path)}' is missing")
-    return _number(current, path[-1])
-
-
 def _nested_optional_number(
     mapping: Mapping[str, Any],
     path: tuple[str, ...],

@@ -20,8 +20,6 @@ from kg_processor.domain.consumption import TokenUsage
 # tails from serializing large queue or Spark stages; slower local deployments
 # can raise ``llm.timeout_seconds`` explicitly without changing adapter behavior.
 DEFAULT_LLM_TIMEOUT_SECONDS = 180
-DEFAULT_MAX_ENTITIES_PER_BATCH = 60
-DEFAULT_MAX_RELATIONS_PER_BATCH = 60
 
 
 class LlmCapabilities(BaseModel):
