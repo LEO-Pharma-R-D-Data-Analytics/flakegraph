@@ -36,6 +36,7 @@ class _RecordingQueue:
     def __init__(self, capacity_seen: list[int] | None = None) -> None:
         self.enqueued: list[tuple[str, int, str]] = []
         self.admitted: list[str] = []
+        self.renewed: list[str] = []
         self.released: list[str] = []
         self.capacity_seen = capacity_seen if capacity_seen is not None else []
         self.admit = True
@@ -51,7 +52,7 @@ class _RecordingQueue:
         return True
 
     async def renew(self, request_id: str) -> None:
-        return None
+        self.renewed.append(request_id)
 
     async def release(self, request_id: str) -> None:
         self.released.append(request_id)
@@ -124,6 +125,35 @@ class _Pool:
         self.requests.append(request)
         return _stub(b'{"results": {}}')
 
+
+class _BrokenStream(httpx.AsyncByteStream):
+    """A body whose connection drops after its first chunk."""
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield b'{"resu'
+        raise httpx.ReadError("connection reset by peer")
+
+
+class _CollapsingPool(_Pool):
+    """A replica that answers and then dies mid-body."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(200, stream=_BrokenStream())
+
+
+class _SlowPool(_Pool):
+    """A replica whose parse takes longer than the stale window."""
+
+    def __init__(self, seconds: float) -> None:
+        super().__init__()
+        self.seconds = seconds
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:  # type: ignore[override]
+        self.requests.append(request)
+        await asyncio.sleep(self.seconds)
+        return _stub(b'{"results": {}}')
+
     @property
     def hosts(self) -> list[str]:
         return [request.url.host for request in self.requests]
@@ -134,12 +164,14 @@ def _client(
     queue: _RecordingQueue | OcrQueue,
     replicas: tuple[str, ...] = ("10.0.0.1", "10.0.0.2"),
     capacity: int = 2,
+    stale_after_seconds: float = 60.0,
 ) -> TestClient:
     app = create_app(
         OcrShimConfig(
             database_url="postgresql://unused",
             upstream_host="mineru.invalid",
             poll_interval_seconds=0.01,
+            stale_after_seconds=stale_after_seconds,
         ),
         keyring=KEYRING,
         transport=httpx.MockTransport(upstream.handler),
@@ -219,6 +251,39 @@ def test_a_finished_request_frees_its_slot() -> None:
         assert response.status_code == 200
 
     assert queue.released == queue.admitted
+
+
+def test_a_parse_longer_than_the_stale_window_stays_counted_as_busy() -> None:
+    upstream, queue = _SlowPool(seconds=0.2), _RecordingQueue()
+    with _client(upstream, queue, stale_after_seconds=0.06) as client:
+        response = client.post(
+            "/file_parse",
+            headers={"Authorization": "Bearer sk-chat"},
+            files={"files": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+        )
+        assert response.status_code == 200
+
+    # Admission was immediate, so every renewal happened while MinerU was busy.
+    assert queue.renewed and set(queue.renewed) == set(queue.admitted)
+    assert queue.released == queue.admitted
+
+
+def test_a_replica_dying_mid_body_still_frees_its_slot() -> None:
+    upstream, queue = _CollapsingPool(), _RecordingQueue()
+    with _client(upstream, queue, replicas=("10.0.0.1",)) as client:
+        with pytest.raises(httpx.ReadError):
+            client.post(
+                "/file_parse",
+                headers={"Authorization": "Bearer sk-chat"},
+                files={"files": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+            )
+        exposition = client.get("/metrics").text
+
+    assert queue.released == queue.admitted
+    assert _samples(exposition, "flakegraph_ocr_in_flight") == {(("replica", "10.0.0.1"),): 0}
+    assert _samples(exposition, "flakegraph_ocr_requests_total") == {
+        (("consumer_class", "interactive"), ("outcome", "upstream_error")): 1
+    }
 
 
 def test_health_reports_the_replicas_the_shim_can_currently_see() -> None:

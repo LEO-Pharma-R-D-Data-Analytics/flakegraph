@@ -50,7 +50,6 @@ from prometheus_client.registry import Collector
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
 
 from kg_processor.serving.priority import ConsumerKeyring, load_keyring
 
@@ -639,7 +638,16 @@ async def _hold_and_forward(
         address = await _await_slot(held, upstreams, request_id, priority, consumer_class, config)
         metrics.queue_wait.labels(consumer_class).observe(time.perf_counter() - queued_at)
         return await _forward(
-            request, route, body, address, upstreams, held, request_id, metrics, consumer_class
+            request,
+            route,
+            body,
+            address,
+            upstreams,
+            held,
+            request_id,
+            metrics,
+            consumer_class,
+            renew_every=config.stale_after_seconds / 3,
         )
     except BaseException as exc:
         # Nothing was dispatched if no replica was claimed, so whatever
@@ -693,6 +701,8 @@ async def _forward(
     request_id: str,
     metrics: OcrShimMetrics,
     consumer_class: str,
+    *,
+    renew_every: float,
 ) -> Response:
     """Relay the held request to the chosen replica and free its slot after."""
 
@@ -705,11 +715,18 @@ async def _forward(
         content=body,
     )
     dispatched_at = time.perf_counter()
-    response = await client.send(upstream, stream=True)
+    # A parse can run for many minutes, far past the point at which a silent
+    # row is presumed abandoned. Renewing while dispatched is what tells the
+    # other replicas the slot is still genuinely busy.
+    keep_alive = asyncio.create_task(_renew_while_dispatched(queue, request_id, renew_every))
+    try:
+        response = await client.send(upstream, stream=True)
+    except BaseException:
+        keep_alive.cancel()
+        raise
 
-    async def _finish() -> None:
+    async def _settle() -> None:
         await response.aclose()
-        upstreams.release(address)
         await queue.release(request_id)
 
     async def _measured() -> AsyncIterator[bytes]:
@@ -717,6 +734,9 @@ async def _forward(
         # way the relay stops is the outcome: a clean end is judged by the
         # status the pool answered with, a transport failure is the pool's,
         # and a closed-early generator means the caller stopped listening.
+        # Whichever it is, the generator's own finally is the one place that
+        # runs on all three, so the slot is given back here rather than in a
+        # response hook that only fires after a clean end.
         outcome = OUTCOME_CLIENT_GONE
         try:
             async for chunk in response.aiter_raw():
@@ -726,15 +746,25 @@ async def _forward(
             outcome = _failure_outcome(exc)
             raise
         finally:
+            keep_alive.cancel()
             metrics.parse_duration.labels(address).observe(time.perf_counter() - dispatched_at)
             metrics.requests.labels(consumer_class, outcome).inc()
+            upstreams.release(address)
+            # A caller that hung up cancels this generator, and the row has to
+            # go regardless, so its removal is kept out of reach of that cancel.
+            await asyncio.shield(_settle())
 
     return StreamingResponse(
-        _measured(),
-        status_code=response.status_code,
-        headers=dict(response.headers),
-        background=BackgroundTask(_finish),
+        _measured(), status_code=response.status_code, headers=dict(response.headers)
     )
+
+
+async def _renew_while_dispatched(queue: OcrQueue, request_id: str, every: float) -> None:
+    """Keep a dispatched row fresh for as long as the parse it stands for runs."""
+
+    while True:
+        await asyncio.sleep(every)
+        await queue.renew(request_id)
 
 
 def _failure_outcome(exc: BaseException) -> str:
