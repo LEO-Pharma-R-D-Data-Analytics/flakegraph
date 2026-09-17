@@ -49,6 +49,16 @@ from kg_processor.ports.task_store import TaskStoreUnavailableError
 _INITIAL_TASK_COPY_BATCH_SIZE = 2_000
 _ARTIFACT_READ_PARALLELISM = 8
 _MAX_RUN_LIST_LIMIT = 500
+# One row per stage/status bucket, whatever the task count; the newest
+# progress payload in the bucket stands for it.
+_TASK_COUNT_SELECT = """
+    stage, status, COUNT(*) AS task_count,
+    MIN(started_at) AS started_at,
+    MAX(completed_at) AS completed_at,
+    MAX(updated_at) AS updated_at,
+    (jsonb_agg(progress_json ORDER BY progress_updated_at DESC)
+        FILTER (WHERE progress_json IS NOT NULL))->0 AS progress_json
+"""
 _SCHEMA_VERSION = 9
 _EXHAUSTED_TASK_RECOVERY_GRACE_SECONDS = 300
 _POSTGRES_SESSION_OPTIONS = " ".join(
@@ -1505,18 +1515,11 @@ class PostgresDistributedStore:
                 )
                 for row in rows
             ]
-            definition = RunDefinition(
-                id=str(run["id"]),
-                graph_id=str(run["graph_id"]),
-                config=cast(dict[str, Any], run["config_json"]),
-                config_digest=str(run["config_digest"]),
-                status=RunStatus(str(run["status"])),
-            )
             effective_updated_at = max(
                 [run["updated_at"], *(row["updated_at"] for row in rows)],
             )
             return RunSnapshot(
-                run=definition,
+                run=_run_definition(run),
                 tasks=tasks,
                 created_at=run["created_at"],
                 updated_at=effective_updated_at,
@@ -1539,13 +1542,8 @@ class PostgresDistributedStore:
             if run is None:
                 raise KeyError(f"unknown distributed run: {run_id}")
             rows = connection.execute(
-                """
-                SELECT stage, status, COUNT(*) AS task_count,
-                       MIN(started_at) AS started_at,
-                       MAX(completed_at) AS completed_at,
-                       MAX(updated_at) AS updated_at,
-                       (jsonb_agg(progress_json ORDER BY progress_updated_at DESC)
-                           FILTER (WHERE progress_json IS NOT NULL))->0 AS progress_json
+                f"""
+                SELECT {_TASK_COUNT_SELECT}
                 FROM flakegraph_task
                 WHERE run_id = %s
                 GROUP BY stage, status
@@ -1553,21 +1551,7 @@ class PostgresDistributedStore:
                 """,
                 (run_id,),
             ).fetchall()
-            task_counts = [
-                TaskCount(
-                    stage=TaskStage(str(row["stage"])),
-                    status=TaskStatus(str(row["status"])),
-                    count=int(row["task_count"]),
-                    started_at=row["started_at"],
-                    completed_at=row["completed_at"],
-                    progress=(
-                        TaskProgress.model_validate(row["progress_json"])
-                        if row["progress_json"]
-                        else None
-                    ),
-                )
-                for row in rows
-            ]
+            task_counts = [_task_count(row) for row in rows]
             # Heartbeats intentionally update task rows rather than one shared run
             # row, which avoids a write hotspot across large worker fleets. The
             # status aggregate already visits each stage/status bucket, so its
@@ -1582,13 +1566,7 @@ class PostgresDistributedStore:
                 "SELECT stage, config_digest FROM flakegraph_worker_fleet"
             ).fetchall()
             return RunSummary(
-                run=RunDefinition(
-                    id=str(run["id"]),
-                    graph_id=str(run["graph_id"]),
-                    config=cast(dict[str, Any], run["config_json"]),
-                    config_digest=str(run["config_digest"]),
-                    status=RunStatus(str(run["status"])),
-                ),
+                run=_run_definition(run),
                 task_counts=task_counts,
                 total_tasks=sum(item.count for item in task_counts),
                 created_at=run["created_at"],
@@ -1619,13 +1597,8 @@ class PostgresDistributedStore:
                 return []
             run_ids = [str(run["id"]) for run in runs]
             count_rows = connection.execute(
-                """
-                SELECT run_id, stage, status, COUNT(*) AS task_count,
-                       MIN(started_at) AS started_at,
-                       MAX(completed_at) AS completed_at,
-                       MAX(updated_at) AS updated_at,
-                       (jsonb_agg(progress_json ORDER BY progress_updated_at DESC)
-                           FILTER (WHERE progress_json IS NOT NULL))->0 AS progress_json
+                f"""
+                SELECT run_id, {_TASK_COUNT_SELECT}
                 FROM flakegraph_task
                 WHERE run_id = ANY(%s)
                 GROUP BY run_id, stage, status
@@ -1637,20 +1610,7 @@ class PostgresDistributedStore:
             updated_by_run = {str(run["id"]): run["updated_at"] for run in runs}
             for row in count_rows:
                 row_run_id = str(row["run_id"])
-                counts_by_run[row_run_id].append(
-                    TaskCount(
-                        stage=TaskStage(str(row["stage"])),
-                        status=TaskStatus(str(row["status"])),
-                        count=int(row["task_count"]),
-                        started_at=row["started_at"],
-                        completed_at=row["completed_at"],
-                        progress=(
-                            TaskProgress.model_validate(row["progress_json"])
-                            if row["progress_json"]
-                            else None
-                        ),
-                    )
-                )
+                counts_by_run[row_run_id].append(_task_count(row))
                 if row["updated_at"] is not None:
                     updated_by_run[row_run_id] = max(
                         updated_by_run[row_run_id],
@@ -2006,6 +1966,33 @@ def _task_definition(
         dependency_ids=sorted(str(value) for value in dependency_ids),
         priority=int(row["priority"]),
         max_attempts=int(row["max_attempts"]),
+    )
+
+
+def _run_definition(row: dict[str, Any]) -> RunDefinition:
+    """Convert a database run row into its provider-neutral domain contract."""
+
+    return RunDefinition(
+        id=str(row["id"]),
+        graph_id=str(row["graph_id"]),
+        config=cast(dict[str, Any], row["config_json"]),
+        config_digest=str(row["config_digest"]),
+        status=RunStatus(str(row["status"])),
+    )
+
+
+def _task_count(row: dict[str, Any]) -> TaskCount:
+    """Convert one stage/status aggregate row into its bounded status bucket."""
+
+    return TaskCount(
+        stage=TaskStage(str(row["stage"])),
+        status=TaskStatus(str(row["status"])),
+        count=int(row["task_count"]),
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+        progress=(
+            TaskProgress.model_validate(row["progress_json"]) if row["progress_json"] else None
+        ),
     )
 
 
