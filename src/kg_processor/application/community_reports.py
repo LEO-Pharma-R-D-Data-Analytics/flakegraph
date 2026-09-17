@@ -63,9 +63,7 @@ class _CommunityReportContext:
     bounded text request so generated output can be traced back to graph inputs.
     """
 
-    index: int
     member_ids: set[str]
-    members: list[GraphNode]
     internal_edges: list[GraphEdge]
     internal_edge_count: int
     endpoint_pair_count: int
@@ -231,9 +229,7 @@ def _report_contexts(
         )
         contexts.append(
             _CommunityReportContext(
-                index=index,
                 member_ids=member_ids,
-                members=members,
                 internal_edges=internal_edges,
                 internal_edge_count=len(all_internal_edges),
                 endpoint_pair_count=len(
