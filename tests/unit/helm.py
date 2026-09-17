@@ -33,6 +33,22 @@ def helm() -> str:
     return found
 
 
+def _template(
+    settings: tuple[str, ...],
+    values: tuple[Path, ...],
+    api_versions: str,
+    release: str = RELEASE,
+) -> subprocess.CompletedProcess[str]:
+    command = [helm(), "template", release, str(CHART), "--namespace", NAMESPACE]
+    if api_versions:
+        command += ["--api-versions", api_versions]
+    for path in values:
+        command += ["--values", str(path)]
+    for setting in settings:
+        command += ["--set", setting]
+    return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
 @cache
 def render(
     settings: tuple[str, ...] = (),
@@ -42,21 +58,7 @@ def render(
 ) -> list[dict[str, Any]]:
     """Render the chart offline with ``--set`` overrides and values files."""
 
-    command = [
-        helm(),
-        "template",
-        release,
-        str(CHART),
-        "--namespace",
-        NAMESPACE,
-        "--api-versions",
-        API_VERSIONS,
-    ]
-    for path in values:
-        command += ["--values", str(path)]
-    for setting in settings:
-        command += ["--set", setting]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = _template(settings, values, API_VERSIONS, release)
     assert result.returncode == 0, result.stderr
     return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
 
@@ -72,14 +74,7 @@ def fails(
     ``api_versions=""`` renders against a cluster without the monitoring CRDs.
     """
 
-    command = [helm(), "template", RELEASE, str(CHART), "--namespace", NAMESPACE]
-    if api_versions:
-        command += ["--api-versions", api_versions]
-    for path in values:
-        command += ["--values", str(path)]
-    for setting in settings:
-        command += ["--set", setting]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = _template(settings, values, api_versions)
     assert result.returncode != 0, "the chart rendered a configuration it must refuse"
     return result.stderr
 
