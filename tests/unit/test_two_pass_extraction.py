@@ -1100,9 +1100,9 @@ def test_single_document_window_inherits_context_grounded_in_another_chunk() -> 
     observations = extract_graph_observations(
         window.chunks,
         FakeLlmProvider(),
-        extraction_window_tokens=1_000,
-        max_chunks_per_llm_call=2,
-        graph_settings=GraphSettings(extraction_parallelism=1, gleaning_max_passes=0),
+        graph_settings=GraphSettings(
+            extraction_parallelism=1, gleaning_max_passes=0, max_chunks_per_llm_call=2
+        ),
         ontology=ontology,
         model="fake",
         timeout_seconds=30,
@@ -1187,12 +1187,11 @@ def test_relation_phase_uses_entities_discovered_in_other_document_windows() -> 
     observations = extract_graph_observations(
         [first, second],
         _CrossWindowRelationLlm(),
-        extraction_window_tokens=1_000,
-        max_chunks_per_llm_call=1,
         graph_settings=GraphSettings(
             extraction_parallelism=2,
             gleaning_max_passes=0,
             verify_relations=False,
+            max_chunks_per_llm_call=1,
         ),
         ontology=ontology,
         model="fake",

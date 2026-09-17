@@ -358,8 +358,6 @@ class KgProcessorPipeline:
         observations = extract_entity_observations(
             prepared.chunks,
             self._graph_llm(),
-            self.settings.graph.extraction_window_tokens,
-            self.settings.graph.max_chunks_per_llm_call,
             self.settings.graph,
             ontology.profile,
             self.settings.llm.model,
@@ -394,8 +392,6 @@ class KgProcessorPipeline:
             prepared.chunks,
             document_entities,
             self._graph_llm(),
-            self.settings.graph.extraction_window_tokens,
-            self.settings.graph.max_chunks_per_llm_call,
             self.settings.graph,
             ontology.profile,
             self.settings.llm.model,

@@ -96,8 +96,6 @@ def extract_graph_two_pass(
     observations = extract_graph_observations(
         chunks,
         llm,
-        graph_settings.extraction_window_tokens,
-        graph_settings.max_chunks_per_llm_call,
         graph_settings,
         ontology,
         model,
@@ -130,8 +128,6 @@ def extract_graph_two_pass(
 def extract_graph_observations(
     chunks: list[Chunk],
     llm: LlmProvider,
-    extraction_window_tokens: int,
-    max_chunks_per_llm_call: int,
     graph_settings: GraphSettings,
     ontology: OntologyProfile,
     model: str,
@@ -153,8 +149,6 @@ def extract_graph_observations(
     entity_observations = extract_entity_observations(
         chunks,
         llm,
-        extraction_window_tokens,
-        max_chunks_per_llm_call,
         graph_settings,
         ontology,
         model,
@@ -167,8 +161,6 @@ def extract_graph_observations(
         chunks,
         entity_observations.entities,
         llm,
-        extraction_window_tokens,
-        max_chunks_per_llm_call,
         graph_settings,
         ontology,
         model,
@@ -189,8 +181,6 @@ def extract_graph_observations(
 def extract_entity_observations(
     chunks: list[Chunk],
     llm: LlmProvider,
-    extraction_window_tokens: int,
-    max_chunks_per_llm_call: int,
     graph_settings: GraphSettings,
     ontology: OntologyProfile,
     model: str,
@@ -208,29 +198,11 @@ def extract_entity_observations(
 
     windows = build_extraction_windows(
         chunks,
-        extraction_window_tokens,
-        max_chunks_per_llm_call,
+        graph_settings.extraction_window_tokens,
+        graph_settings.max_chunks_per_llm_call,
     )
     entity_stage = entity_extractor or LlmEntityExtractor(llm, graph_settings.deterministic_seed)
-    document_by_chunk = {chunk.id: chunk.document_id for chunk in chunks}
-    document_ids = {chunk.document_id for chunk in chunks}
-    subjects_by_document: dict[str, list[EntityMention]] = {}
-    unassigned_subjects: list[EntityMention] = []
-    for subject in document_context_entities or []:
-        document_id = document_by_chunk.get(subject.source_chunk_id)
-        if document_id is not None:
-            subjects_by_document.setdefault(document_id, []).append(subject)
-        else:
-            unassigned_subjects.append(subject)
-    if len(document_ids) == 1 and unassigned_subjects:
-        # Distributed extraction sends one bounded window at a time. Its focal
-        # entity is grounded in a front-matter chunk that usually belongs to a
-        # different window, so a shard-local chunk lookup cannot recover the
-        # document id. A single-document shard is unambiguous and can safely
-        # inherit that document's reusable context. Multi-document callers keep
-        # the strict lookup above to prevent context from leaking across sources.
-        only_document_id = next(iter(document_ids))
-        subjects_by_document.setdefault(only_document_id, []).extend(unassigned_subjects)
+    subjects_by_document = _mentions_by_document(chunks, document_context_entities or [])
     results = _run_window_stage(
         windows,
         graph_settings,
@@ -257,8 +229,6 @@ def extract_relation_observations(
     chunks: list[Chunk],
     document_entities: list[EntityMention],
     llm: LlmProvider,
-    extraction_window_tokens: int,
-    max_chunks_per_llm_call: int,
     graph_settings: GraphSettings,
     ontology: OntologyProfile,
     model: str,
@@ -276,8 +246,8 @@ def extract_relation_observations(
 
     windows = build_extraction_windows(
         chunks,
-        extraction_window_tokens,
-        max_chunks_per_llm_call,
+        graph_settings.extraction_window_tokens,
+        graph_settings.max_chunks_per_llm_call,
     )
     relation_stage = relation_extractor or LlmRelationExtractor(
         llm, graph_settings.deterministic_seed
@@ -285,18 +255,7 @@ def extract_relation_observations(
     verifier_stage = relation_verifier or LlmRelationVerifier(
         llm, graph_settings.deterministic_seed
     )
-    document_by_chunk = {chunk.id: chunk.document_id for chunk in chunks}
-    document_ids = {chunk.document_id for chunk in chunks}
-    entities_by_document: dict[str, list[EntityMention]] = {}
-    unassigned_entities: list[EntityMention] = []
-    for entity in document_entities:
-        document_id = document_by_chunk.get(entity.source_chunk_id)
-        if document_id is None:
-            unassigned_entities.append(entity)
-        else:
-            entities_by_document.setdefault(document_id, []).append(entity)
-    if len(document_ids) == 1 and unassigned_entities:
-        entities_by_document.setdefault(next(iter(document_ids)), []).extend(unassigned_entities)
+    entities_by_document = _mentions_by_document(chunks, document_entities)
     results = _run_window_stage(
         windows,
         graph_settings,
@@ -382,6 +341,34 @@ def resolve_extraction_observations(
         ],
     }
     return dedupe_extraction_result(extraction)
+
+
+def _mentions_by_document(
+    chunks: list[Chunk],
+    mentions: list[EntityMention],
+) -> dict[str, list[EntityMention]]:
+    """Group mentions by the document of their source chunk.
+
+    Distributed extraction sends one bounded window at a time. A mention grounded
+    in a chunk outside the shard, such as a focal entity from front matter, has no
+    document here; a single-document shard is unambiguous and inherits it, while
+    multi-document callers keep the strict lookup so context never leaks across
+    sources.
+    """
+
+    document_by_chunk = {chunk.id: chunk.document_id for chunk in chunks}
+    document_ids = {chunk.document_id for chunk in chunks}
+    by_document: dict[str, list[EntityMention]] = {}
+    unassigned: list[EntityMention] = []
+    for mention in mentions:
+        document_id = document_by_chunk.get(mention.source_chunk_id)
+        if document_id is None:
+            unassigned.append(mention)
+        else:
+            by_document.setdefault(document_id, []).append(mention)
+    if len(document_ids) == 1 and unassigned:
+        by_document.setdefault(next(iter(document_ids)), []).extend(unassigned)
+    return by_document
 
 
 def _run_window_stage(
@@ -993,18 +980,12 @@ def _relation_inventory_for_window(
     """
 
     grouped: dict[tuple[str, str], list[EntityMention]] = {}
-    order: list[tuple[str, str]] = []
     for entity in entities:
-        key = (normalize_ontology_label(entity.name), entity.type)
-        if key not in grouped:
-            grouped[key] = []
-            order.append(key)
-        grouped[key].append(entity)
+        grouped.setdefault((normalize_ontology_label(entity.name), entity.type), []).append(entity)
 
     window_chunk_ids = {chunk.id for chunk in window.chunks}
-    compacted: dict[tuple[str, str], EntityMention] = {}
-    for key in order:
-        observations = grouped[key]
+    inventory: list[EntityMention] = []
+    for observations in grouped.values():
         representative = next(
             (entity for entity in observations if entity.source_chunk_id in window_chunk_ids),
             observations[0],
@@ -1015,15 +996,17 @@ def _relation_inventory_for_window(
                 surface for entity in observations for surface in entity.contextual_surfaces
             )
         )
-        compacted[key] = representative.model_copy(
-            update={
-                "aliases": aliases,
-                "is_document_context": any(entity.is_document_context for entity in observations),
-                "contextual_surfaces": contextual_surfaces,
-            }
+        inventory.append(
+            representative.model_copy(
+                update={
+                    "aliases": aliases,
+                    "is_document_context": any(
+                        entity.is_document_context for entity in observations
+                    ),
+                    "contextual_surfaces": contextual_surfaces,
+                }
+            )
         )
-
-    inventory = [compacted[key] for key in order]
     return _entities_grounded_in_window(inventory, window)
 
 
