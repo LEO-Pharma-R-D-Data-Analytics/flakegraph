@@ -468,7 +468,7 @@ def _docx_block_parts(container: Element, depth: int = 0) -> list[str]:
     for child in container:
         local_name = _local_name(child.tag)
         if local_name == "p":
-            text = _docx_paragraph_text(child).strip()
+            text = _docx_inline_text(child).strip()
             if not text:
                 continue
             heading_level = _docx_heading_level(child)
@@ -519,19 +519,15 @@ def _docx_cell_paragraphs(container: Element, depth: int = 0) -> list[str]:
     for child in container:
         local_name = _local_name(child.tag)
         if local_name == "p":
-            paragraphs.append(_docx_paragraph_text(child).strip())
+            paragraphs.append(_docx_inline_text(child).strip())
         elif local_name in {"sdt", "sdtContent"}:
             paragraphs.extend(_docx_cell_paragraphs(child, depth + 1))
     return paragraphs
 
 
-def _docx_paragraph_text(paragraph: Element) -> str:
+def _docx_inline_text(node: Element, depth: int = 0) -> str:
     """Render Word inline text while preserving tabs, breaks, and nested paragraphs."""
 
-    return _docx_inline_text(paragraph)
-
-
-def _docx_inline_text(node: Element, depth: int = 0) -> str:
     _validate_office_xml_depth(depth)
     parts: list[str] = []
     for child in node:
@@ -872,15 +868,11 @@ def _office_document_relationship_id(node: Element) -> str | None:
 def _xlsx_shared_strings(
     path: Path,
     archive: zipfile.ZipFile,
-    member_name: str | None = "xl/sharedStrings.xml",
+    member_name: str | None,
 ) -> list[str]:
     if member_name is None:
         return []
-    try:
-        payload = _read_zip_member(path, archive, member_name)
-    except KeyError:
-        return []
-    root = ElementTree.fromstring(payload)
+    root = ElementTree.fromstring(_read_zip_member(path, archive, member_name))
     return [_xlsx_display_text(item).strip() for item in root if _local_name(item.tag) == "si"]
 
 
@@ -966,8 +958,6 @@ def _read_text_document(path: Path, *, sniff_html_charset: bool = False) -> str:
             text = payload.decode(encoding, errors="replace")
         elif normalized_encoding in {"utf-8", "utf-8-sig"}:
             text = _decode_mixed_utf8(payload)
-        elif declared_encoding:
-            text = _decode_legacy_bytes(payload)
         else:
             text = _decode_legacy_bytes(payload)
     if "\x00" in text:
