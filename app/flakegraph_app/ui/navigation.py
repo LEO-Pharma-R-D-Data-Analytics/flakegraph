@@ -141,7 +141,7 @@ def _render_graph_history_heading(runtime_key: str, can_forget: bool) -> None:
             help=(
                 "Finish selecting graphs and return to normal history navigation."
                 if bulk_mode
-                else "Select multiple terminal graphs to remove from app history together."
+                else "Select multiple terminal graphs to remove together."
             ),
         ):
             st.session_state[f"bulk_graph_mode_{runtime_key}"] = not bulk_mode
@@ -279,7 +279,7 @@ def _render_bulk_actions(
         type="primary",
         width="stretch",
         disabled=not selected,
-        help="Review and confirm removal of the selected graphs from app history.",
+        help="Review and confirm removal of the selected graphs.",
         key=f"bulk_remove_{runtime_key}",
     ):
         st.session_state[f"pending_bulk_forget_{runtime_key}"] = list(selected)
@@ -468,14 +468,14 @@ def _finish_removal(pending: RunSnapshot, selected_id: object) -> None:
     st.session_state.pop("pending_forget_run_id", None)
 
 
-@st.dialog("Remove selected graphs from history?", on_dismiss=_dismiss_bulk_forget)
+@st.dialog("Remove selected graphs?", on_dismiss=_dismiss_bulk_forget)
 def _bulk_forget_dialog(
     backend: ControlPlaneBackend,
     runtime_key: str,
     pending: Sequence[RunSnapshot],
     selected_id: object,
 ) -> None:
-    """Confirm a bounded batch of history-only removals and report partial failures."""
+    """Confirm a bounded batch of removals and report partial failures."""
 
     errors_key = f"bulk_forget_errors_{runtime_key}"
     prior_errors = st.session_state.get(errors_key)
@@ -503,7 +503,7 @@ def _bulk_forget_dialog(
         icon=":material/delete_outline:",
         type="primary",
         width="stretch",
-        help="Confirm removal of every listed graph from this app's history.",
+        help="Remove every listed graph, with whatever the runtime stores for it.",
         key=f"confirm_bulk_forget_{runtime_key}",
     ):
         failures = _forget_runs(backend, pending)
