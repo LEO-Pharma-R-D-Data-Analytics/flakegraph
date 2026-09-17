@@ -1775,7 +1775,7 @@ def test_factories_build_explicit_snowflake_providers(tmp_path: Path) -> None:
         overrides={
             "files": {"source": "snowflake_stage", "stage_prefix": "input"},
             "ocr": {"provider": "snowflake_cortex"},
-            "llm": {"provider": "snowflake_cortex", "model": "llama3.3-70b"},
+            "llm": {"provider": "snowflake_cortex", "model": "llama3.3-70b", "timeout_seconds": 45},
             "embedding": {
                 "provider": "snowflake_cortex",
                 "model": "snowflake-arctic-embed-m-v1.5",
@@ -1793,7 +1793,11 @@ def test_factories_build_explicit_snowflake_providers(tmp_path: Path) -> None:
 
     assert isinstance(build_file_source(settings), SnowflakeStageFileSource)
     assert isinstance(build_ocr_provider(settings), SnowflakeCortexOcrProvider)
-    assert isinstance(build_llm_provider(settings), SnowflakeCortexLlmProvider)
+    llm = build_llm_provider(settings)
+    assert isinstance(llm, SnowflakeCortexLlmProvider)
+    # Enrichment calls carry no timeout of their own, so the configured one
+    # has to reach the adapter rather than the adapter's default.
+    assert llm.timeout_seconds == 45
     assert isinstance(build_embedding_provider(settings), SnowflakeCortexEmbeddingProvider)
 
 

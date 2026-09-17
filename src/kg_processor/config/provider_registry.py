@@ -301,6 +301,17 @@ def provider_kinds() -> tuple[ProviderKind, ...]:
     return _PROVIDER_KINDS
 
 
+def provider_profile(name: str) -> ProviderProfile | None:
+    """Return the profile a provider name is registered under, whatever its kind.
+
+    A name that appears under several kinds (``snowflake_cortex`` parses,
+    completes and embeds) carries the same profile under each, so the kind is
+    not needed to answer where its work runs.
+    """
+
+    return next((provider.profile for provider in _PROVIDERS if provider.name == name), None)
+
+
 def provider_names(kind: ProviderKind) -> frozenset[str]:
     """Return all registered provider names for one category."""
 

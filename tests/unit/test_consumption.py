@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from kg_processor.application.consumption import ConsumptionCollector
+from kg_processor.application.consumption import ConsumptionCollector, locality_for
 from kg_processor.application.metered_llm import MeteredLlmProvider
 from kg_processor.config.settings import OcrSettings, Settings
 from kg_processor.domain.consumption import (
@@ -30,9 +30,7 @@ def _card() -> RateCard:
                 prompt_usd_per_million=1.0, completion_usd_per_million=3.0
             ),
             "snowflake_cortex:*": Rate(usd_per_page=0.01),
-            "openai:gpt-5.6": Rate(
-                prompt_usd_per_million=2.0, completion_usd_per_million=8.0
-            ),
+            "openai:gpt-5.6": Rate(prompt_usd_per_million=2.0, completion_usd_per_million=8.0),
         },
         local_reference="openai:gpt-5.6",
     )
@@ -153,7 +151,7 @@ def test_a_rate_that_ignores_pages_does_not_price_a_parse() -> None:
 
 
 def test_local_ocr_saving_is_flagged_when_no_page_reference_exists() -> None:
-    """"We saved nothing" and "we cannot say" must not look identical."""
+    """ "We saved nothing" and "we cannot say" must not look identical."""
 
     card = RateCard(
         rates={"openai:gpt-5.6": Rate(prompt_usd_per_million=2.0)},
@@ -341,3 +339,27 @@ def test_local_runs_price_against_a_stated_hosted_alternative() -> None:
     assert totals.billed_usd == 0.0
     assert totals.avoided_usd > 0.0
     assert totals.unpriced_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("provider", "locality"),
+    [
+        ("tesseract_internal", Locality.LOCAL),
+        ("mineru_internal", Locality.LOCAL),
+        ("vllm_local", Locality.LOCAL),
+        ("sentence_transformers", Locality.LOCAL),
+        ("mineru_api", Locality.HOSTED),
+        ("snowflake_cortex", Locality.HOSTED),
+        ("azure_openai", Locality.HOSTED),
+    ],
+)
+def test_a_provider_is_billed_where_the_registry_says_it_runs(
+    provider: str, locality: Locality
+) -> None:
+    """The names that settings can hold are the ones that must classify right.
+
+    Local Tesseract was once billed as hosted because a second list of local
+    providers spelled it under an alias no settings object ever carries.
+    """
+
+    assert locality_for(provider) == locality

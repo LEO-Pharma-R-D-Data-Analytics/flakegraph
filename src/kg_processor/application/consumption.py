@@ -13,6 +13,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping, Sequence
 
+from kg_processor.config.provider_registry import provider_profile
 from kg_processor.domain.consumption import (
     ConsumptionEvent,
     ConsumptionTotals,
@@ -25,25 +26,15 @@ from kg_processor.domain.consumption import (
 
 # Providers that run on infrastructure we own. Their calls are recorded exactly
 # like hosted ones — the tokens are what make the avoided cost measurable — but
-# they accrue avoided rather than billed cost.
-_LOCAL_PROVIDERS = frozenset(
-    {
-        "ollama",
-        "vllm_local",
-        "sentence_transformers",
-        "builtin_text",
-        "mineru",
-        "mineru_internal",
-        "tesseract",
-        "gliner",
-    }
-)
+# they accrue avoided rather than billed cost. Read off the registry rather
+# than listed again here, so a provider cannot be billed for want of a copy.
+_LOCAL_PROFILES = frozenset({"open_source", "local", "test"})
 
 
 def locality_for(provider: str) -> Locality:
     """Classify a provider by where its work actually runs."""
 
-    return Locality.LOCAL if provider in _LOCAL_PROVIDERS else Locality.HOSTED
+    return Locality.LOCAL if provider_profile(provider) in _LOCAL_PROFILES else Locality.HOSTED
 
 
 class ConsumptionCollector:

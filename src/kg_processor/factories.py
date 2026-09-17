@@ -406,7 +406,11 @@ def _build_raw_llm_provider(settings: Settings) -> LlmProvider:
             max_output_tokens=settings.llm.max_output_tokens,
         )
     if settings.llm.provider == "snowflake_cortex":
-        return SnowflakeCortexLlmProvider(_snowflake_config(settings), settings.llm.model)
+        return SnowflakeCortexLlmProvider(
+            _snowflake_config(settings),
+            settings.llm.model,
+            timeout_seconds=settings.llm.timeout_seconds,
+        )
     raise ValueError(f"Unsupported LLM provider: {settings.llm.provider}")
 
 

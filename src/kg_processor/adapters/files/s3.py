@@ -108,9 +108,7 @@ class S3FileSource:
                 buffersize=DOWNLOAD_PARALLELISM,
             )
 
-    def _candidates(
-        self, client: S3Client
-    ) -> Iterable[tuple[str, str, str | None, dict[str, str]]]:
+    def _candidates(self, client: S3Client) -> Iterable[tuple[str, str, dict[str, str]]]:
         """Yield supported object keys and metadata without buffering the listing."""
 
         prefix = normalized_prefix(self.config.prefix)
@@ -125,7 +123,6 @@ class S3FileSource:
                     continue
                 if not matches_include_globs(relative_path, self.include_globs):
                     continue
-                content_type = item.get("ContentType")
                 identity = {
                     name: str(item.get(source) or "")
                     for name, source in (
@@ -134,7 +131,7 @@ class S3FileSource:
                         ("last_modified", "LastModified"),
                     )
                 }
-                yield key, relative_path, str(content_type) if content_type else None, identity
+                yield key, relative_path, identity
 
 
 def _build_s3_client(config: S3FileSourceConfig) -> S3Client:
@@ -153,12 +150,12 @@ def _build_s3_client(config: S3FileSourceConfig) -> S3Client:
 def _download_input_file(
     config: S3FileSourceConfig,
     client: S3Client,
-    candidate: tuple[str, str, str | None, dict[str, str]],
+    candidate: tuple[str, str, dict[str, str]],
     download_root: Path,
 ) -> InputFile:
     """Download one object atomically enough for a single worker invocation."""
 
-    key, relative_path, listed_content_type, remote_identity = candidate
+    key, relative_path, remote_identity = candidate
     local_path = object_download_path(
         download_root,
         relative_path,
@@ -166,12 +163,15 @@ def _download_input_file(
     )
     local_path.parent.mkdir(parents=True, exist_ok=True)
     source_uri = f"s3://{config.bucket}/{key}"
+    # Judged from the key on every path, so a file's type does not depend on
+    # whether it was downloaded now or found in the cache from an earlier run.
+    mime_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
     cached = cached_input_file(
         local_path,
         remote_identity,
         source_uri,
         stable_id("s3_file", config.bucket, key),
-        listed_content_type or mimetypes.guess_type(key)[0] or "application/octet-stream",
+        mime_type,
     )
     if cached is not None:
         return cached
@@ -188,11 +188,7 @@ def _download_input_file(
         path=local_path,
         source_uri=source_uri,
         checksum=checksum,
-        mime_type=(
-            str(response.get("ContentType") or listed_content_type)
-            if response.get("ContentType") or listed_content_type
-            else mimetypes.guess_type(key)[0] or "application/octet-stream"
-        ),
+        mime_type=mime_type,
         size_bytes=size_bytes,
     )
     write_download_metadata(local_path, remote_identity, result)
