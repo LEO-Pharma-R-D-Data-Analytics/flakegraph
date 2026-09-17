@@ -230,7 +230,8 @@ def test_the_gate_is_refused_without_the_policy_that_makes_it_sound() -> None:
         )
     )
     assert "ingress.authProxy.enabled needs controlPlane.networkPolicy.enabled" in grafana_only
-    assert "auth-proxy" not in render(("ingress.enabled=false", "ingress.authProxy.enabled=true"))
+    without_ingress = render(("ingress.enabled=false", "ingress.authProxy.enabled=true"))
+    assert not [doc for doc in without_ingress if "auth-proxy" in doc["metadata"]["name"]]
 
     rendered = render(
         (

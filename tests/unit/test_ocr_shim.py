@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import psycopg
@@ -296,7 +296,7 @@ def test_a_caller_that_hangs_up_while_queued_is_not_parsed_for() -> None:
     queue = _RecordingQueue()
     queue.admit = False
     with _client(_Pool(), queue) as client:
-        app = client.app
+        app = cast(Any, client.app)
 
         async def hung_up() -> dict[str, str]:
             return {"type": "http.disconnect"}
