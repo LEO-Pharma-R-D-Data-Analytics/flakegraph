@@ -2111,8 +2111,8 @@ def _validate_dynamic_follow_ups(
     parent_task_id: str,
     parent_stage: TaskStage,
     tasks: list[TaskDefinition],
-) -> set[str]:
-    """Validate the bounded runtime DAG and return its terminal task IDs.
+) -> None:
+    """Validate the bounded runtime DAG a finished task may add.
 
     Preparation adds a context child. Context extraction adds entity windows plus
     their inventory barrier. Inventory compaction adds relation windows plus the
@@ -2155,14 +2155,6 @@ def _validate_dynamic_follow_ups(
         task.dependency_ids != [parent_task_id] for task in tasks
     ):
         raise ValueError("each preparation follow-up must depend directly on its parent")
-
-    depended_on = {
-        dependency_id
-        for follow_up in tasks
-        for dependency_id in follow_up.dependency_ids
-        if dependency_id in task_ids
-    }
-    return task_ids - depended_on
 
 
 def _validate_entity_fan_out(parent_task_id: str, tasks: list[TaskDefinition]) -> None:
