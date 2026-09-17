@@ -32,14 +32,22 @@ class SpcsLaunch:
     def execute_sql(self) -> str:
         """Render the fixed-shape SQL that starts this asynchronous job service."""
 
-        return (
-            "EXECUTE JOB SERVICE\n"
-            f"  IN COMPUTE POOL {self.compute_pool}\n"
-            f"  NAME = {self.service_identifier}\n"
-            "  ASYNC = TRUE\n"
-            f"  FROM {self.spec_stage}\n"
-            f"  SPEC = '{self.spec_file}';"
+        return execute_job_service_sql(
+            self.compute_pool, self.service_identifier, self.spec_stage, self.spec_file
         )
+
+
+def execute_job_service_sql(pool: str, service: str, stage: str, spec_file: str) -> str:
+    """Render the statement that starts a staged job service asynchronously."""
+
+    return (
+        "EXECUTE JOB SERVICE\n"
+        f"  IN COMPUTE POOL {pool}\n"
+        f"  NAME = {service}\n"
+        "  ASYNC = TRUE\n"
+        f"  FROM {stage}\n"
+        f"  SPEC = '{spec_file}';"
+    )
 
 
 def service_name_for_job(job_id: str) -> str:
@@ -52,7 +60,21 @@ def service_name_for_job(job_id: str) -> str:
     against it.
     """
 
-    return f"FLAKEGRAPH_APP_{hashlib.sha256(job_id.encode()).hexdigest()[:16].upper()}"
+    return f"FLAKEGRAPH_APP_{_job_digest(job_id).upper()}"
+
+
+def spec_file_for_job(job_id: str) -> str:
+    """Return the staged spec file a run's job service is started from.
+
+    Submission stages it, a retry starts the service from it again and cleanup
+    removes it, so all three have to derive the same name.
+    """
+
+    return f"flakegraph-app-{_job_digest(job_id)}.yaml"
+
+
+def _job_digest(job_id: str) -> str:
+    return hashlib.sha256(job_id.encode()).hexdigest()[:16]
 
 
 def build_spcs_launch(config: dict[str, Any]) -> SpcsLaunch:
@@ -127,11 +149,10 @@ def build_spcs_launch(config: dict[str, Any]) -> SpcsLaunch:
             ]
         }
     }
-    spec_file = f"flakegraph-app-{hashlib.sha256(job_id.encode()).hexdigest()[:16]}.yaml"
     return SpcsLaunch(
         spec_yaml=yaml.safe_dump(spec, sort_keys=False),
         spec_stage=spec_stage,
-        spec_file=spec_file,
+        spec_file=spec_file_for_job(job_id),
         compute_pool=compute_pool,
         service_identifier=f"{database}.{schema}.{service_name}",
         runtime_config=runtime_config,

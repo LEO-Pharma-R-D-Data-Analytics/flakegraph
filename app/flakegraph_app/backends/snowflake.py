@@ -33,7 +33,12 @@ from flakegraph_app.models import (
 )
 from flakegraph_app.run_catalog import validate_graph_name
 from flakegraph_app.sources import SUPPORTED_SUFFIXES
-from flakegraph_app.spcs import build_spcs_launch, service_name_for_job
+from flakegraph_app.spcs import (
+    build_spcs_launch,
+    execute_job_service_sql,
+    service_name_for_job,
+    spec_file_for_job,
+)
 from flakegraph_app.viewer import (
     UPLOAD_NAMESPACE,
     Viewer,
@@ -882,12 +887,9 @@ class SnowflakeBackend:
         if requeued:
             self._release_finished_job_service(launch["service"])
             self.session.sql(
-                "EXECUTE JOB SERVICE\n"
-                f"  IN COMPUTE POOL {launch['pool']}\n"
-                f"  NAME = {launch['service']}\n"
-                "  ASYNC = TRUE\n"
-                f"  FROM {launch['stage']}\n"
-                f"  SPEC = '{launch['spec']}';"
+                execute_job_service_sql(
+                    launch["pool"], launch["service"], launch["stage"], launch["spec"]
+                )
             ).collect()
         return self.status(run_id)
 
@@ -918,11 +920,10 @@ class SnowflakeBackend:
                 raise ValueError("This run records an unusable Snowflake object name")
         _stage_location(stage)
         job = run_id.strip()
-        digest = hashlib.sha256(job.encode()).hexdigest()[:16]
         return {
             "pool": pool,
             "stage": stage,
-            "spec": f"flakegraph-app-{digest}.yaml",
+            "spec": spec_file_for_job(job),
             "service": f"{database}.{schema}.{service_name_for_job(job)}",
         }
 
@@ -1042,10 +1043,9 @@ class SnowflakeBackend:
 
         if not spec_stage or not run_id:
             return
-        digest = hashlib.sha256(run_id.encode()).hexdigest()[:16]
         with suppress(Exception):
             self.session.sql(
-                f"REMOVE {_stage_location(spec_stage)}/flakegraph-app-{digest}.yaml"
+                f"REMOVE {_stage_location(spec_stage)}/{spec_file_for_job(run_id)}"
             ).collect()
 
     def _drop_job_service(self, database: str, schema: str, run_id: str) -> None:

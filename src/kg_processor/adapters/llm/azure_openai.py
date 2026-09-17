@@ -53,8 +53,6 @@ class AzureOpenAILlmProvider(OpenAICompatibleLlmProvider):
         """Advertise Azure's larger structured-response token budget."""
 
         return LlmCapabilities(
-            strict_json_schema=True,
-            native_structured_output=True,
             supports_seed=False,
             max_output_tokens=self._max_output_tokens or _STRUCTURED_CHAT_MAX_TOKENS,
         )

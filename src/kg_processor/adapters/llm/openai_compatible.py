@@ -91,8 +91,6 @@ class OpenAICompatibleLlmProvider:
         # Ollama, vLLM, and hosted OpenAI-compatible APIs all understand JSON
         # Schema, but support for a deterministic seed is not universal.
         return LlmCapabilities(
-            strict_json_schema=True,
-            native_structured_output=True,
             supports_seed=False,
             max_output_tokens=self._max_output_tokens or DEFAULT_CHAT_MAX_TOKENS,
         )

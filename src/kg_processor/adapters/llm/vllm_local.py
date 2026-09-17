@@ -51,10 +51,7 @@ class VllmLocalLlmProvider(OpenAICompatibleLlmProvider):
         a queue-jumping request waits. A configured ceiling therefore wins.
         """
 
-        inherited = super().capabilities()
         return LlmCapabilities(
-            strict_json_schema=inherited.strict_json_schema,
-            native_structured_output=inherited.native_structured_output,
             supports_seed=True,
             max_output_tokens=self._max_output_tokens or _VLLM_MAX_OUTPUT_TOKENS,
         )

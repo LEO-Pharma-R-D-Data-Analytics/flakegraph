@@ -29,8 +29,6 @@ class LlmCapabilities(BaseModel):
     concrete provider names.
     """
 
-    strict_json_schema: bool = True
-    native_structured_output: bool = True
     supports_seed: bool = False
     max_output_tokens: int = 8192
 

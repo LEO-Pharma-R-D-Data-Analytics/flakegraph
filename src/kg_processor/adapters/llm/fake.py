@@ -43,8 +43,6 @@ class FakeLlmProvider:
         """
 
         return LlmCapabilities(
-            strict_json_schema=True,
-            native_structured_output=True,
             supports_seed=True,
             max_output_tokens=8192,
         )

@@ -88,20 +88,9 @@ _REQUIRED_COLUMNS = {
     "community_findings": {"id", "graph_id", "community_id", "summary", "explanation"},
 }
 
-_STABILITY_KEY_COLUMNS = {
-    "documents": ("id",),
-    "pages": ("id",),
-    "blocks": ("id",),
-    "assets": ("id",),
-    "chunks": ("id",),
-    "nodes": ("id",),
-    "edges": ("id",),
-    "edge_observations": ("id",),
-    "evidence": ("id",),
-    "entity_sources": ("id",),
-    "communities": ("id",),
-    "community_findings": ("id",),
-}
+# Every artifact table is keyed by its stable id; the JSON output still names
+# the key columns so a reader can see what a row was matched on.
+_STABILITY_KEY_COLUMNS = ("id",)
 
 
 @dataclass(frozen=True)
@@ -304,7 +293,7 @@ def _artifact_identity_check(
     left: ArtifactTable,
     right: ArtifactTable,
 ) -> dict[str, Any]:
-    key_columns = _STABILITY_KEY_COLUMNS[table_name]
+    key_columns = _STABILITY_KEY_COLUMNS
     missing_columns = sorted(
         (set(key_columns) - set(left.columns)) | (set(key_columns) - set(right.columns))
     )

@@ -106,12 +106,11 @@ def test_example_configs_select_registered_providers() -> None:
 def test_local_artifact_tables_have_snowflake_logical_schema_counterparts() -> None:
     assert set(_PARQUET_TABLES) == set(_LOCAL_TO_SNOWFLAKE_TABLES)
     assert set(_PARQUET_TABLES) == set(_REQUIRED_COLUMNS)
-    assert set(_PARQUET_TABLES) == set(_STABILITY_KEY_COLUMNS)
 
     for local_table, snowflake_table in _LOCAL_TO_SNOWFLAKE_TABLES.items():
         snowflake_columns = {column.name.lower() for column in TABLE_COLUMNS[snowflake_table]}
         assert _REQUIRED_COLUMNS[local_table] <= snowflake_columns
-        assert set(_STABILITY_KEY_COLUMNS[local_table]) <= snowflake_columns
+        assert set(_STABILITY_KEY_COLUMNS) <= snowflake_columns
 
 
 def test_snowflake_access_schema_contract_tracks_rendered_ddl_and_writer_columns() -> None:
