@@ -13,12 +13,15 @@ from helm import CHART as _CHART
 from helm import FULLNAME as _FULLNAME
 from helm import NAMESPACE as _NAMESPACE
 from helm import fails as _fails
+from helm import load_yaml as _load_yaml
 from helm import one as _one
 from helm import render as _render
 
+from kg_processor.adapters.distributed.postgres import _SCHEMA_STATEMENTS
+
 _VALUES = _CHART / "values.yaml"
 _SCHEMA = _CHART / "values.schema.json"
-_POSTGRES_ADAPTER = Path("src/kg_processor/adapters/distributed/postgres.py")
+_DDL = "\n".join(_SCHEMA_STATEMENTS)
 
 # Everything the monitoring objects hang off: the database they read, the
 # planes they scrape, and the ingress they publish Grafana through.
@@ -409,8 +412,7 @@ def test_postgres_queries_are_well_formed_and_name_only_real_columns() -> None:
         _assert_query_names_real_columns(name, query["query"], columns)
 
     # The band split has to be the one the demand view and KEDA scale on.
-    adapter = _POSTGRES_ADAPTER.read_text(encoding="utf-8")
-    assert "WHEN demand.priority >= 1000 THEN 'interactive'" in adapter
+    assert "WHEN demand.priority >= 1000 THEN 'interactive'" in _DDL
     for name in ("flakegraph_tasks", "flakegraph_tasks_oldest_queued"):
         assert "priority >= 1000 THEN 'interactive'" in queries[name]["query"]
     # Every stage the DDL admits reports a zero rather than vanishing.
@@ -479,10 +481,9 @@ def _assert_query_names_real_columns(name: str, sql: str, columns: dict[str, set
 def _schema_columns() -> dict[str, set[str]]:
     """Read table and view columns out of the adapter's own DDL strings."""
 
-    adapter = _POSTGRES_ADAPTER.read_text(encoding="utf-8")
     columns: dict[str, set[str]] = {}
     for match in re.finditer(
-        r"CREATE TABLE IF NOT EXISTS (flakegraph_[a-z_]+) \((.*?)\n    \)", adapter, re.DOTALL
+        r"CREATE TABLE IF NOT EXISTS (flakegraph_[a-z_]+) \((.*?)\n    \)", _DDL, re.DOTALL
     ):
         table, body = match.groups()
         columns[table] = set(
@@ -492,10 +493,8 @@ def _schema_columns() -> dict[str, set[str]]:
                 re.MULTILINE,
             )
         )
-    for match in re.finditer(r"ADD COLUMN IF NOT EXISTS ([a-z_]+)", adapter):
-        columns["flakegraph_task"].add(match.group(1))
     view = re.search(
-        r"CREATE VIEW (flakegraph_[a-z_]+) AS\n    SELECT (.*?)\n    FROM", adapter, re.DOTALL
+        r"CREATE VIEW (flakegraph_[a-z_]+) AS\n    SELECT (.*?)\n    FROM", _DDL, re.DOTALL
     )
     assert view is not None
     # Output columns are either aliased or a bare `demand.<column>,` entry.
@@ -517,11 +516,3 @@ def _schema_columns() -> dict[str, set[str]]:
 def _gateway_config(rendered: list[dict[str, Any]]) -> str:
     config: str = _one(rendered, "ConfigMap", f"{_FULLNAME}-litellm")["data"]["config.yaml"]
     return config
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    """Load one repository-owned YAML mapping for contract assertions."""
-
-    value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert isinstance(value, dict)
-    return value

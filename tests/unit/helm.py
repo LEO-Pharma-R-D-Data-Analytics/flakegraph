@@ -115,6 +115,14 @@ def notes(settings: tuple[str, ...] = ()) -> str:
     return printed
 
 
+def load_yaml(path: Path) -> dict[str, Any]:
+    """Load one repository-owned YAML mapping for contract assertions."""
+
+    value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    return value
+
+
 def one(rendered: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
     """Return exactly one rendered object by kind and name."""
 

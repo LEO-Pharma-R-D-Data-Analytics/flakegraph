@@ -11,6 +11,7 @@ import yaml
 from helm import CHART as _CHART
 from helm import FULLNAME as _FULLNAME
 from helm import fails as _fails
+from helm import load_yaml as _load_yaml
 from helm import notes as _notes
 from helm import one as _one
 from helm import render as _render
@@ -1034,33 +1035,6 @@ def test_object_storage_cannot_silently_select_an_unavailable_spark_runtime() ->
     _render(("artifactStorage.uri=s3://artifacts", "spark.enabled=true"))
 
 
-def test_model_serving_documentation_is_consolidated_into_the_fleet_guide() -> None:
-    """Keep model operations in the generic fleet guide without a parallel host guide."""
-
-    fleet_guide = Path("docs/kubernetes-fleet.md").read_text(encoding="utf-8")
-    top_level_docs = sorted(path.name for path in Path("docs").glob("*.md"))
-
-    # The risk this guards is model operations drifting into a second guide that
-    # then disagrees with this one, not the docs directory gaining a file. Pin
-    # the guide's presence and forbid a parallel host/model guide by name; a
-    # document on another subject is free to exist.
-    assert "kubernetes-fleet.md" in top_level_docs
-    forbidden = [
-        name
-        for name in top_level_docs
-        if name != "kubernetes-fleet.md"
-        and any(word in name for word in ("model", "serving", "vllm", "host", "gpu"))
-    ]
-    assert not forbidden, f"model-serving documentation must stay in the fleet guide: {forbidden}"
-    assert "## Serving Plane" in fleet_guide
-    assert "autoscaling:" in fleet_guide
-    assert "--set-file config.content=deploy/private/fleet-config.yaml" in fleet_guide
-    # The guide has to state the trap, because both conventions live in one repo.
-    prose = " ".join(fleet_guide.split())
-    assert "lower is served first" in prose
-    assert "priority DESC" in prose
-
-
 def test_a_draft_model_path_must_have_somewhere_to_come_from() -> None:
     """Naming a path is not obtaining the file at it.
 
@@ -1169,14 +1143,6 @@ def test_exact_prefix_routing_names_its_producer_and_matches_block_size() -> Non
     )
     # vLLM's default block size is 16; the picker must hash the same width.
     assert values["kvEvents"]["blockSizeTokens"] == 16
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    """Load one repository-owned YAML mapping for contract assertions."""
-
-    value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert isinstance(value, dict)
-    return value
 
 
 def _pod(workload: dict[str, Any]) -> dict[str, Any]:

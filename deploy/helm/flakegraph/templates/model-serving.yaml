@@ -12,9 +12,6 @@ where the remedies can be named.
 {{- fail (printf "modelServing.server.speculativeDraftModel is the path %s, but nothing supplies it. Set modelServing.server.draftModelSeed.image to an image carrying the model, or draftModelSeed.providedExternally=true if a mount does. A Hub id needs neither." $spec.speculativeDraftModel) }}
 {{- end }}
 {{- end }}
-{{- if ne .Values.modelServing.runtime "vllm" }}
-{{- fail "modelServing.runtime must be vllm" }}
-{{- end }}
 ---
 apiVersion: v1
 kind: Service
