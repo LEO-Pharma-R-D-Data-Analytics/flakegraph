@@ -191,7 +191,7 @@ class KgProcessorPipeline:
         self._failed_job_file_results = []
         # The trace starts before OCR so failed or empty file-claim selections
         # are explainable in the same artifact stream as LLM/filter/merge events.
-        _available_files, files, file_source_trace = self._list_files_with_progress()
+        files, file_source_trace = self._list_files_with_progress()
         if self.claimed_files and not files:
             claimed = ", ".join(claim.file_id for claim in self.claimed_files)
             raise ValueError(
@@ -583,9 +583,7 @@ class KgProcessorPipeline:
             raise ValueError("distributed extraction requires strict structured completion")
         return self.llm
 
-    def _list_files_with_progress(
-        self,
-    ) -> tuple[list[InputFile], list[InputFile], dict[str, Any]]:
+    def _list_files_with_progress(self) -> tuple[list[InputFile], dict[str, Any]]:
         file_source_started = perf_counter()
         self._emit_progress("file_source", "started")
         available_files = self.file_source.list_files()
@@ -606,7 +604,7 @@ class KgProcessorPipeline:
             },
             elapsed_ms=elapsed_ms(file_source_started, perf_counter()),
         )
-        return available_files, files, trace_event
+        return files, trace_event
 
     def _embed_chunks_with_progress(
         self,
@@ -1428,8 +1426,6 @@ class KgProcessorPipeline:
             self._graph_llm(),
             self.settings.graph.deterministic_seed,
         )
-        if not windows:
-            return [], []
 
         def extract_window(
             _index: int, window: ExtractionWindow
@@ -1556,7 +1552,6 @@ class KgProcessorPipeline:
         status: str,
         *,
         file_id: str | None = None,
-        message: str | None = None,
         counts: Mapping[str, object] | None = None,
         metadata: Mapping[str, object] | None = None,
         elapsed_ms: int | None = None,
@@ -1570,7 +1565,6 @@ class KgProcessorPipeline:
                 stage=stage,
                 status=status,
                 file_id=file_id,
-                message=message,
                 counts=counts or {},
                 metadata=metadata or {},
                 elapsed_ms=elapsed_ms,
