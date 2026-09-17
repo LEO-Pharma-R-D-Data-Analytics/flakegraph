@@ -662,6 +662,11 @@ def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
         },
     ]
     assert "env" in schema["properties"]["providerSecret"]["properties"]
+    # A mapping without `optional` would render null and be applied as a hard
+    # requirement, so the item must spell all three keys.
+    assert "missing property 'optional'" in _fails(
+        ("providerSecret.env[0].name=KG_X", "providerSecret.env[0].key=KG_X")
+    )
     allowlisted = {mapping["name"] for mapping in values["providerSecret"]["env"]}
     consumers = [_worker(rendered, pool) for pool in _WORKER_POOLS] + [_bootstrap(rendered)]
     for consumer in consumers:

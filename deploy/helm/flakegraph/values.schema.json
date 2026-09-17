@@ -184,7 +184,8 @@
               "optional": {
                 "type": "boolean"
               }
-            }
+            },
+            "required": ["name", "key", "optional"]
           }
         }
       }
