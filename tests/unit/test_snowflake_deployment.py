@@ -186,6 +186,16 @@ def test_render_kubernetes_job_uses_onprem_env_secret_and_gpu_resources() -> Non
     assert {"name": "mineru-cache", "emptyDir": {}} in volumes
 
 
+def test_render_kubernetes_job_gpu_count_zero_makes_a_cpu_only_job() -> None:
+    settings = _settings({"snowflake": {"service_gpu_count": 1}})
+
+    manifest = yaml.safe_load(render_kubernetes_job_yaml(settings, gpu_count=0))
+
+    resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
+    assert "nvidia.com/gpu" not in resources["requests"]
+    assert "nvidia.com/gpu" not in resources["limits"]
+
+
 def test_render_kubernetes_job_sanitizes_instance_label() -> None:
     settings = _settings()
     settings.job.job_id = "run/2026-07-09"

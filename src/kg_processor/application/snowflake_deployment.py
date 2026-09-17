@@ -39,7 +39,7 @@ def render_spcs_service_spec_yaml(
         "image": image,
         "args": ["worker", "--config", config_path],
         "env": env,
-        "resources": _spcs_resources(settings),
+        "resources": _resources(settings, settings.snowflake.service_gpu_count),
     }
     spec = {"spec": {"containers": [container]}}
     return yaml.safe_dump(spec, sort_keys=False)
@@ -91,7 +91,7 @@ def render_kubernetes_job_yaml(
     if not _IMAGE_NAME_RE.fullmatch(image):
         raise ValueError(f"Kubernetes image must be a safe OCI image reference, got: {image}")
 
-    resources = _kubernetes_resources(settings, resolved_gpu_count)
+    resources = _resources(settings, resolved_gpu_count)
     container: dict[str, Any] = {
         "name": "flakegraph",
         "image": image,
@@ -447,7 +447,7 @@ def _kubernetes_environment(settings: Settings, config_path: str) -> dict[str, s
     return env
 
 
-def _spcs_resources(settings: Settings) -> dict[str, dict[str, str]]:
+def _resources(settings: Settings, gpu_count: int) -> dict[str, dict[str, str]]:
     requests = {
         "cpu": settings.snowflake.service_cpu_request,
         "memory": settings.snowflake.service_memory_request,
@@ -456,20 +456,11 @@ def _spcs_resources(settings: Settings) -> dict[str, dict[str, str]]:
         "cpu": settings.snowflake.service_cpu_limit,
         "memory": settings.snowflake.service_memory_limit,
     }
-    if settings.snowflake.service_gpu_count:
-        gpu = str(settings.snowflake.service_gpu_count)
+    if gpu_count:
+        gpu = str(gpu_count)
         requests["nvidia.com/gpu"] = gpu
         limits["nvidia.com/gpu"] = gpu
     return {"requests": requests, "limits": limits}
-
-
-def _kubernetes_resources(settings: Settings, gpu_count: int) -> dict[str, dict[str, str]]:
-    resources = _spcs_resources(settings)
-    if gpu_count:
-        gpu = str(gpu_count)
-        resources["requests"]["nvidia.com/gpu"] = gpu
-        resources["limits"]["nvidia.com/gpu"] = gpu
-    return resources
 
 
 def _env_list(values: dict[str, str]) -> list[dict[str, str]]:
