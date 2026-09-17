@@ -101,6 +101,7 @@ def cortex_embedding_model_for_width(width: int | None) -> str | None:
 
     return CORTEX_EMBEDDING_MODELS_BY_WIDTH.get(width) if width else None
 
+
 DEFAULTS = {
     "llm": {
         "ollama": ("http://localhost:11434", "hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M"),

@@ -715,6 +715,41 @@ def test_a_named_source_stage_reaches_the_worker_fully_qualified(
     assert stage_path(str(source["stage"]), str(source["prefix"])) == "@DB.GRAPH.KG_DOCS/verify"
 
 
+def test_an_upload_is_kept_under_the_backends_state_root_not_the_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Inside a container the checkout is read-only; the state root is not."""
+
+    streamlit = _Streamlit()
+    streamlit.uploads = [_Upload()]
+    streamlit.values["Input source"] = SourceKind.UPLOAD
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    state_root = tmp_path / "state"
+
+    class Backend:
+        capabilities = frozenset({"local"})
+
+        def __init__(self) -> None:
+            self.state_root = state_root
+
+    monkeypatch.setattr("flakegraph_app.ui.ingestion.st", streamlit)
+
+    kind, source = _source_controls(
+        Backend(),  # type: ignore[arg-type]
+        RuntimeMode.LOCAL,
+        checkout,
+        "job-1",
+    )
+
+    assert kind == SourceKind.UPLOAD
+    assert source is not None
+    assert Path(source["path"]) == state_root / "uploads" / "job-1"
+    assert (state_root / "uploads" / "job-1" / "martial-arts.pdf").read_bytes() == b"content"
+    assert list(checkout.iterdir()) == []
+
+
 def test_a_failed_stage_upload_stays_an_inline_page_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

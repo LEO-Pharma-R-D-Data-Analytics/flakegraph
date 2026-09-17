@@ -9,7 +9,7 @@ from typing import Any, Protocol, cast
 
 import streamlit as st
 from flakegraph_app.backends import build_backend
-from flakegraph_app.backends.base import ControlPlaneBackend
+from flakegraph_app.backends.base import ControlPlaneBackend, app_state_root
 from flakegraph_app.backends.factory import active_snowflake_session
 from flakegraph_app.models import ClusterSnapshot, RunSnapshot, RuntimeMode
 from flakegraph_app.ui.authentication import (
@@ -202,16 +202,7 @@ def _render_cluster_page(backend: ControlPlaneBackend) -> None:
 
     from flakegraph_app.ui.clusters import render_cluster_manager  # noqa: PLC0415
 
-    render_cluster_manager(_app_state_root(backend))
-
-
-def _app_state_root(backend: ControlPlaneBackend) -> Path:
-    """Return the app-owned catalog directory, whichever backend is active."""
-
-    state_root = getattr(backend, "state_root", None)
-    if isinstance(state_root, Path):
-        return state_root
-    return REPOSITORY_ROOT / ".flakegraph" / "app"
+    render_cluster_manager(app_state_root(backend, REPOSITORY_ROOT))
 
 
 def _render_run_page(backend: ControlPlaneBackend, selected_run: RunSnapshot) -> None:

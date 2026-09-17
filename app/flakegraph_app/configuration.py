@@ -273,11 +273,7 @@ def redacted_url(value: str) -> str:
 
     if not _ABSOLUTE_URL.match(value):
         return value
-    redacted = (
-        _SAS_QUERY_PARAMETER.sub(r"\1***", value)
-        if _SAS_SIGNATURE.search(value)
-        else value
-    )
+    redacted = _SAS_QUERY_PARAMETER.sub(r"\1***", value) if _SAS_SIGNATURE.search(value) else value
     redacted = _SECRET_QUERY_PARAMETER.sub(r"\1***", redacted)
     return _URL_PASSWORD.sub(r"\1***\2", redacted)
 
@@ -689,9 +685,7 @@ def resolve_profile_path(raw: str, *roots: Path) -> Path:
     permitted = [root.expanduser().resolve() for root in roots]
     if not any(resolved == root or resolved.is_relative_to(root) for root in permitted):
         locations = ", ".join(str(root) for root in permitted)
-        raise ValueError(
-            f"Base configuration must be a file under {locations}: {candidate}"
-        )
+        raise ValueError(f"Base configuration must be a file under {locations}: {candidate}")
     if not resolved.is_file():
         raise ValueError(f"Base configuration does not exist: {candidate}")
     return resolved

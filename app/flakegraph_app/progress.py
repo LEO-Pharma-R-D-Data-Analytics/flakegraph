@@ -35,8 +35,6 @@ class LocalProgress:
     updated_at: str | None
 
 
-
-
 def read_jsonl_events(path: Path, limit: int = 2_000) -> list[ProgressEvent]:
     """Read recent valid progress records without rereading an ever-growing log.
 

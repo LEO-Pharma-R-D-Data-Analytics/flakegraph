@@ -119,12 +119,7 @@ def apply_theme() -> None:
         "}"
     )
 
-    st.html(
-        "<style>"
-        + palette_css
-        + _STATIC_CSS
-        + "</style>"
-    )
+    st.html("<style>" + palette_css + _STATIC_CSS + "</style>")
 
 
 _STATIC_CSS = """

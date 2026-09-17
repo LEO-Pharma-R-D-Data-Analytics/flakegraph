@@ -101,9 +101,7 @@ def _render_completed_run(
         "Explore the finalized graph and its source evidence.",
     )
     _render_sharing(backend, snapshot.graph_id)
-    explorer_tab, consumption_tab, details_tab = st.tabs(
-        ["Explorer", "Consumption", "Run details"]
-    )
+    explorer_tab, consumption_tab, details_tab = st.tabs(["Explorer", "Consumption", "Run details"])
     load_error: str | None = None
     with explorer_tab:
         cache_key = f"{snapshot.run_id}:{snapshot.updated_at or 'complete'}"

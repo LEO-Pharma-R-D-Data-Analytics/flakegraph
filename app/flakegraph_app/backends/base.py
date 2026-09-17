@@ -131,6 +131,20 @@ class ControlPlaneBackend(Protocol):
         ...
 
 
+def app_state_root(backend: ControlPlaneBackend | None, repository_root: Path) -> Path:
+    """Return the writable directory the app owns, whichever backend is active.
+
+    Everything the app writes on the user's behalf (its catalog, uploaded
+    documents, exported graphs) goes here rather than under the checkout,
+    which is a read-only filesystem inside a container.
+    """
+
+    state_root = getattr(backend, "state_root", None)
+    if isinstance(state_root, Path):
+        return state_root
+    return repository_root / ".flakegraph" / "app"
+
+
 class GraphAccessDefaults:
     """Graph ownership behaviour for runtimes that do not record it.
 
@@ -182,4 +196,3 @@ class GraphAccessDefaults:
         """Withdraw one share from a graph."""
 
         raise NotImplementedError("This runtime does not share graphs")
-

@@ -15,7 +15,7 @@ from typing import Any, Protocol, cast
 import pandas as pd
 import streamlit as st
 import yaml
-from flakegraph_app.backends.base import ControlPlaneBackend
+from flakegraph_app.backends.base import ControlPlaneBackend, app_state_root
 from flakegraph_app.configuration import (
     build_run_config,
     container_resources,
@@ -254,9 +254,7 @@ def _request_controls(
         )
 
     st.subheader("Destination")
-    output = _output_controls(
-        runtime, repository_root, graph_id, job_id, default_profile, backend
-    )
+    output = _output_controls(runtime, repository_root, graph_id, job_id, default_profile, backend)
     if output is None:
         return None
 
@@ -470,7 +468,7 @@ def _output_controls(
         )
         or default_kind
     )
-    workspace_path = repository_root / "out" / "app" / graph_id / job_id
+    workspace_path = app_state_root(backend, repository_root) / "artifacts" / graph_id / job_id
     if kind == StorageKind.LOCAL:
         path = st.text_input(
             "Output directory",
@@ -674,7 +672,7 @@ def _source_controls(  # noqa: PLR0912, PLR0915 - each branch is one source-spec
         if not uploads:
             st.info("Add one or more documents to continue.")
             return source_kind, None
-        upload_root = repository_root / ".flakegraph" / "app" / "uploads" / job_id
+        upload_root = app_state_root(backend, repository_root) / "uploads" / job_id
         try:
             paths = _persist_uploads(uploads, upload_root)
         except ValueError as exc:

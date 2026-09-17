@@ -220,9 +220,8 @@ def _render_run_list(
                         width="stretch",
                         disabled=_active_status(run.status),
                         help=(
-                            "Remove this terminal run from app history. Graph artifacts "
-                            "and distributed audit data are preserved. Active runs must "
-                            "be cancelled first."
+                            "Remove this graph. The confirmation that follows says "
+                            "what is deleted with it. Active runs must be cancelled first."
                         ),
                         key=f"forget_{runtime_key}_{run.run_id}",
                     ):
@@ -487,10 +486,17 @@ def _bulk_forget_dialog(
         st.caption(f"• {_short_name(run.display_name, limit=48)}")
     if len(pending) > _BULK_PREVIEW_LIMIT:
         st.caption(f"• and {len(pending) - _BULK_PREVIEW_LIMIT} more")
-    st.caption(
-        "Only app history entries are removed. Stored graph artifacts and distributed "
-        "audit data remain available."
-    )
+    # The same removal as the single-graph dialog, so it has to promise the
+    # same thing: where the runtime stores the graph, the graph goes too.
+    if "delete_graph" in backend.capabilities:
+        st.caption(
+            "Deletes each graph and everything recorded about it, including the "
+            "documents uploaded for it. This cannot be undone."
+        )
+    else:
+        st.caption(
+            "Removes each graph from app history. Its artifacts stay where the run wrote them."
+        )
     confirmation = st.columns(2)
     if confirmation[0].button(
         f"Remove {len(pending)}",

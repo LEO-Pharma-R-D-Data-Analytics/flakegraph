@@ -382,10 +382,7 @@ class KubernetesBackend(LocalBackend):
                     item,
                     self._run_config_path(str(item.get("id") or "unknown"), config_path),
                     records.get(str(item.get("id"))),
-                    _run_output_path(
-                        self.repository_root,
-                        str(item.get("id") or "unknown"),
-                    ),
+                    _run_output_path(self.state_root, str(item.get("id") or "unknown")),
                 ),
                 graph_name=graph_name(self.state_root, str(item.get("graph_id") or "")),
             )
@@ -419,7 +416,7 @@ class KubernetesBackend(LocalBackend):
             ),
             output_path=(
                 str(record.get("output_path") or "")
-                or str(self.repository_root / "out" / "app" / run_id)
+                or str(_run_output_path(self.state_root, run_id))
             ),
             storage_kind=_storage_kind(record.get("storage_kind")),
             storage_location=(
@@ -513,9 +510,7 @@ class KubernetesBackend(LocalBackend):
         path = self._run_config_path(snapshot.run_id, config_path)
         if snapshot.storage_kind == StorageKind.SNOWFLAKE:
             return super().load_run_graph(snapshot, path)
-        output = Path(
-            snapshot.output_path or self.repository_root / "out" / "app" / snapshot.run_id
-        )
+        output = Path(snapshot.output_path or _run_output_path(self.state_root, snapshot.run_id))
         if not (output / "nodes.parquet").is_file() or not (output / "edges.parquet").is_file():
             namespace = self._namespace()
             with _artifact_export_environment(namespace, self._cluster_target()) as environment:
@@ -812,10 +807,14 @@ def _validated_run_id(value: str) -> str:
     return value
 
 
-def _run_output_path(repository_root: Path, run_id: str) -> Path:
-    """Return an app-owned per-run output path after validating its segment."""
+def _run_output_path(state_root: Path, run_id: str) -> Path:
+    """Return an app-owned per-run output path after validating its segment.
 
-    return repository_root / "out" / "app" / _validated_run_id(run_id)
+    Under the state root, not the checkout: a fleet run's graph is exported
+    on first view, and inside a container the checkout cannot be written.
+    """
+
+    return state_root / "artifacts" / _validated_run_id(run_id)
 
 
 def _diagnostic_warning(value: object) -> str:
@@ -856,9 +855,7 @@ def _current_context(target: ClusterTarget) -> str:
 
     if running_inside_the_cluster():
         return "in-cluster"
-    resolved = _kubectl_json(
-        target=target, arguments=["config", "current-context"], raw=True
-    )
+    resolved = _kubectl_json(target=target, arguments=["config", "current-context"], raw=True)
     return str(resolved).strip()
 
 
@@ -1516,9 +1513,7 @@ def _fleet_preflight(
         # only in a field the form never shows passes preflight and is never
         # claimed.
         with suppress(Exception):
-            profile_errors.extend(
-                _semantic_mismatches(build_run_config(request), deployed_profile)
-            )
+            profile_errors.extend(_semantic_mismatches(build_run_config(request), deployed_profile))
         # The ontology is part of the digest a worker claims by, so a run whose
         # ontology differs from the fleet's is never claimed by anything. It does
         # not fail: it sits queued forever with nothing on the page to say why,
@@ -2075,9 +2070,7 @@ def _wait_for_port_forward(process: subprocess.Popen[bytes], port: int) -> None:
     while time.monotonic() < deadline:
         if process.poll() is not None:
             output = (
-                process.stderr.read().decode("utf-8", "replace").strip()
-                if process.stderr
-                else ""
+                process.stderr.read().decode("utf-8", "replace").strip() if process.stderr else ""
             )
             raise RuntimeError(output or "Kubernetes service port-forward exited during startup")
         try:

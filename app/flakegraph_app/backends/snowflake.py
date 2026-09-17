@@ -198,9 +198,7 @@ class SnowflakeBackend:
         target = database.strip()
         if target and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", target):
             return []
-        return self._show_names(
-            f"SHOW SCHEMAS IN DATABASE {target}" if target else "SHOW SCHEMAS"
-        )
+        return self._show_names(f"SHOW SCHEMAS IN DATABASE {target}" if target else "SHOW SCHEMAS")
 
     def list_warehouses(self) -> Sequence[str]:
         """Return warehouses visible to the session."""
@@ -980,8 +978,7 @@ class SnowflakeBackend:
         if not target:
             return {}
         union = " UNION ALL ".join(
-            f"SELECT '{table}' AS TABLE_NAME, COUNT(*) AS ROW_COUNT "
-            f"FROM {table} WHERE GRAPH_ID = ?"
+            f"SELECT '{table}' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM {table} WHERE GRAPH_ID = ?"
             for table in GRAPH_DATA_TABLES
         )
         rows = self.session.sql(union, params=[target] * len(GRAPH_DATA_TABLES)).collect()
@@ -1116,8 +1113,7 @@ class SnowflakeBackend:
 
         allowed, parameters = administrable_graph_predicate(self.viewer(), alias="G")
         rows = self.session.sql(
-            "SELECT 1 FROM KG_GRAPH G WHERE G.GRAPH_ID = ? "
-            f"AND {allowed} LIMIT 1",
+            f"SELECT 1 FROM KG_GRAPH G WHERE G.GRAPH_ID = ? AND {allowed} LIMIT 1",
             params=[graph_id.strip(), *parameters],
         ).collect()
         if rows:
@@ -1302,9 +1298,7 @@ class SnowflakeBackend:
 
         self.session.sql(
             "DELETE FROM KG_GRAPH_ACL WHERE ID = ?",
-            params=[
-                _share_id(graph_id, grantee_type.strip().upper(), grantee.strip().upper())
-            ],
+            params=[_share_id(graph_id, grantee_type.strip().upper(), grantee.strip().upper())],
         ).collect()
 
     def rename_graph(self, graph_id: str, display_name: str) -> str:
@@ -1646,9 +1640,7 @@ def _stage_relative_path(stage: str, prefix: str | None = None) -> str:
     normalized = stage.strip().lstrip("@").rstrip("/")
     _, separator, embedded = normalized.partition("/")
     return "/".join(
-        part
-        for part in (embedded if separator else "", (prefix or "").strip("/"))
-        if part
+        part for part in (embedded if separator else "", (prefix or "").strip("/")) if part
     )
 
 
