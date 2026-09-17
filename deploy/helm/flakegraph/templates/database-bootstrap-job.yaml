@@ -8,8 +8,8 @@ metadata:
     app.kubernetes.io/component: database-bootstrap
   annotations:
     # The hook makes schema readiness part of Helm's success contract. The
-    # command is idempotent, so upgrades apply additive schema changes before
-    # newly rolled workers or KEDA depend on them.
+    # command is idempotent and migrates a database one schema version behind,
+    # so an upgrade fails here rather than in every newly rolled worker.
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "-10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded

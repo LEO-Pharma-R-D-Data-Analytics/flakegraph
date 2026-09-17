@@ -104,6 +104,22 @@ def test_a_schema_at_another_version_is_refused_rather_than_stamped_current(
         PostgresDistributedStore(isolated_postgres_dsn).initialize()
 
 
+def test_the_previous_schema_version_is_migrated_in_place(isolated_postgres_dsn: str) -> None:
+    """The live fleet's database gains the one column version 9 added and is stamped."""
+
+    _store(isolated_postgres_dsn)
+    with psycopg.connect(isolated_postgres_dsn, autocommit=True) as connection:
+        connection.execute("ALTER TABLE flakegraph_ocr_request DROP COLUMN replica")
+        connection.execute("UPDATE flakegraph_schema_version SET version = 8")
+
+    PostgresDistributedStore(isolated_postgres_dsn).initialize()
+
+    with psycopg.connect(isolated_postgres_dsn, autocommit=True) as connection:
+        connection.execute("SELECT replica FROM flakegraph_ocr_request")
+        version = connection.execute("SELECT version FROM flakegraph_schema_version").fetchone()
+    assert version == (9,)
+
+
 def test_tables_without_a_version_row_are_refused_too(isolated_postgres_dsn: str) -> None:
     """A database from before version tracking is older still, not empty."""
 

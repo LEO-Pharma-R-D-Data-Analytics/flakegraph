@@ -171,10 +171,11 @@ class PostgresDistributedStore:
     def initialize(self) -> None:
         """Create the schema once and make ordinary replica startup a cheap check.
 
-        Only an empty database or one already at this build's version is
-        accepted. The statements describe the current shape and nothing else,
-        so running them over an older schema would leave it stamped current
-        without the columns and constraints this build reads; refusing is
+        An empty database, one already at this build's version, or one exactly
+        one version behind is accepted. The statements describe the current
+        shape and nothing else, so running them over an older schema would
+        leave it stamped current without the columns and constraints this
+        build reads; refusing anything the migration below does not cover is
         what makes the version number mean something.
         """
 
@@ -191,15 +192,21 @@ class PostgresDistributedStore:
             installed_version = _installed_schema_version(connection)
             if installed_version == _SCHEMA_VERSION:
                 return
-            if installed_version is not None and installed_version > _SCHEMA_VERSION:
-                raise RuntimeError("coordination schema is newer than this FlakeGraph build")
-            if installed_version is not None:
+            if installed_version == _SCHEMA_VERSION - 1:
+                # Version 9 only added a nullable column to a table of
+                # short-lived rows, so the live fleet upgrades in place.
+                connection.execute(
+                    "ALTER TABLE flakegraph_ocr_request ADD COLUMN IF NOT EXISTS replica TEXT"
+                )
+            elif installed_version is not None:
                 raise RuntimeError(
                     f"coordination schema version {installed_version} has no migration "
-                    "path in this build"
+                    f"path in this build (version {_SCHEMA_VERSION}); deploy the build "
+                    "that matches the database or start from an empty one"
                 )
-            for statement in _SCHEMA_STATEMENTS:
-                connection.execute(statement)
+            else:
+                for statement in _SCHEMA_STATEMENTS:
+                    connection.execute(statement)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS flakegraph_schema_version (
