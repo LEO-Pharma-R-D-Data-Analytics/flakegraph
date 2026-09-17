@@ -50,7 +50,7 @@ _INITIAL_TASK_COPY_BATCH_SIZE = 2_000
 _MAX_ZLIB_COMPRESSION_LEVEL = 9
 _ARTIFACT_READ_PARALLELISM = 8
 _MAX_RUN_LIST_LIMIT = 500
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 _EXHAUSTED_TASK_RECOVERY_GRACE_SECONDS = 300
 _POSTGRES_SESSION_OPTIONS = " ".join(
     (
@@ -2421,6 +2421,10 @@ _SCHEMA_STATEMENTS = (
         consumer_class TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('waiting', 'dispatched')),
         shim_owner TEXT NOT NULL,
+        -- The parsing replica a dispatched row was sent to. Admission counts
+        -- the fleet's load per replica from this column and places the next
+        -- request on the emptiest one, so every shim's view is the same.
+        replica TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )

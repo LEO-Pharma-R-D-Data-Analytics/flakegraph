@@ -31,28 +31,45 @@ KEYRING = ConsumerKeyring(
 
 
 class _RecordingQueue:
-    """Stands in for PostgreSQL, recording the order work was admitted in."""
+    """Stands in for PostgreSQL, recording the order work was admitted in.
 
-    def __init__(self, capacity_seen: list[int] | None = None) -> None:
+    Admission sends every request to the last replica offered, so a test can
+    tell the queue's choice apart from the pool's own ordering.
+    """
+
+    def __init__(self) -> None:
         self.enqueued: list[tuple[str, int, str]] = []
         self.admitted: list[str] = []
-        self.renewed: list[str] = []
+        self.renewed: list[tuple[str, str, str | None]] = []
         self.released: list[str] = []
-        self.capacity_seen = capacity_seen if capacity_seen is not None else []
+        self.offered: list[tuple[tuple[str, ...], int]] = []
         self.admit = True
+        self.renew_failures = 0
 
     async def enqueue(self, request_id: str, priority: int, consumer_class: str) -> None:
         self.enqueued.append((request_id, priority, consumer_class))
 
-    async def try_admit(self, request_id: str, capacity: int) -> bool:
-        self.capacity_seen.append(capacity)
+    async def try_admit(
+        self, request_id: str, replicas: tuple[str, ...], capacity_per_replica: int
+    ) -> str | None:
+        self.offered.append((replicas, capacity_per_replica))
         if not self.admit:
-            return False
+            return None
         self.admitted.append(request_id)
-        return True
+        return replicas[-1]
 
-    async def renew(self, request_id: str) -> None:
-        self.renewed.append(request_id)
+    async def renew(
+        self,
+        request_id: str,
+        priority: int,
+        consumer_class: str,
+        status: str,
+        replica: str | None = None,
+    ) -> None:
+        if self.renew_failures:
+            self.renew_failures -= 1
+            raise psycopg.OperationalError("the queue database is failing over")
+        self.renewed.append((request_id, status, replica))
 
     async def release(self, request_id: str) -> None:
         self.released.append(request_id)
@@ -216,7 +233,7 @@ def test_an_unknown_key_never_reaches_the_queue_or_the_pool() -> None:
     assert upstream.requests == []
 
 
-def test_admission_is_offered_the_capacity_the_whole_pool_has() -> None:
+def test_admission_is_offered_every_replica_the_shim_resolves() -> None:
     upstream, queue = _Pool(), _RecordingQueue()
     with _client(upstream, queue, replicas=("10.0.0.1", "10.0.0.2", "10.0.0.3"), capacity=4) as c:
         c.post(
@@ -225,7 +242,25 @@ def test_admission_is_offered_the_capacity_the_whole_pool_has() -> None:
             files={"files": ("a.pdf", b"%PDF-1.4", "application/pdf")},
         )
 
-    assert queue.capacity_seen[0] == 12
+    assert queue.offered[0] == (("10.0.0.1", "10.0.0.2", "10.0.0.3"), 4)
+
+
+def test_the_request_goes_to_the_replica_the_queue_chose() -> None:
+    """Placement is the queue's decision, made from the fleet's load, not this shim's."""
+
+    upstream, queue = _Pool(), _RecordingQueue()
+    with _client(upstream, queue, replicas=("10.0.0.1", "10.0.0.2")) as client:
+        client.post(
+            "/file_parse",
+            headers={"Authorization": "Bearer sk-chat"},
+            files={"files": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+        )
+        exposition = client.get("/metrics").text
+
+    assert upstream.requests[0].url.host == "10.0.0.2"
+    assert _samples(exposition, "flakegraph_ocr_parse_duration_seconds_count") == {
+        (("replica", "10.0.0.2"),): 1
+    }
 
 
 def test_the_callers_credential_is_not_relayed_to_the_parsing_pool() -> None:
@@ -263,9 +298,28 @@ def test_a_parse_longer_than_the_stale_window_stays_counted_as_busy() -> None:
         )
         assert response.status_code == 200
 
-    # Admission was immediate, so every renewal happened while MinerU was busy.
-    assert queue.renewed and set(queue.renewed) == set(queue.admitted)
+    # Admission was immediate, so every renewal happened while MinerU was busy,
+    # and each one carries enough to put the row back should a sweep take it.
+    assert queue.renewed and {entry[1:] for entry in queue.renewed} == {("dispatched", "10.0.0.2")}
+    assert [entry[0] for entry in queue.renewed] == queue.admitted * len(queue.renewed)
     assert queue.released == queue.admitted
+
+
+def test_a_failed_renewal_does_not_end_the_heartbeat(caplog: pytest.LogCaptureFixture) -> None:
+    """The parse keeps running whether or not the queue database answered."""
+
+    upstream, queue = _SlowPool(seconds=0.2), _RecordingQueue()
+    queue.renew_failures = 1
+    with caplog.at_level(logging.WARNING), _client(upstream, queue, stale_after_seconds=0.06) as c:
+        response = c.post(
+            "/file_parse",
+            headers={"Authorization": "Bearer sk-chat"},
+            files={"files": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+        )
+        assert response.status_code == 200
+
+    assert "could not renew dispatched request" in caplog.text
+    assert queue.renewed
 
 
 def test_a_replica_dying_mid_body_still_frees_its_slot() -> None:
@@ -294,33 +348,7 @@ def test_health_reports_the_replicas_the_shim_can_currently_see() -> None:
     assert payload == {"status": "ok", "replicas": 2}
 
 
-def test_dispatch_prefers_the_least_loaded_replica() -> None:
-    pool = _pool(("10.0.0.1", "10.0.0.2"), capacity=2)
-    asyncio.run(pool.refresh())
-
-    first = pool.acquire()
-    second = pool.acquire()
-    third = pool.acquire()
-    fourth = pool.acquire()
-
-    # Two replicas at two each: every slot is used exactly once before any
-    # replica takes a second request.
-    assert {first, second} == {"10.0.0.1", "10.0.0.2"}
-    assert {third, fourth} == {"10.0.0.1", "10.0.0.2"}
-    assert pool.acquire() is None
-
-
-def test_a_released_slot_becomes_available_again() -> None:
-    pool = _pool(("10.0.0.1",), capacity=1)
-    asyncio.run(pool.refresh())
-
-    assert pool.acquire() == "10.0.0.1"
-    assert pool.acquire() is None
-    pool.release("10.0.0.1")
-    assert pool.acquire() == "10.0.0.1"
-
-
-def test_capacity_follows_the_pool_as_it_scales() -> None:
+def test_the_replicas_offered_follow_the_pool_as_it_scales() -> None:
     replicas: list[tuple[str, ...]] = [("10.0.0.1",)]
 
     async def resolver() -> tuple[str, ...]:
@@ -328,11 +356,11 @@ def test_capacity_follows_the_pool_as_it_scales() -> None:
 
     pool = UpstreamPool("mineru.invalid", 8080, 8, resolver=resolver)
     asyncio.run(pool.refresh())
-    assert pool.capacity == 8
+    assert pool.endpoints == ("10.0.0.1",)
 
     replicas[0] = ("10.0.0.1", "10.0.0.2", "10.0.0.3")
     asyncio.run(pool.refresh())
-    assert pool.capacity == 24
+    assert pool.endpoints == ("10.0.0.1", "10.0.0.2", "10.0.0.3")
 
 
 def test_an_ipv6_replica_is_addressed_with_brackets() -> None:

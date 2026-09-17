@@ -44,6 +44,9 @@ def isolated_postgres_dsn() -> Iterator[str]:
             connection.execute(f'DROP SCHEMA "{schema_name}" CASCADE')
 
 
+ONE = ("10.0.0.1",)
+
+
 async def _with_queue(dsn: str, owner: str, body):  # type: ignore[no-untyped-def]
     async with AsyncConnectionPool(
         dsn,
@@ -80,6 +83,7 @@ def test_the_queue_table_ships_with_the_coordination_schema(
         "consumer_class",
         "status",
         "shim_owner",
+        "replica",
         "created_at",
         "heartbeat_at",
     }
@@ -88,17 +92,17 @@ def test_the_queue_table_ships_with_the_coordination_schema(
 def test_a_full_pool_admits_nothing(isolated_postgres_dsn: str) -> None:
     _initialize(isolated_postgres_dsn)
 
-    async def body(queue: OcrQueue) -> list[bool]:
+    async def body(queue: OcrQueue) -> list[str | None]:
         await queue.enqueue("first", 100, "batch")
         await queue.enqueue("second", 100, "batch")
         return [
-            await queue.try_admit("first", capacity=1),
-            await queue.try_admit("second", capacity=1),
+            await queue.try_admit("first", ONE, 1),
+            await queue.try_admit("second", ONE, 1),
         ]
 
     admitted = asyncio.run(_with_queue(isolated_postgres_dsn, "shim-a", body))
 
-    assert admitted == [True, False]
+    assert admitted == ["10.0.0.1", None]
 
 
 def test_interactive_work_is_admitted_ahead_of_a_batch_backlog(
@@ -106,20 +110,20 @@ def test_interactive_work_is_admitted_ahead_of_a_batch_backlog(
 ) -> None:
     _initialize(isolated_postgres_dsn)
 
-    async def body(queue: OcrQueue) -> list[bool]:
+    async def body(queue: OcrQueue) -> list[str | None]:
         for index in range(5):
             await queue.enqueue(f"batch-{index}", 100, "batch")
         await queue.enqueue("interactive-0", 0, "interactive")
         # One free slot, six waiting. Lower is served first here, matching the
         # inference plane, so the interactive row takes it.
         return [
-            await queue.try_admit("batch-0", capacity=1),
-            await queue.try_admit("interactive-0", capacity=1),
+            await queue.try_admit("batch-0", ONE, 1),
+            await queue.try_admit("interactive-0", ONE, 1),
         ]
 
     admitted = asyncio.run(_with_queue(isolated_postgres_dsn, "shim-a", body))
 
-    assert admitted == [False, True]
+    assert admitted == [None, "10.0.0.1"]
 
 
 def test_ordering_holds_across_two_shim_replicas(isolated_postgres_dsn: str) -> None:
@@ -133,35 +137,76 @@ def test_ordering_holds_across_two_shim_replicas(isolated_postgres_dsn: str) -> 
 
     asyncio.run(_with_queue(isolated_postgres_dsn, "shim-a", body))
 
-    async def admit(name: str) -> bool:
-        async def inner(queue: OcrQueue) -> bool:
-            return await queue.try_admit(name, capacity=1)
+    async def admit(name: str) -> str | None:
+        async def inner(queue: OcrQueue) -> str | None:
+            return await queue.try_admit(name, ONE, 1)
 
-        admitted: bool = await _with_queue(isolated_postgres_dsn, f"shim-{name}", inner)
+        admitted: str | None = await _with_queue(isolated_postgres_dsn, f"shim-{name}", inner)
         return admitted
 
-    async def race() -> list[bool]:
+    async def race() -> list[str | None]:
         return list(await asyncio.gather(admit("a"), admit("b")))
 
     results = asyncio.run(race())
 
-    assert sum(results) == 1
+    assert results.count("10.0.0.1") == 1 and results.count(None) == 1
+
+
+def test_two_shims_admitting_together_spread_the_pool(isolated_postgres_dsn: str) -> None:
+    """Placement is decided from the fleet's load, so shims do not pile onto one replica.
+
+    Each shim on its own would pick the replica it has sent the least to, and
+    with nothing sent yet that is the same replica for both of them.
+    """
+
+    _initialize(isolated_postgres_dsn)
+    pool = ("10.0.0.1", "10.0.0.2")
+
+    async def body(queue: OcrQueue) -> None:
+        for name in ("a", "b", "c", "d", "e"):
+            await queue.enqueue(name, 100, "batch")
+
+    asyncio.run(_with_queue(isolated_postgres_dsn, "shim-a", body))
+
+    async def admit(shim: str, name: str) -> str | None:
+        async def inner(queue: OcrQueue) -> str | None:
+            return await queue.try_admit(name, pool, 2)
+
+        admitted: str | None = await _with_queue(isolated_postgres_dsn, shim, inner)
+        return admitted
+
+    async def take_turns() -> list[str | None]:
+        return [
+            await admit("shim-a", "a"),
+            await admit("shim-b", "b"),
+            await admit("shim-a", "c"),
+            await admit("shim-b", "d"),
+            await admit("shim-a", "e"),
+        ]
+
+    first, second, third, fourth, fifth = asyncio.run(take_turns())
+
+    # Two replicas at two each: every slot is used once before any replica
+    # takes a second request, and the fifth request finds the pool full.
+    assert {first, second} == set(pool)
+    assert {third, fourth} == set(pool)
+    assert fifth is None
 
 
 def test_a_released_request_frees_its_slot(isolated_postgres_dsn: str) -> None:
     _initialize(isolated_postgres_dsn)
 
-    async def body(queue: OcrQueue) -> list[bool]:
+    async def body(queue: OcrQueue) -> list[str | None]:
         await queue.enqueue("first", 100, "batch")
         await queue.enqueue("second", 100, "batch")
-        first = await queue.try_admit("first", capacity=1)
-        blocked = await queue.try_admit("second", capacity=1)
+        first = await queue.try_admit("first", ONE, 1)
+        blocked = await queue.try_admit("second", ONE, 1)
         await queue.release("first")
-        return [first, blocked, await queue.try_admit("second", capacity=1)]
+        return [first, blocked, await queue.try_admit("second", ONE, 1)]
 
     admitted = asyncio.run(_with_queue(isolated_postgres_dsn, "shim-a", body))
 
-    assert admitted == [True, False, True]
+    assert admitted == ["10.0.0.1", None, "10.0.0.1"]
 
 
 def test_a_dead_replicas_rows_are_reclaimed(isolated_postgres_dsn: str) -> None:
@@ -171,7 +216,7 @@ def test_a_dead_replicas_rows_are_reclaimed(isolated_postgres_dsn: str) -> None:
 
     async def body(queue: OcrQueue) -> None:
         await queue.enqueue("abandoned", 100, "batch")
-        assert await queue.try_admit("abandoned", capacity=1)
+        assert await queue.try_admit("abandoned", ONE, 1)
 
     asyncio.run(_with_queue(isolated_postgres_dsn, "shim-dead", body))
 
@@ -180,8 +225,46 @@ def test_a_dead_replicas_rows_are_reclaimed(isolated_postgres_dsn: str) -> None:
             "UPDATE flakegraph_ocr_request SET heartbeat_at = CURRENT_TIMESTAMP - interval '1 hour'"
         )
 
-    async def survivor(queue: OcrQueue) -> bool:
+    async def survivor(queue: OcrQueue) -> str | None:
         await queue.enqueue("live", 100, "batch")
-        return await queue.try_admit("live", capacity=1)
+        return await queue.try_admit("live", ONE, 1)
 
     assert asyncio.run(_with_queue(isolated_postgres_dsn, "shim-live", survivor))
+
+
+def test_a_swept_row_is_put_back_by_the_shim_that_still_owns_it(
+    isolated_postgres_dsn: str,
+) -> None:
+    """A heartbeat that merely missed a beat is not a dead shim; its parse is still running."""
+
+    _initialize(isolated_postgres_dsn)
+
+    async def dispatch(queue: OcrQueue) -> None:
+        await queue.enqueue("running", 100, "batch")
+        assert await queue.try_admit("running", ONE, 1) == "10.0.0.1"
+
+    asyncio.run(_with_queue(isolated_postgres_dsn, "shim-quiet", dispatch))
+
+    with psycopg.connect(isolated_postgres_dsn, autocommit=True) as connection:
+        connection.execute(
+            "UPDATE flakegraph_ocr_request SET heartbeat_at = CURRENT_TIMESTAMP - interval '1 hour'"
+        )
+
+    async def sweep(queue: OcrQueue) -> str | None:
+        return await queue.try_admit("nothing-waiting", ONE, 1)
+
+    asyncio.run(_with_queue(isolated_postgres_dsn, "shim-other", sweep))
+
+    async def heartbeat(queue: OcrQueue) -> None:
+        await queue.renew("running", 100, "batch", "dispatched", "10.0.0.1")
+
+    asyncio.run(_with_queue(isolated_postgres_dsn, "shim-quiet", heartbeat))
+
+    with psycopg.connect(isolated_postgres_dsn, row_factory=dict_row) as connection:
+        rows = connection.execute(
+            "SELECT id, status, replica, shim_owner FROM flakegraph_ocr_request"
+        ).fetchall()
+
+    assert rows == [
+        {"id": "running", "status": "dispatched", "replica": "10.0.0.1", "shim_owner": "shim-quiet"}
+    ]

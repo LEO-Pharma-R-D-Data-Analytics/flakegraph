@@ -17,7 +17,10 @@ first**. The pipeline's own task queue orders the other way; these are different
 queues and the shim shares its vocabulary with the sidecar, not with the planner.
 
 Tracking how much of the pool is busy is what admission control requires anyway,
-so dispatching to the least-loaded replica costs nothing extra.
+so dispatching to the least-loaded replica costs nothing extra. The replica is
+chosen where the count is kept, in the queue: a shim that picked from its own
+bookkeeping would agree with every other shim on the emptiest replica and send
+it the whole fleet's admissions at once.
 """
 
 from __future__ import annotations
@@ -28,8 +31,8 @@ import logging
 import os
 import socket
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import uuid4
@@ -139,12 +142,16 @@ class OcrShimConfig(BaseModel):
 
 
 class UpstreamPool:
-    """Resolve parsing replicas and hand out the least-loaded one.
+    """Resolve parsing replicas and count what this process sent to each.
 
     The shim is configured with one name, not a list of addresses, so the pool
     can autoscale underneath it without a configuration change. Resolution is a
     DNS lookup of that name, which is how any client-side balancer finds its
     backends — the shim still learns nothing about the cluster it runs in.
+
+    The counts are this process's share of the fleet's load, kept for its
+    metrics; the fleet-wide count that admission and placement decide on lives
+    in the queue.
     """
 
     def __init__(
@@ -188,10 +195,10 @@ class UpstreamPool:
         return self._endpoints
 
     @property
-    def capacity(self) -> int:
-        """Return how many requests the whole pool can hold right now."""
+    def endpoints(self) -> tuple[str, ...]:
+        """Return the replica addresses the last resolution found."""
 
-        return len(self._endpoints) * self._capacity_per_replica
+        return self._endpoints
 
     @property
     def capacity_per_replica(self) -> int:
@@ -205,19 +212,10 @@ class UpstreamPool:
 
         return dict(self._in_flight)
 
-    def acquire(self) -> str | None:
-        """Claim the least-loaded replica, or ``None`` when every one is full."""
+    def dispatched(self, address: str) -> None:
+        """Count a request the queue admitted to a replica against it."""
 
-        candidates = [
-            (count, address)
-            for address, count in self._in_flight.items()
-            if count < self._capacity_per_replica
-        ]
-        if not candidates:
-            return None
-        _, address = min(candidates)
-        self._in_flight[address] += 1
-        return address
+        self._in_flight[address] = self._in_flight.get(address, 0) + 1
 
     def release(self, address: str) -> None:
         """Return a slot after a request completes, however it completed."""
@@ -255,12 +253,17 @@ class OcrQueue:
                 (request_id, priority, consumer_class, self._owner),
             )
 
-    async def try_admit(self, request_id: str, capacity: int) -> bool:
-        """Claim a slot when the pool has room and nothing better is waiting.
+    async def try_admit(
+        self, request_id: str, replicas: Sequence[str], capacity_per_replica: int
+    ) -> str | None:
+        """Claim the least-loaded replica when there is room and nothing better waits.
 
         Counting the busy pool and claiming a slot happen inside one transaction
         holding the advisory lock. Without that, two replicas could both read the
-        same free-slot count and both dispatch into it.
+        same free-slot count and both dispatch into it. The replica is chosen
+        under the same lock and from the same count, so two shims admitting at
+        once are spread across the pool rather than both sent to its emptiest
+        member.
         """
 
         async with self._pool.connection() as connection, connection.transaction():
@@ -273,12 +276,16 @@ class OcrQueue:
                 (self._stale_after_seconds,),
             )
             cursor = await connection.execute(
-                "SELECT count(*) AS busy FROM flakegraph_ocr_request WHERE status = 'dispatched'"
+                """
+                SELECT replica, count(*) AS busy FROM flakegraph_ocr_request
+                WHERE status = 'dispatched'
+                GROUP BY replica
+                """
             )
-            row = await cursor.fetchone()
-            free = capacity - int(row["busy"])
+            busy = {str(row["replica"]): int(row["busy"]) for row in await cursor.fetchall()}
+            free = sum(max(0, capacity_per_replica - busy.get(r, 0)) for r in replicas)
             if free <= 0:
-                return False
+                return None
             cursor = await connection.execute(
                 """
                 SELECT id FROM flakegraph_ocr_request
@@ -290,24 +297,45 @@ class OcrQueue:
             )
             admissible = {record["id"] for record in await cursor.fetchall()}
             if request_id not in admissible:
-                return False
+                return None
+            replica = min(replicas, key=lambda r: (busy.get(r, 0), r))
             await connection.execute(
                 """
                 UPDATE flakegraph_ocr_request
-                SET status = 'dispatched', heartbeat_at = CURRENT_TIMESTAMP
+                SET status = 'dispatched', heartbeat_at = CURRENT_TIMESTAMP, replica = %s
                 WHERE id = %s
                 """,
-                (request_id,),
+                (replica, request_id),
             )
-            return True
+            return replica
 
-    async def renew(self, request_id: str) -> None:
-        """Keep a row alive so it is not reclaimed while a client still waits."""
+    async def renew(
+        self,
+        request_id: str,
+        priority: int,
+        consumer_class: str,
+        status: str,
+        replica: str | None = None,
+    ) -> None:
+        """Keep a row alive, or put it back if it was swept while still owned.
+
+        The sweep in ``try_admit`` reclaims any row that went quiet, and it
+        cannot tell a dead shim from a live one whose heartbeat missed a beat
+        — a queue-database failover is enough. The work is still real either
+        way: a client is still waiting, or a parse is still running. Restoring
+        the row keeps that work counted so the rest of the fleet does not
+        admit into a slot that is in fact taken.
+        """
 
         async with self._pool.connection() as connection:
             await connection.execute(
-                "UPDATE flakegraph_ocr_request SET heartbeat_at = CURRENT_TIMESTAMP WHERE id = %s",
-                (request_id,),
+                """
+                INSERT INTO flakegraph_ocr_request
+                    (id, priority, consumer_class, status, shim_owner, replica)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET heartbeat_at = CURRENT_TIMESTAMP
+                """,
+                (request_id, priority, consumer_class, status, self._owner, replica),
             )
 
     async def release(self, request_id: str) -> None:
@@ -646,6 +674,7 @@ async def _hold_and_forward(
             held,
             request_id,
             metrics,
+            priority,
             consumer_class,
             renew_every=config.stale_after_seconds / 3,
         )
@@ -677,17 +706,13 @@ async def _await_slot(
     """
 
     while True:
-        await upstreams.refresh()
-        if upstreams.capacity and await queue.try_admit(request_id, upstreams.capacity):
-            address = upstreams.acquire()
+        replicas = await upstreams.refresh()
+        if replicas:
+            address = await queue.try_admit(request_id, replicas, upstreams.capacity_per_replica)
             if address is not None:
+                upstreams.dispatched(address)
                 return address
-            # The pool shrank between the admission decision and the claim.
-            # Return the slot and queue again at the band this caller actually
-            # holds, so a lost race cannot promote or demote the request.
-            await queue.release(request_id)
-            await queue.enqueue(request_id, priority, consumer_class)
-        await queue.renew(request_id)
+        await queue.renew(request_id, priority, consumer_class, "waiting")
         await asyncio.sleep(config.poll_interval_seconds)
 
 
@@ -700,6 +725,7 @@ async def _forward(
     queue: OcrQueue,
     request_id: str,
     metrics: OcrShimMetrics,
+    priority: int,
     consumer_class: str,
     *,
     renew_every: float,
@@ -718,15 +744,20 @@ async def _forward(
     # A parse can run for many minutes, far past the point at which a silent
     # row is presumed abandoned. Renewing while dispatched is what tells the
     # other replicas the slot is still genuinely busy.
-    keep_alive = asyncio.create_task(_renew_while_dispatched(queue, request_id, renew_every))
+    keep_alive = asyncio.create_task(
+        _renew_while_dispatched(
+            queue, request_id, priority, consumer_class, address, every=renew_every
+        )
+    )
     try:
         response = await client.send(upstream, stream=True)
     except BaseException:
-        keep_alive.cancel()
+        await _stop_renewing(keep_alive)
         raise
 
     async def _settle() -> None:
         await response.aclose()
+        await _stop_renewing(keep_alive)
         await queue.release(request_id)
 
     async def _measured() -> AsyncIterator[bytes]:
@@ -746,7 +777,6 @@ async def _forward(
             outcome = _failure_outcome(exc)
             raise
         finally:
-            keep_alive.cancel()
             metrics.parse_duration.labels(address).observe(time.perf_counter() - dispatched_at)
             metrics.requests.labels(consumer_class, outcome).inc()
             upstreams.release(address)
@@ -759,12 +789,42 @@ async def _forward(
     )
 
 
-async def _renew_while_dispatched(queue: OcrQueue, request_id: str, every: float) -> None:
-    """Keep a dispatched row fresh for as long as the parse it stands for runs."""
+async def _renew_while_dispatched(
+    queue: OcrQueue,
+    request_id: str,
+    priority: int,
+    consumer_class: str,
+    address: str,
+    *,
+    every: float,
+) -> None:
+    """Keep a dispatched row fresh for as long as the parse it stands for runs.
+
+    A renewal that fails is logged and tried again on the next beat rather than
+    ending the heartbeat: the parse is still running whether or not the queue
+    database answered, and a row that goes quiet is swept and the slot handed
+    out again.
+    """
 
     while True:
         await asyncio.sleep(every)
-        await queue.renew(request_id)
+        try:
+            await queue.renew(request_id, priority, consumer_class, "dispatched", address)
+        except Exception:
+            logger.warning("could not renew dispatched request %s", request_id, exc_info=True)
+
+
+async def _stop_renewing(keep_alive: asyncio.Task[None]) -> None:
+    """End the heartbeat and wait for it, so no renewal lands after the release.
+
+    A renewal restores a swept row; one still in flight when the row is deleted
+    would put it back with nobody left to renew it, holding a slot until the
+    sweep takes it again.
+    """
+
+    keep_alive.cancel()
+    with suppress(asyncio.CancelledError):
+        await keep_alive
 
 
 def _failure_outcome(exc: BaseException) -> str:
