@@ -73,6 +73,10 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
 fi
 ok "GPU $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 
+# The address the API server is reached at, both from other nodes and from
+# the operator's own kubeconfig. Read once, before any branch may skip it.
+primary_ip="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)"
+
 mkdir -p "$backup_root"
 
 # ---------------------------------------------------------------------------
@@ -191,7 +195,6 @@ step "Kubernetes (k3s)"
 if systemctl is-active --quiet k3s || systemctl is-active --quiet k3s-agent; then
   ok "k3s already running; leaving the existing installation alone"
 else
-  primary_ip="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)"
   export INSTALL_K3S_CHANNEL="$k3s_channel"
 
   # The corporate network resolves github.com but blocks the host its release
@@ -255,14 +258,15 @@ if [[ "$role" == "server" ]]; then
   ok "labelled the node flakegraph.io/node-class=${node_class}"
 
   # Hand the operator a kubeconfig they own. k3s writes one readable copy under
-  # /etc, but tools that rewrite contexts need a file they can modify.
+  # /etc, but tools that rewrite contexts need a file they can modify. One
+  # they already have is theirs, so a re-run leaves it alone.
   target_user="${SUDO_USER:-root}"
   target_home="$(getent passwd "$target_user" | cut -d: -f6)"
-  if [[ -n "$target_home" && -d "$target_home" ]]; then
+  if [[ -n "$target_home" && -d "$target_home" && ! -f "$target_home/.kube/config" ]]; then
     install -d -o "$target_user" -g "$target_user" -m 0700 "$target_home/.kube"
     install -o "$target_user" -g "$target_user" -m 0600 \
       /etc/rancher/k3s/k3s.yaml "$target_home/.kube/config"
-    sed -i "s#https://127.0.0.1:6443#https://${primary_ip:-127.0.0.1}:6443#" "$target_home/.kube/config"
+    sed -i "s#https://127.0.0.1:6443#https://${primary_ip}:6443#" "$target_home/.kube/config"
     ok "wrote $target_home/.kube/config for $target_user"
   fi
 fi
@@ -272,9 +276,9 @@ step "Done"
 
 if [[ "$role" == "server" ]]; then
   cat <<SUMMARY
-    Control plane:  https://$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1):6443
+    Control plane:  https://${primary_ip}:6443
     Join a Spark:   sudo ./bootstrap-node.sh --role agent \\
-                      --server https://$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1):6443 \\
+                      --server https://${primary_ip}:6443 \\
                       --token \$(sudo cat /var/lib/rancher/k3s/server/node-token)
 
     The cluster has no GPU device plugin yet. Install the workload layer with
