@@ -244,35 +244,17 @@ def _entity_endpoint_index(
 def _endpoint_is_known(
     index: _EntityEndpointIndex,
     name: str,
-    entity_type: str | None,
+    entity_type: str,
 ) -> bool:
-    """Return whether a relation surface identifies one accepted entity.
+    """Return whether a typed relation surface identifies one accepted entity.
 
-    Typed endpoints are preferred because two ontology types may legitimately
-    share a name. Provider-neutral records without a type are retained only when
-    the surface identifies one canonical typed entity across the full index.
+    The type is part of the key because two ontology types may legitimately
+    share a name.
     """
 
-    normalized = normalize_entity_name(name)
-    if entity_type is not None:
-        key = (normalized, entity_type)
-        canonical = index.canonical.get(key, set())
-        return len(canonical or index.aliases.get(key, set())) == 1
-    canonical_candidates = {
-        identity
-        for (surface, _candidate_type), identities in index.canonical.items()
-        if surface == normalized
-        for identity in identities
-    }
-    if canonical_candidates:
-        return len(canonical_candidates) == 1
-    alias_candidates = {
-        identity
-        for (surface, _candidate_type), identities in index.aliases.items()
-        if surface == normalized
-        for identity in identities
-    }
-    return len(alias_candidates) == 1
+    key = (normalize_entity_name(name), entity_type)
+    canonical = index.canonical.get(key, set())
+    return len(canonical or index.aliases.get(key, set())) == 1
 
 
 def _entity_decision(

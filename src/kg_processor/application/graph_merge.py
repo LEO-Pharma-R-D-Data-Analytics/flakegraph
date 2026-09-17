@@ -396,12 +396,6 @@ def _with_unique_alias_endpoints(
     for key, candidates in alias_candidates.items():
         if key not in endpoint_nodes and len(candidates) == 1:
             endpoint_nodes[key] = next(iter(candidates.values()))
-    untyped_candidates: dict[str, dict[str, GraphNode]] = defaultdict(dict)
-    for (normalized_name, _node_type), node in endpoint_nodes.items():
-        untyped_candidates[normalized_name][node.id] = node
-    for normalized_name, candidates in untyped_candidates.items():
-        if len(candidates) == 1:
-            endpoint_nodes[(normalized_name, "")] = next(iter(candidates.values()))
     return endpoint_nodes
 
 
@@ -626,19 +620,11 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
 def _relation_endpoint_node(
     nodes: dict[tuple[str, str], GraphNode],
     name: str,
-    entity_type: str | None,
+    entity_type: str,
 ) -> GraphNode | None:
-    """Resolve a relation endpoint without conflating same-named typed entities.
+    """Resolve a relation endpoint without conflating same-named typed entities."""
 
-    Two-pass extraction supplies the endpoint type and therefore resolves exactly.
-    Older/provider-neutral extraction records may omit it; those are accepted only
-    when the normalized name identifies a single node unambiguously.
-    """
-
-    normalized_name = normalize_entity_name(name)
-    if entity_type is not None:
-        return nodes.get((normalized_name, entity_type))
-    return nodes.get((normalized_name, ""))
+    return nodes.get((normalize_entity_name(name), entity_type))
 
 
 def _edge_observation(

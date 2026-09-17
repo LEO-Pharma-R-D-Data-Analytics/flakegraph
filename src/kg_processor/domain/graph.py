@@ -69,8 +69,8 @@ class ExtractedRelation(BaseModel):
     target_name: str
     source_surface: str | None = None
     target_surface: str | None = None
-    source_type: str | None = None
-    target_type: str | None = None
+    source_type: str
+    target_type: str
     relation_type: str
     description: str
     source_chunk_id: str

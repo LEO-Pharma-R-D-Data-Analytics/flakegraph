@@ -54,6 +54,8 @@ def test_build_run_report_artifacts_counts_providers_cache_and_quality() -> None
     relation = ExtractedRelation(
         source_name="Alice",
         target_name="Acme",
+        source_type="PERSON",
+        target_type="ORGANIZATION",
         relation_type="works at",
         description="Alice works at Acme.",
         source_chunk_id=chunk.id,

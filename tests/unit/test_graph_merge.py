@@ -75,6 +75,8 @@ def test_assemble_graph_deduplicates_entities_and_tracks_evidence() -> None:
         ExtractedRelation(
             source_name="Alice Smith",
             target_name="Acme Corp",
+            source_type="PERSON",
+            target_type="ORGANIZATION",
             relation_type="works at",
             description="Alice Smith works at Acme Corp.",
             source_chunk_id=chunk.id,
@@ -253,6 +255,8 @@ def test_assemble_graph_drops_loop_created_by_entity_normalization() -> None:
     relation = ExtractedRelation(
         source_name="Wal-Mart",
         target_name="Walmart",
+        source_type="ORGANIZATION",
+        target_type="ORGANIZATION",
         relation_type="renamed to",
         description=chunk.content,
         source_chunk_id=chunk.id,
@@ -310,6 +314,8 @@ def test_assemble_graph_records_merge_decisions() -> None:
         ExtractedRelation(
             source_name="Alice Smith",
             target_name="Acme Corp",
+            source_type="PERSON",
+            target_type="ORGANIZATION",
             relation_type="works at",
             description="First observation.",
             source_chunk_id=chunk.id,
@@ -319,6 +325,8 @@ def test_assemble_graph_records_merge_decisions() -> None:
         ExtractedRelation(
             source_name="Alice Smith",
             target_name="Acme Corp",
+            source_type="PERSON",
+            target_type="ORGANIZATION",
             relation_type="works at",
             description="Longer duplicate relation observation.",
             source_chunk_id=chunk.id,
@@ -328,6 +336,8 @@ def test_assemble_graph_records_merge_decisions() -> None:
         ExtractedRelation(
             source_name="Ghost",
             target_name="Acme Corp",
+            source_type="PERSON",
+            target_type="ORGANIZATION",
             relation_type="mentions",
             description="Source node is missing.",
             source_chunk_id=chunk.id,
@@ -407,6 +417,8 @@ def test_assemble_graph_uses_extracted_quote_spans_for_evidence() -> None:
         ExtractedRelation(
             source_name="Alice Smith",
             target_name="Acme Corp",
+            source_type="PERSON",
+            target_type="ORGANIZATION",
             relation_type="works at",
             description="Alice works at Acme.",
             source_chunk_id=chunk.id,
@@ -582,6 +594,8 @@ def test_filter_relations_applies_confidence_and_endpoint_grounding() -> None:
         ExtractedRelation(
             source_name="Alice Smith",
             target_name="Acme Corp",
+            source_type="PERSON",
+            target_type="ORGANIZATION",
             relation_type="works_at",
             description="Alice works at Acme.",
             source_chunk_id=chunk.id,
@@ -590,6 +604,8 @@ def test_filter_relations_applies_confidence_and_endpoint_grounding() -> None:
         ExtractedRelation(
             source_name="Alice Smith",
             target_name="Missing Org",
+            source_type="PERSON",
+            target_type="ORGANIZATION",
             relation_type="works_at",
             description="Ungrounded endpoint.",
             source_chunk_id=chunk.id,
@@ -598,6 +614,8 @@ def test_filter_relations_applies_confidence_and_endpoint_grounding() -> None:
         ExtractedRelation(
             source_name="Alice Smith",
             target_name="Acme Corp",
+            source_type="PERSON",
+            target_type="ORGANIZATION",
             relation_type="mentions",
             description="Low confidence.",
             source_chunk_id=chunk.id,
@@ -650,6 +668,8 @@ def test_filter_relations_records_endpoint_grounding_reasons() -> None:
         ExtractedRelation(
             source_name="Alice Smith",
             target_name="Copenhagen",
+            source_type="PERSON",
+            target_type="LOCATION",
             relation_type="located_in",
             description="Endpoint is known but not grounded in this chunk.",
             source_chunk_id=chunk.id,
@@ -701,6 +721,8 @@ def test_filter_relations_grounds_verified_local_endpoint_surfaces() -> None:
         target_name="Long Short-Term Memory",
         source_surface="We",
         target_surface="LSTM",
+        source_type="PAPER",
+        target_type="MODEL",
         relation_type="USES_METHOD",
         description="The paper evaluates LSTM.",
         source_chunk_id=chunk.id,
@@ -844,6 +866,8 @@ def test_assemble_graph_aggregates_cross_file_assertions_into_one_edge() -> None
         ExtractedRelation(
             source_name="Alice",
             target_name="Acme",
+            source_type="PERSON",
+            target_type="ORGANIZATION",
             relation_type="works_at",
             description=chunk.content,
             source_chunk_id=chunk.id,
