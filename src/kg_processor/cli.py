@@ -12,7 +12,7 @@ from dataclasses import asdict
 from enum import StrEnum
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 import typer
 
@@ -58,7 +58,6 @@ from kg_processor.application.snowflake_export import export_snowflake_graph
 from kg_processor.application.snowflake_schema import render_snowflake_schema_sql
 from kg_processor.config.preflight import run_preflight
 from kg_processor.config.provider_registry import (
-    ProviderKind,
     provider_catalog,
     provider_catalog_for_kind,
     provider_kinds,
@@ -188,7 +187,7 @@ def print_providers(
         raise typer.BadParameter(
             f"Unsupported provider kind '{kind}'. Supported kinds: {supported}"
         )
-    _echo_json(provider_catalog_for_kind(cast(ProviderKind, kind)))
+    _echo_json(provider_catalog_for_kind(kind))
 
 
 @app.command()
