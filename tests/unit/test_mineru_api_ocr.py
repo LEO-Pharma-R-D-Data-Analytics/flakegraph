@@ -120,13 +120,14 @@ def test_mineru_api_ocr_posts_file_parse_and_normalizes_markdown(
     assert request["data"] == {
         "backend": "pipeline",
         "formula_enable": "true",
+        "end_page_id": "2",
         "lang_list": "en",
-        "page_range": "1-2",
         "parse_method": "auto",
         "return_content_list": "true",
         "return_images": "false",
         "return_md": "true",
         "return_middle_json": "true",
+        "start_page_id": "1",
         "table_enable": "false",
     }
     assert document.pages[0].markdown == "# Title\nAlice works at Acme."

@@ -14,6 +14,7 @@ from kg_processor.adapters.ocr.mineru_common import (
     first_int,
     first_string,
     mineru_assets_from_payloads,
+    resolve_page_window,
 )
 from kg_processor.domain.documents import (
     InputFile,
@@ -23,7 +24,7 @@ from kg_processor.domain.documents import (
     ParsedPage,
 )
 from kg_processor.domain.ids import stable_id
-from kg_processor.ports.ocr import OcrOptions, parse_page_range
+from kg_processor.ports.ocr import OcrOptions
 
 _BBOX_COORDS = 4
 _SECRET_ENVIRONMENT_PREFIXES = (
@@ -94,7 +95,7 @@ class MineruInternalOcrProvider:
         _append_value(command, "--api-url", options.api_url)
         _append_value(command, "--url", options.server_url)
 
-        start_page_id, end_page_id = _resolve_page_window(options)
+        start_page_id, end_page_id = resolve_page_window(options, provider="mineru_internal")
         _append_value(command, "--start", start_page_id)
         _append_value(command, "--end", end_page_id)
         _append_bool(command, "--formula", options.formula)
@@ -414,19 +415,6 @@ def _mineru_environment(options: OcrOptions) -> dict[str, str] | None:
         }
     )
     return env
-
-
-def _resolve_page_window(options: OcrOptions) -> tuple[int | None, int | None]:
-    if options.start_page_id is not None or options.end_page_id is not None:
-        return options.start_page_id, options.end_page_id
-    windows = parse_page_range(
-        options.page_range,
-        provider="mineru_internal",
-        minimum=0,
-        allow_multiple=False,
-        allow_open=True,
-    )
-    return windows[0] if windows else (None, None)
 
 
 def _page(file: InputFile, page_number: int, text: str) -> ParsedPage:

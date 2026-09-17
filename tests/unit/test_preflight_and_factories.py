@@ -760,10 +760,14 @@ def test_preflight_rejects_tesseract_image_page_range_that_excludes_page_one(
     )
 
 
+@pytest.mark.parametrize("provider", ["mineru_internal", "mineru_api"])
 def test_preflight_rejects_mineru_page_window_with_end_before_start(
+    provider: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Both MinerU adapters send the same page ids, so both are checked before a run."""
+
     input_dir = tmp_path / "input"
     input_dir.mkdir()
     monkeypatch.setattr(
@@ -774,7 +778,8 @@ def test_preflight_rejects_mineru_page_window_with_end_before_start(
         overrides={
             "files": {"input_path": input_dir},
             "ocr": {
-                "provider": "mineru_internal",
+                "provider": provider,
+                "mineru_api_url": "https://mineru.example",
                 "mineru_start_page_id": 5,
                 "mineru_end_page_id": 3,
             },

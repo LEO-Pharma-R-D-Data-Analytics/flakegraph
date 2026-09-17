@@ -464,7 +464,7 @@ def _validate_ocr_page_range(settings: Settings, result: PreflightResult) -> Non
             _validate_tesseract_image_page_range(settings, windows, result)
         return
 
-    if settings.ocr.provider == "mineru_internal":
+    if settings.ocr.provider in {"mineru_internal", "mineru_api"}:
         _validate_mineru_page_window(settings, result, page_range)
         return
 
@@ -487,18 +487,18 @@ def _validate_mineru_page_window(
     result: PreflightResult,
     page_range: str | None,
 ) -> None:
+    provider = settings.ocr.provider
     start = settings.ocr.mineru_start_page_id
     end = settings.ocr.mineru_end_page_id
 
-    # MinerU command-line options take precedence over the portable page_range
-    # field, so validate the explicit API fields first and do not reinterpret
-    # page_range when either of those ids is configured.
+    # MinerU's explicit page ids take precedence over the portable page_range
+    # field, so validate them first and do not reinterpret page_range when
+    # either of those ids is configured.
     if start is not None or end is not None:
         result.require(
             start is None or end is None or end >= start,
-            "mineru_internal OCR explicit page window is valid",
-            "Invalid mineru_internal page window: mineru_end_page_id is before "
-            "mineru_start_page_id",
+            f"{provider} OCR explicit page window is valid",
+            f"Invalid {provider} page window: mineru_end_page_id is before mineru_start_page_id",
         )
         return
 
@@ -509,12 +509,12 @@ def _validate_mineru_page_window(
         result,
         lambda: parse_page_range(
             page_range,
-            provider="mineru_internal",
+            provider=provider,
             minimum=0,
             allow_multiple=False,
             allow_open=True,
         ),
-        "mineru_internal OCR page_range is valid",
+        f"{provider} OCR page_range is valid",
     )
 
 

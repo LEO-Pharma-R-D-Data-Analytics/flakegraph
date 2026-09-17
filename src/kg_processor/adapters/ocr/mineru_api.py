@@ -12,6 +12,7 @@ from kg_processor.adapters.ocr.mineru_common import (
     first_int,
     first_string,
     mineru_assets_from_payloads,
+    resolve_page_window,
 )
 from kg_processor.domain.documents import (
     InputFile,
@@ -96,7 +97,11 @@ def _form_data(options: OcrOptions) -> dict[str, str]:
     _set_if_present(data, "lang_list", options.language)
     _set_if_present(data, "backend", options.backend)
     _set_if_present(data, "parse_method", options.method)
-    _set_if_present(data, "page_range", options.page_range)
+    # MinerU's API has no page_range field; FastAPI drops what it does not
+    # declare, so the window has to travel as the ids it does take.
+    start_page_id, end_page_id = resolve_page_window(options, provider="mineru_api")
+    _set_if_present(data, "start_page_id", _optional_int_text(start_page_id))
+    _set_if_present(data, "end_page_id", _optional_int_text(end_page_id))
     _set_if_present(data, "formula_enable", _optional_bool_text(options.formula))
     _set_if_present(data, "table_enable", _optional_bool_text(options.table))
     return data
@@ -271,6 +276,10 @@ def _set_if_present(data: dict[str, str], key: str, value: str | None) -> None:
 
 def _optional_bool_text(value: bool | None) -> str | None:
     return _bool_text(value) if value is not None else None
+
+
+def _optional_int_text(value: int | None) -> str | None:
+    return str(value) if value is not None else None
 
 
 def _bool_text(value: bool) -> str:

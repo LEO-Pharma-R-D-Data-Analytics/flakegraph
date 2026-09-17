@@ -13,6 +13,27 @@ from typing import Any
 
 from kg_processor.domain.documents import InputFile, ParsedAsset
 from kg_processor.domain.ids import stable_id
+from kg_processor.ports.ocr import OcrOptions, PageWindow, parse_page_range
+
+
+def resolve_page_window(options: OcrOptions, *, provider: str) -> PageWindow:
+    """Return the zero-based inclusive window MinerU takes as start/end page ids.
+
+    Both the CLI and the HTTP API take the same pair, so the explicit ids win
+    and the portable ``page_range`` is read the same way for either.
+    """
+
+    if options.start_page_id is not None or options.end_page_id is not None:
+        return options.start_page_id, options.end_page_id
+    windows = parse_page_range(
+        options.page_range,
+        provider=provider,
+        minimum=0,
+        allow_multiple=False,
+        allow_open=True,
+    )
+    return windows[0] if windows else (None, None)
+
 
 _ASSET_COLLECTION_KEYS = ("images", "assets", "media", "figures")
 # Keys whose values are raw bytes rather than descriptive metadata. Providers
