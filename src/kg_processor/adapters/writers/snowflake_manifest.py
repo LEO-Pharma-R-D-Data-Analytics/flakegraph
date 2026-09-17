@@ -101,7 +101,7 @@ class SnowflakeManifestWriter:
         self.publication_id = publication_id
         self.publication_generation = publication_generation
 
-    def write(self, manifest: GraphDatasetManifest) -> None:  # noqa: PLR0912
+    def write(self, manifest: GraphDatasetManifest) -> None:
         """Stage all manifest partitions and atomically replace one graph snapshot."""
 
         load_id = (

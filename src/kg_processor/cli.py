@@ -942,13 +942,11 @@ def benchmark_extraction(
 @snowflake_app.command("ddl")
 def snowflake_ddl(
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
-    embedding_dim: Annotated[int | None, typer.Option("--embedding-dim")] = None,
+    embedding_dim: Annotated[int | None, typer.Option("--embedding-dim", min=1)] = None,
 ) -> None:
     """Render canonical Snowflake table DDL."""
 
     settings = Settings.load(config)
-    if embedding_dim is not None and embedding_dim <= 0:
-        raise typer.BadParameter("--embedding-dim must be positive")
     dim = embedding_dim if embedding_dim is not None else settings.embedding.dimension
     typer.echo(render_snowflake_schema_sql(dim).strip())
 

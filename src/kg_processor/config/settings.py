@@ -485,7 +485,7 @@ class GraphSettings(_SettingsModel):
     # extraction behavior here prevents provider profiles from changing graph
     # semantics merely because a transport configuration was copied.
     chunk_token_size: int = Field(default=500, gt=0)
-    chunk_token_overlap: int = 60
+    chunk_token_overlap: int = Field(default=60, ge=0)
     # A compact window keeps the structured extraction task exhaustive. Larger
     # section-sized requests reduce provider calls, but measured scientific-paper
     # runs omit substantial entities and relations even when the response remains
@@ -575,8 +575,6 @@ class GraphSettings(_SettingsModel):
     def overlap_smaller_than_chunk(cls, value: int, info: Any) -> int:
         """Prevent overlap settings that would duplicate or block chunk advancement."""
 
-        if value < 0:
-            raise ValueError("chunk_token_overlap must be non-negative")
         chunk_size = info.data.get("chunk_token_size")
         if chunk_size is not None and value >= chunk_size:
             raise ValueError("chunk_token_overlap must be smaller than chunk_token_size")

@@ -714,7 +714,7 @@ def test_settings_accepts_zero_gleaning_passes() -> None:
         ({"llm": {"timeout_seconds": 0}}, "llm.timeout_seconds"),
         ({"generic_http_ocr": {"max_response_bytes": -1}}, "generic_http_ocr.max_response_bytes"),
         ({"graph": {"chunk_token_size": 0}}, "graph.chunk_token_size"),
-        ({"graph": {"chunk_token_overlap": -1}}, "chunk_token_overlap must be non-negative"),
+        ({"graph": {"chunk_token_overlap": -1}}, "graph.chunk_token_overlap"),
         (
             {"graph": {"chunk_token_size": 10, "chunk_token_overlap": 10}},
             "chunk_token_overlap must be smaller than chunk_token_size",
