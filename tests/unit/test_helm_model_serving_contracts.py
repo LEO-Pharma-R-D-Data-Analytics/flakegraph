@@ -450,6 +450,16 @@ def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
     # Headless: a load-balanced ClusterIP would hide the per-replica load that
     # admission control has to count.
     assert _one(rendered, "Service", f"{_FULLNAME}-mineru")["spec"]["clusterIP"] == "None"
+    # The pool authenticates nobody and answers 409 to whatever skips the
+    # queue, so the shim is the only pod allowed to reach it.
+    policy = _one(rendered, "NetworkPolicy", f"{_FULLNAME}-mineru")
+    assert policy["spec"]["policyTypes"] == ["Ingress"]
+    assert [
+        (peer["podSelector"]["matchLabels"]["app.kubernetes.io/component"], port["port"])
+        for rule in policy["spec"]["ingress"]
+        for peer in rule["from"]
+        for port in rule["ports"]
+    ] == [("ocr-shim", "http")]
     # The parsing pool runs the same image as everything else. MinerU is already
     # installed in it and exposes an entry point, so a second image would only
     # add another artefact to keep on the right architecture.

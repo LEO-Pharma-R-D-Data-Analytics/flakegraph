@@ -1147,6 +1147,21 @@
             "autoscaling": {
               "$ref": "#/$defs/utilizationAutoscaling"
             },
+            "networkPolicy": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "extraIngress": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            },
             "persistence": {
               "$ref": "#/$defs/persistence"
             },

@@ -852,6 +852,13 @@ documentParsing:
       minReplicas: 1
       maxReplicas: 16
       targetCpuUtilizationPercentage: 70
+    # MinerU has no credential of its own; the shim is the plane's key check
+    # and its queue, so only the shim may reach the pool. Some CNIs enforce
+    # this against kubelet probe traffic as well; where they do, add the node
+    # range through extraIngress rather than disabling the policy.
+    networkPolicy:
+      enabled: true
+      extraIngress: []
     persistence:
       enabled: true
       size: 20Gi

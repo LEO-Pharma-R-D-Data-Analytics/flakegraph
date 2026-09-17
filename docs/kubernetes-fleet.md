@@ -554,7 +554,10 @@ how much of the pool is busy is what admission control needs anyway, which makes
 least-loaded dispatch free.
 
 The shim resolves the parsing pool by one DNS name, so `documentParsing.mineru`
-can autoscale underneath it without a configuration change.
+can autoscale underneath it without a configuration change. The pool itself
+authenticates nobody, so `documentParsing.mineru.networkPolicy` admits only the
+shim; a CNI that filters kubelet probes gets its node range through
+`extraIngress`, as with the engines.
 
 Note that the parsing bands follow the serving convention — **lower is served
 first** — while the pipeline's own task queue orders by `priority DESC`. They are
