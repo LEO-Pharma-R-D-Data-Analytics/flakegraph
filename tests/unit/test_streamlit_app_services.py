@@ -608,8 +608,8 @@ def test_terminal_local_history_does_not_parse_progress_until_opened(
         },
     )
     monkeypatch.setattr(
-        "flakegraph_app.backends.local.read_jsonl_events",
-        lambda _path: (_ for _ in ()).throw(
+        "flakegraph_app.progress.read_jsonl_events",
+        lambda _path, _limit: (_ for _ in ()).throw(
             AssertionError("sidebar listing must not parse progress logs")
         ),
     )

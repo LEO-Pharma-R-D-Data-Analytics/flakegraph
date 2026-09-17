@@ -39,11 +39,6 @@ from flakegraph_app.run_catalog import (
 )
 from flakegraph_app.sources import list_azure_objects, list_local_objects, list_s3_objects
 
-# Kept as a module attribute for app-service tests and third-party diagnostics
-# that patched the former reader directly before cumulative checkpoints existed.
-read_jsonl_events = progress_module.read_jsonl_events
-
-
 STATE_ROOT_ENVIRONMENT = "FLAKEGRAPH_APP_STATE_ROOT"
 
 
