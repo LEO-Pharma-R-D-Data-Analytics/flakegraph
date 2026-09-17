@@ -697,8 +697,8 @@ def _inline_ontology_profile(config: dict[str, Any], profile_path: Path | None) 
     Deliberately implemented here rather than imported from ``kg_processor``: the
     deployed Streamlit bundle ships only this package, so importing the product
     breaks the entire application inside Snowflake with "No module named
-    'kg_processor'". ``test_app_and_product_inline_ontologies_identically`` pins
-    this to the product's behaviour so the two cannot drift apart unnoticed.
+    'kg_processor'". ``test_the_app_and_the_product_read_an_ontology_file_identically``
+    pins this to the product's behaviour so the two cannot drift apart unnoticed.
     """
 
     ontology = config.get("ontology")

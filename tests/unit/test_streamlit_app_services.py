@@ -107,6 +107,7 @@ from streamlit.testing.v1 import AppTest
 from streamlit_app import _configured_default_runtime
 
 from kg_processor.adapters.files.common import SUPPORTED_SUFFIXES as CORE_SUPPORTED_SUFFIXES
+from kg_processor.application.ontology import load_ontology
 from kg_processor.config.provider_registry import provider_names
 from kg_processor.config.settings import GraphSettings, Settings
 
@@ -3006,6 +3007,33 @@ def test_the_app_inlines_an_ontology_the_container_cannot_read(tmp_path: Path) -
 
     assert config["ontology"]["profile"] == {"name": "test", "entity_types": []}
     assert config["ontology"]["profile_path"] is None
+
+
+def test_the_app_and_the_product_read_an_ontology_file_identically(tmp_path: Path) -> None:
+    """The app inlines the file on its own, since the product is not shipped with it.
+
+    The product then loads what was inlined, so the two readings must hash to
+    the same ontology or the worker would claim a run under another checksum.
+    """
+
+    config = build_run_config(
+        IngestionRequest(
+            runtime=RuntimeMode.SNOWFLAKE,
+            job_id="j",
+            graph_id="g",
+            source_kind=SourceKind.SNOWFLAKE_STAGE,
+            source={"stage": "@D.S.KG_DOCS", "prefix": ""},
+            ocr=ProviderSelection(provider="snowflake_cortex"),
+            llm=ProviderSelection(provider="snowflake_cortex", model="m"),
+            embedding=ProviderSelection(provider="snowflake_cortex", model="e", dimension=8),
+            output=OutputDestination(kind=StorageKind.LOCAL, workspace_path=tmp_path / "out"),
+            base_config_path=Path("configs/app-defaults.yaml"),
+        )
+    )
+
+    from_file = load_ontology(Path("configs/ontologies/general.yaml"), [], None)
+    from_inline = load_ontology(None, [], None, inline=config["ontology"]["profile"])
+    assert from_inline.checksum == from_file.checksum
 
 
 def test_a_snowflake_graph_carries_the_metrics_the_consumption_view_reads() -> None:
