@@ -262,11 +262,18 @@ _EXTRACTED_STAGE_SCHEMA = (
 
 @dataclass(frozen=True)
 class SparkFinalizationRequest:
-    """Identify one immutable run attempt and the object prefixes it may use."""
+    """Identify one immutable run attempt and the stage objects it may read.
+
+    ``artifact_ids`` names the objects under the run's prefixes that a
+    succeeded task produced. The prefixes also hold what an attempt wrote
+    before losing its lease, and executors read prefixes, so the ids are what
+    keeps a retry's orphan out of the graph.
+    """
 
     run_id: str
     graph_id: str
     attempt: int
+    artifact_ids: frozenset[str]
 
 
 def _spark_application_name(request: SparkFinalizationRequest) -> str:
@@ -563,20 +570,33 @@ class SparkGraphFinalizer:
         """
 
         from pyspark import StorageLevel
+        from pyspark.sql import functions as F
 
         root = _spark_uri(self.settings.distributed.artifact_uri or "")
         prepared_path = f"{root}/{request.run_id}/prepared_document"
         extracted_path = f"{root}/{request.run_id}/extracted_document"
-        prepared = (
-            spark.read.schema(_PREPARED_STAGE_SCHEMA)
-            .json(prepared_path)
-            .persist(StorageLevel.MEMORY_AND_DISK_DESER)
+        # An object is named by its artifact id plus a media-type suffix, so
+        # the id list is a filter on file names: a semi-join against a
+        # broadcast of the ids keeps every row of the linked objects and none
+        # of an orphan's, without listing the prefix on the driver.
+        linked = F.broadcast(
+            spark.createDataFrame([(item,) for item in sorted(request.artifact_ids)], "id string")
         )
-        extracted = (
-            spark.read.schema(_EXTRACTED_STAGE_SCHEMA)
-            .json(extracted_path)
-            .persist(StorageLevel.MEMORY_AND_DISK_DESER)
-        )
+        object_id = F.regexp_extract(F.input_file_name(), r"([^/]+?)(\.[^./]*)?$", 1)
+
+        def only_linked(frame: DataFrame) -> DataFrame:
+            return (
+                frame.withColumn("_object_id", object_id)
+                .join(linked, F.col("_object_id") == linked["id"], "left_semi")
+                .drop("_object_id")
+            )
+
+        prepared = only_linked(
+            spark.read.schema(_PREPARED_STAGE_SCHEMA).json(prepared_path)
+        ).persist(StorageLevel.MEMORY_AND_DISK_DESER)
+        extracted = only_linked(
+            spark.read.schema(_EXTRACTED_STAGE_SCHEMA).json(extracted_path)
+        ).persist(StorageLevel.MEMORY_AND_DISK_DESER)
         return prepared, extracted
 
     def _build_graph_tables(  # noqa: PLR0915 - each block is one table phase.

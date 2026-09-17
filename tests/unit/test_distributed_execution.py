@@ -187,13 +187,15 @@ class MemoryDistributedStore:
     ) -> list[StoredArtifact]:
         """Return run outputs in stable identity order for local finalization tests."""
 
+        return [
+            self.artifacts[artifact_id] for artifact_id in self.get_run_artifact_ids(run_id, kinds)
+        ]
+
+    def get_run_artifact_ids(self, run_id: str, kinds: set[ArtifactKind]) -> list[str]:
         return sorted(
-            (
-                artifact
-                for artifact in self.artifacts.values()
-                if artifact.ref.run_id == run_id and artifact.ref.kind in kinds
-            ),
-            key=lambda artifact: artifact.ref.id,
+            artifact.ref.id
+            for artifact in self.artifacts.values()
+            if artifact.ref.run_id == run_id and artifact.ref.kind in kinds
         )
 
     def claim_task(

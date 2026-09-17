@@ -31,6 +31,7 @@ def test_spark_application_identity_fences_every_durable_attempt() -> None:
             run_id="Customer Run/with invalid Kubernetes characters" * 4,
             graph_id="graph",
             attempt=1,
+            artifact_ids=frozenset(),
         )
     )
     repeated = _spark_application_name(
@@ -38,6 +39,7 @@ def test_spark_application_identity_fences_every_durable_attempt() -> None:
             run_id="Customer Run/with invalid Kubernetes characters" * 4,
             graph_id="graph",
             attempt=1,
+            artifact_ids=frozenset(),
         )
     )
     retry = _spark_application_name(
@@ -45,6 +47,7 @@ def test_spark_application_identity_fences_every_durable_attempt() -> None:
             run_id="Customer Run/with invalid Kubernetes characters" * 4,
             graph_id="graph",
             attempt=2,
+            artifact_ids=frozenset(),
         )
     )
 

@@ -40,5 +40,18 @@ class ArtifactStore(Protocol):
         run_id: str,
         kinds: set[ArtifactKind],
     ) -> list[StoredArtifact]:
-        """Return matching artifacts in stable creation and identity order."""
+        """Return matching artifacts in stable creation and identity order.
+
+        Only artifacts a succeeded task handed to ``complete_task`` count: an
+        attempt that wrote its output and then lost its lease leaves an orphan
+        the retry does not overwrite.
+        """
+        ...
+
+    def get_run_artifact_ids(
+        self,
+        run_id: str,
+        kinds: set[ArtifactKind],
+    ) -> list[str]:
+        """Return the ids ``get_run_artifacts`` would load, for a reader elsewhere."""
         ...

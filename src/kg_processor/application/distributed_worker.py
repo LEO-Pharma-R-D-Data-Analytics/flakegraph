@@ -853,6 +853,12 @@ class DistributedWorker:
                 run_id=lease.task.run_id,
                 graph_id=lease.task.scope_id,
                 attempt=lease.attempt,
+                artifact_ids=frozenset(
+                    self.artifact_store.get_run_artifact_ids(
+                        lease.task.run_id,
+                        {ArtifactKind.PREPARED_DOCUMENT, ArtifactKind.EXTRACTED_DOCUMENT},
+                    )
+                ),
             )
         )
         # Destination publication is queued atomically by ``complete_task`` after

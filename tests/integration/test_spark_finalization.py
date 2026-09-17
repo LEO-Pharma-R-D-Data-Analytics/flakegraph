@@ -63,6 +63,9 @@ pytestmark = pytest.mark.skipif(
     not _spark_runtime_available(),
     reason="the distributed-spark extra and an installed Java 17+ runtime are required",
 )
+# The stage objects these tests write, named as the finalizer sees them: an
+# object's id is its file name without the media-type suffix.
+LINKED = frozenset({"prepared", "extracted"})
 
 
 def _assert_extraction_contract(extraction: dict[str, object]) -> None:
@@ -270,29 +273,9 @@ def test_spark_finalizer_writes_manifest_without_collecting_graph_tables(
         extracted.model_dump_json().encode(),
         "application/json",
     )
-    settings = Settings.load(
-        env={},
-        overrides={
-            "runtime": {"runtime": "kubernetes"},
-            "job": {"graph_id": graph_id},
-            "ocr": {"provider": "builtin_text"},
-            "llm": {"provider": "fake"},
-            "embedding": {"provider": "hash", "dimension": 8},
-            "writer": {"provider": "local_artifacts", "output_path": str(tmp_path / "out")},
-            "cache": {"provider": "none"},
-            "distributed": {
-                "artifact_uri": root.as_uri(),
-                "finalization_engine": "spark",
-                "spark_master": "local[2]",
-                "spark_executor_instances": 2,
-                "spark_executor_cores": 1,
-                "spark_executor_memory": "1g",
-            },
-        },
-    )
-
+    settings = _settings(tmp_path, root, graph_id)
     manifest = SparkGraphFinalizer(settings).finalize(
-        SparkFinalizationRequest(run_id=run_id, graph_id=graph_id, attempt=1)
+        SparkFinalizationRequest(run_id=run_id, graph_id=graph_id, attempt=1, artifact_ids=LINKED)
     )
     batch = GraphDatasetReader(store).read(manifest)
 
@@ -342,6 +325,52 @@ def test_spark_finalizer_writes_manifest_without_collecting_graph_tables(
         assert chunk.content[local_start:local_end] == evidence.quote
 
 
+def test_spark_finalizer_reads_only_the_objects_a_succeeded_task_linked(tmp_path: Path) -> None:
+    """An attempt that wrote its shard and then lost its lease leaves an orphan behind.
+
+    Executors read whole prefixes, and the retry does not overwrite the orphan:
+    its shard hashes differently. Without the id filter every chunk of that
+    document would appear twice.
+    """
+
+    root = tmp_path / "artifacts"
+    store = LocalBlobStore(root.as_uri())
+    store.initialize()
+    prepared = PreparedDocumentShard(
+        file_ids=["file-1"],
+        files_seen=1,
+        documents_processed=1,
+        document_rows=[{"id": "document-1", "graph_id": "graph"}],
+        chunks=[_chunk("chunk-1", "file-1", "plain lowercase text")],
+    )
+    orphan = prepared.model_copy(
+        update={"chunks": [_chunk("chunk-1", "file-1", "plain lowercase text, seen again")]}
+    )
+    for name, shard in (("prepared", prepared), ("lost-lease", orphan)):
+        store.put(
+            f"run/prepared_document/{name}.json",
+            shard.model_dump_json().encode(),
+            "application/json",
+        )
+    for name, shard in (("extracted", prepared), ("lost-lease", orphan)):
+        extracted = ExtractedDocumentShard(
+            prepared=shard, observations=ExtractionObservations(chunk_count=1, window_count=1)
+        )
+        store.put(
+            f"run/extracted_document/{name}.json",
+            extracted.model_dump_json().encode(),
+            "application/json",
+        )
+
+    manifest = SparkGraphFinalizer(_settings(tmp_path, root, "graph")).finalize(
+        SparkFinalizationRequest(run_id="run", graph_id="graph", attempt=2, artifact_ids=LINKED)
+    )
+    batch = GraphDatasetReader(store).read(manifest)
+
+    assert manifest.tables["chunks"].row_count == 1
+    assert [chunk.content for chunk in batch.chunks] == ["plain lowercase text"]
+
+
 def test_spark_finalizer_publishes_schema_correct_empty_graph(tmp_path: Path) -> None:
     """A corpus with no accepted mentions must still publish every logical table."""
 
@@ -369,32 +398,10 @@ def test_spark_finalizer_publishes_schema_correct_empty_graph(tmp_path: Path) ->
         extracted.model_dump_json().encode(),
         "application/json",
     )
-    settings = Settings.load(
-        env={},
-        overrides={
-            "runtime": {"runtime": "kubernetes"},
-            "job": {"graph_id": "empty-graph"},
-            "ocr": {"provider": "builtin_text"},
-            "llm": {"provider": "fake"},
-            "embedding": {"provider": "hash", "dimension": 8},
-            "writer": {
-                "provider": "local_artifacts",
-                "output_path": str(tmp_path / "out"),
-            },
-            "cache": {"provider": "none"},
-            "distributed": {
-                "artifact_uri": root.as_uri(),
-                "finalization_engine": "spark",
-                "spark_master": "local[2]",
-                "spark_executor_instances": 2,
-                "spark_executor_cores": 1,
-                "spark_executor_memory": "1g",
-            },
-        },
-    )
-
-    manifest = SparkGraphFinalizer(settings).finalize(
-        SparkFinalizationRequest(run_id="empty-run", graph_id="empty-graph", attempt=1)
+    manifest = SparkGraphFinalizer(_settings(tmp_path, root, "empty-graph")).finalize(
+        SparkFinalizationRequest(
+            run_id="empty-run", graph_id="empty-graph", attempt=1, artifact_ids=LINKED
+        )
     )
     batch = GraphDatasetReader(store).read(manifest)
 
@@ -415,6 +422,31 @@ def test_spark_finalizer_publishes_schema_correct_empty_graph(tmp_path: Path) ->
     assert manifest.metrics["input_entity_mentions"] == 0
     assert batch.nodes == []
     assert batch.edges == []
+
+
+def _settings(tmp_path: Path, root: Path, graph_id: str) -> Settings:
+    """Configure a local two-executor Spark finalization over ``root``."""
+
+    return Settings.load(
+        env={},
+        overrides={
+            "runtime": {"runtime": "kubernetes"},
+            "job": {"graph_id": graph_id},
+            "ocr": {"provider": "builtin_text"},
+            "llm": {"provider": "fake"},
+            "embedding": {"provider": "hash", "dimension": 8},
+            "writer": {"provider": "local_artifacts", "output_path": str(tmp_path / "out")},
+            "cache": {"provider": "none"},
+            "distributed": {
+                "artifact_uri": root.as_uri(),
+                "finalization_engine": "spark",
+                "spark_master": "local[2]",
+                "spark_executor_instances": 2,
+                "spark_executor_cores": 1,
+                "spark_executor_memory": "1g",
+            },
+        },
+    )
 
 
 def _chunk(

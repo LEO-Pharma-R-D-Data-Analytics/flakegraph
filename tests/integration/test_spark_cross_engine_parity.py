@@ -113,6 +113,7 @@ pytestmark = pytest.mark.skipif(
     not _spark_runtime_available(),
     reason="the distributed-spark extra and an installed Java 17+ runtime are required",
 )
+LINKED = frozenset({"prepared", "extracted"})
 
 
 @pytest.fixture(scope="module")
@@ -343,7 +344,7 @@ def test_spark_edges_sum_observation_weight_and_reject_self_loops(
     )
 
     manifest = SparkGraphFinalizer(settings).finalize(
-        SparkFinalizationRequest(run_id=run_id, graph_id=_GRAPH_ID, attempt=1)
+        SparkFinalizationRequest(run_id=run_id, graph_id=_GRAPH_ID, attempt=1, artifact_ids=LINKED)
     )
     batch = GraphDatasetReader(store).read(manifest)
 

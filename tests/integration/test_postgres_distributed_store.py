@@ -64,7 +64,6 @@ class _RecordingBlobStore:
         return self.objects[uri]
 
 
-
 @pytest.fixture
 def isolated_postgres_dsn() -> Iterator[str]:
     """Create one private schema per test so queued work cannot leak between runs."""
@@ -183,6 +182,34 @@ def test_postgres_preserves_distinct_source_identities_with_identical_bytes(
 
     assert first.id != second.id
     assert store.get(first.id).payload == store.get(second.id).payload
+
+
+def test_a_runs_artifacts_are_the_ones_a_succeeded_task_linked(
+    isolated_postgres_dsn: str,
+) -> None:
+    """An attempt that wrote its output and then lost its lease leaves an orphan.
+
+    The retry's output hashes differently, so both objects exist under the
+    run. Finalization must see the linked one alone.
+    """
+
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    store.create_run(_run(run_id))
+    store.add_tasks(run_id, [_task(run_id, "prepare", TaskStage.PREPARE_DOCUMENT, "file-1")])
+    store.activate_run(run_id)
+
+    orphan = store.put(run_id, ArtifactKind.PREPARED_DOCUMENT, b"attempt 1", "application/json")
+    claim = store.claim_task("worker", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
+    assert claim is not None
+    linked = store.put(run_id, ArtifactKind.PREPARED_DOCUMENT, b"attempt 2", "application/json")
+    store.complete_task(claim.task.id, claim.worker_id, [linked.id])
+
+    assert orphan.id != linked.id
+    assert store.get_run_artifact_ids(run_id, {ArtifactKind.PREPARED_DOCUMENT}) == [linked.id]
+    assert [
+        item.ref.id for item in store.get_run_artifacts(run_id, {ArtifactKind.PREPARED_DOCUMENT})
+    ] == [linked.id]
 
 
 def test_postgres_rejects_unknown_artifact_owner_before_external_upload(

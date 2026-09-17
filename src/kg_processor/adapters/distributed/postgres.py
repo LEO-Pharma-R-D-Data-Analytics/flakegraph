@@ -1858,19 +1858,45 @@ class PostgresDistributedStore:
     ) -> list[StoredArtifact]:
         """Discover selected stage outputs without encoding them as scheduling edges."""
 
+        return self.get_many(self.get_run_artifact_ids(run_id, kinds))
+
+    def get_run_artifact_ids(
+        self,
+        run_id: str,
+        kinds: set[ArtifactKind],
+    ) -> list[str]:
+        """Return the ids of a run's stage outputs, linked from a task that succeeded.
+
+        Artifacts are content-addressed and written before the task that made
+        them completes, so an attempt that lost its lease after writing leaves
+        an object behind, and the retry writes another. Only the one the
+        succeeding attempt handed to ``complete_task`` is the stage's output;
+        the rest are orphans that would otherwise be read alongside it.
+        """
+
         if not kinds:
             return []
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT id
-                FROM flakegraph_artifact
-                WHERE run_id = %s AND kind = ANY(%s)
-                ORDER BY created_at, id
+                SELECT artifact.id
+                FROM flakegraph_artifact AS artifact
+                WHERE artifact.run_id = %s AND artifact.kind = ANY(%s)
+                  AND EXISTS (
+                      SELECT 1
+                      FROM flakegraph_task_output AS output
+                      JOIN flakegraph_task AS task ON task.id = output.task_id
+                      WHERE output.artifact_id = artifact.id AND task.status = %s
+                  )
+                ORDER BY artifact.created_at, artifact.id
                 """,
-                (run_id, [kind.value for kind in sorted(kinds, key=str)]),
+                (
+                    run_id,
+                    [kind.value for kind in sorted(kinds, key=str)],
+                    TaskStatus.SUCCEEDED.value,
+                ),
             ).fetchall()
-        return self.get_many([str(row["id"]) for row in rows])
+        return [str(row["id"]) for row in rows]
 
     def _load_artifact_row(self, row: dict[str, Any]) -> StoredArtifact:
         """Decode and verify one metadata row after its database lookup."""
