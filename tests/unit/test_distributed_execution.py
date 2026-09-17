@@ -72,6 +72,7 @@ class MemoryDistributedStore:
         self.failed: list[tuple[str, str, dict[str, Any], timedelta]] = []
         self.heartbeats: list[tuple[str, str, timedelta]] = []
         self.progress_updates: list[tuple[str, str, TaskProgress]] = []
+        self.served_configurations: dict[TaskStage, str] = {}
         self.initial_task_streams = 0
 
     def initialize(self) -> None:
@@ -226,6 +227,12 @@ class MemoryDistributedStore:
                 }
             )
         return lease
+
+    def record_served_configuration(self, stages: set[TaskStage], config_digest: str) -> None:
+        """Remember the fleet's digest per stage so worker tests can see what it declared."""
+
+        for stage in stages:
+            self.served_configurations[stage] = config_digest
 
     def heartbeat(self, task_id: str, worker_id: str, lease_duration: timedelta) -> None:
         self.heartbeats.append((task_id, worker_id, lease_duration))

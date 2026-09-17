@@ -1596,7 +1596,7 @@ _FLEET_OCR_SECTION = {
 class _FleetOcrBackend:
     """One backend that answers with a deployed document plane's OCR routing."""
 
-    def fleet_ocr_options(self) -> dict[str, object]:
+    def fleet_ocr_options(self) -> Mapping[str, object]:
         """Return the routing plus the endpoint read from the worker contract."""
 
         return {

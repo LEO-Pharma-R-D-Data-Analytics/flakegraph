@@ -64,6 +64,15 @@ def _initialize(dsn: str) -> None:
     PostgresDistributedStore(dsn).initialize()
 
 
+def _let_every_heartbeat_lapse(dsn: str) -> None:
+    """Age every request's heartbeat past the sweep threshold, as a dead shim would."""
+
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(
+            "UPDATE flakegraph_ocr_request SET heartbeat_at = CURRENT_TIMESTAMP - interval '1 hour'"
+        )
+
+
 def test_the_queue_table_ships_with_the_coordination_schema(
     isolated_postgres_dsn: str,
 ) -> None:
@@ -220,10 +229,7 @@ def test_a_dead_replicas_rows_are_reclaimed(isolated_postgres_dsn: str) -> None:
 
     asyncio.run(_with_queue(isolated_postgres_dsn, "shim-dead", body))
 
-    with psycopg.connect(isolated_postgres_dsn, autocommit=True) as connection:
-        connection.execute(
-            "UPDATE flakegraph_ocr_request SET heartbeat_at = CURRENT_TIMESTAMP - interval '1 hour'"
-        )
+    _let_every_heartbeat_lapse(isolated_postgres_dsn)
 
     async def survivor(queue: OcrQueue) -> str | None:
         await queue.enqueue("live", 100, "batch")
@@ -245,10 +251,7 @@ def test_a_swept_row_is_put_back_by_the_shim_that_still_owns_it(
 
     asyncio.run(_with_queue(isolated_postgres_dsn, "shim-quiet", dispatch))
 
-    with psycopg.connect(isolated_postgres_dsn, autocommit=True) as connection:
-        connection.execute(
-            "UPDATE flakegraph_ocr_request SET heartbeat_at = CURRENT_TIMESTAMP - interval '1 hour'"
-        )
+    _let_every_heartbeat_lapse(isolated_postgres_dsn)
 
     async def sweep(queue: OcrQueue) -> str | None:
         return await queue.try_admit("nothing-waiting", ONE, 1)

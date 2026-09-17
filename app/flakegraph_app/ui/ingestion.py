@@ -1243,7 +1243,7 @@ def _fleet_models(backend: ControlPlaneBackend) -> dict[str, str]:
 
 def _with_fleet_ocr_routing(
     selection: ProviderSelection,
-    backend: ControlPlaneBackend,
+    backend: object,
     default_provider: str,
 ) -> ProviderSelection:
     """Carry the fleet's own OCR routing into a run that kept the offered provider.
@@ -1251,7 +1251,9 @@ def _with_fleet_ocr_routing(
     An operator who chose a different provider has said what they want, and their
     choice is reported by preflight rather than silently rewritten here. A backend
     with no fleet to read leaves the base profile's routing in place, which is
-    what a local run should use.
+    what a local run should use. Only the Kubernetes runtime can read a fleet, so
+    the routing is an optional capability looked up on whatever backend this is
+    handed rather than a member of the control-plane port.
     """
 
     if selection.provider != default_provider:

@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
+from typing import BinaryIO
 from uuid import uuid4
 
 import psycopg
@@ -62,6 +63,11 @@ class _RecordingBlobStore:
         """Return bytes for PostgreSQL artifact integrity checks."""
 
         return self.objects[uri]
+
+    def download_to(self, uri: str, destination: BinaryIO) -> None:
+        """Write the retained bytes so streaming readers see the same object."""
+
+        destination.write(self.objects[uri])
 
 
 @pytest.fixture

@@ -384,13 +384,15 @@ def test_the_replicas_offered_follow_the_pool_as_it_scales() -> None:
     async def resolver() -> tuple[str, ...]:
         return replicas[0]
 
+    def refreshed_endpoints(pool: UpstreamPool) -> tuple[str, ...]:
+        asyncio.run(pool.refresh())
+        return pool.endpoints
+
     pool = UpstreamPool("mineru.invalid", 8080, 8, resolver=resolver)
-    asyncio.run(pool.refresh())
-    assert pool.endpoints == ("10.0.0.1",)
+    assert refreshed_endpoints(pool) == ("10.0.0.1",)
 
     replicas[0] = ("10.0.0.1", "10.0.0.2", "10.0.0.3")
-    asyncio.run(pool.refresh())
-    assert pool.endpoints == ("10.0.0.1", "10.0.0.2", "10.0.0.3")
+    assert refreshed_endpoints(pool) == ("10.0.0.1", "10.0.0.2", "10.0.0.3")
 
 
 def test_an_ipv6_replica_is_addressed_with_brackets() -> None:

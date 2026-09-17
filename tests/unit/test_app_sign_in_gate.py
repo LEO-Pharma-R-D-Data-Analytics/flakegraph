@@ -243,5 +243,7 @@ def test_the_gate_is_refused_without_the_policy_that_makes_it_sound() -> None:
     assert one(rendered, "NetworkPolicy", f"{FULLNAME}-app")
 
 
-def _load_chart_values() -> dict:
-    return yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
+def _load_chart_values() -> dict[str, Any]:
+    values = yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
+    assert isinstance(values, dict)
+    return values
