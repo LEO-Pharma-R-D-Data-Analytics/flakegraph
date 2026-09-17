@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from re import fullmatch
 from typing import Any
 
 # Measured against this deployment's Cortex endpoint by sweeping concurrency for
@@ -16,6 +17,13 @@ from typing import Any
 # at once still share the account's budget without crossing into collapse; the
 # ceiling is the provider's own per-account, per-model limit, not the machine.
 DEFAULT_PROVIDER_PARALLELISM = 12
+
+
+def is_safe_id(value: str) -> bool:
+    """Keep run and graph identifiers valid as file names, run keys and labels."""
+
+    return fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is not None
+
 
 # Distributed tasks are created dynamically, so database result order is not a
 # reliable presentation order. Keep the execution contract in one shared place

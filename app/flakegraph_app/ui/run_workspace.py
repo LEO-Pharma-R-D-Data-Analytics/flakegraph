@@ -449,11 +449,9 @@ def _requires_status_refresh(status: str) -> bool:
     return status.lower() not in SUCCESS_STATUSES
 
 
-def _cache_graph_dataset(cache: object, key: str, dataset: object) -> None:
+def _cache_graph_dataset(cache: dict[str, object], key: str, dataset: object) -> None:
     """Store one graph while bounding the per-browser session memory footprint."""
 
-    if not isinstance(cache, dict):
-        return
     cache.pop(key, None)
     cache[key] = dataset
     while len(cache) > _RUN_GRAPH_CACHE_LIMIT:
@@ -504,7 +502,7 @@ def _render_sharing(backend: ControlPlaneBackend, graph_id: str) -> None:
                     st.rerun()
         elif owner is not None:
             st.caption("Not shared with anyone.")
-        if owner is None or viewer.user_name != owner.upper():
+        if not owns:
             return
         with st.form(f"share_{graph_id}"):
             fields = st.columns([1, 3, 1], vertical_alignment="bottom")

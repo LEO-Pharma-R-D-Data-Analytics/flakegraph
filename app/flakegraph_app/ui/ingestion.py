@@ -33,6 +33,7 @@ from flakegraph_app.models import (
     SnowflakeOutput,
     SourceKind,
     StorageKind,
+    is_safe_id,
 )
 from flakegraph_app.providers import (
     CORTEX_EMBEDDING_MODELS_BY_WIDTH,
@@ -201,7 +202,7 @@ def _request_controls(
         key="ingest_graph_id",
         help="Stable name of the knowledge graph produced by this run.",
     )
-    if not _safe_id(job_id) or not _safe_id(graph_id):
+    if not is_safe_id(job_id) or not is_safe_id(graph_id):
         st.error("Run and graph IDs may contain letters, numbers, dots, underscores, and hyphens.")
         return None
 
@@ -210,7 +211,7 @@ def _request_controls(
     if source is None:
         return None
 
-    default_profile = _default_profile(runtime, repository_root)
+    default_profile = _default_profile(repository_root)
     st.subheader("Processing")
     provider_columns = st.columns(3)
     defaults = _provider_defaults(runtime, default_profile)
@@ -344,7 +345,7 @@ _QUALIFIED_STAGE_PARTS = 3
 def _snowflake_runtime_controls(
     runtime: RuntimeMode,
     profile: Path,
-    backend: ControlPlaneBackend | None = None,
+    backend: ControlPlaneBackend,
 ) -> dict[str, str]:
     """Collect the SPCS objects required to turn a queued run into a job service.
 
@@ -439,7 +440,7 @@ def _output_controls(
     graph_id: str,
     job_id: str,
     profile: Path,
-    backend: ControlPlaneBackend | None = None,
+    backend: ControlPlaneBackend,
 ) -> OutputDestination | None:
     """Render a runtime-independent durable graph destination.
 
@@ -925,7 +926,7 @@ def _upload_signature(uploads: list[Any]) -> tuple[tuple[str, int, str], ...]:
     )
 
 
-def _provider_defaults(runtime: RuntimeMode, profile: Path | None = None) -> dict[str, str]:
+def _provider_defaults(runtime: RuntimeMode, profile: Path) -> dict[str, str]:
     """Choose defaults that match the active runtime's reviewed base profile."""
 
     if runtime == RuntimeMode.SNOWFLAKE:
@@ -935,7 +936,7 @@ def _provider_defaults(runtime: RuntimeMode, profile: Path | None = None) -> dic
             "embedding": "snowflake_cortex",
         }
     if runtime == RuntimeMode.KUBERNETES:
-        configured = load_base_config(profile) if profile and profile.is_file() else {}
+        configured = load_base_config(profile) if profile.is_file() else {}
         return {
             "ocr": _configured_provider(configured, "ocr", "fallback"),
             "llm": _configured_provider(configured, "llm", "vllm_local"),
@@ -961,7 +962,7 @@ def _configured_provider(
     return str(value["provider"])
 
 
-def _default_profile(runtime: RuntimeMode, root: Path) -> Path:
+def _default_profile(root: Path) -> Path:
     """Return the domain-neutral quality profile shared by every app runtime.
 
     The ingestion form overlays runtime-specific providers and destinations, so
@@ -969,14 +970,7 @@ def _default_profile(runtime: RuntimeMode, root: Path) -> Path:
     ontology, or relaxed quality gate into an unrelated user corpus.
     """
 
-    _ = runtime
     return root / "configs" / "app-defaults.yaml"
-
-
-def _safe_id(value: str) -> bool:
-    """Keep identifiers valid as file names, run keys, and operator labels."""
-
-    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value))
 
 
 def _default_run_id(

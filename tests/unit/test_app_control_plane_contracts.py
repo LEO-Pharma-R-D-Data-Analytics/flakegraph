@@ -634,8 +634,7 @@ def test_an_embedding_width_the_graph_tables_cannot_store_stops_preflight(
     result = SnowflakeBackend(session).preflight(request)
 
     assert result["ok"] is False
-    checks = {str(item["name"]): bool(item["ok"]) for item in cast(Any, result["checks"])}
-    assert checks["embedding_dimension"] is False
+    assert "Embedding dimension fits the graph tables" not in cast(Any, result["checks"])
     errors = cast(Any, result["errors"])
     assert any("1024" in error and "768" in error for error in errors)
     assert any(statement.startswith("SHOW COLUMNS") for statement in session.statements)
@@ -1599,9 +1598,9 @@ class _FleetOcrBackend:
     def fleet_ocr_options(self) -> Mapping[str, object]:
         """Return the routing plus the endpoint read from the worker contract."""
 
-        return {
-            key: value for key, value in _FLEET_OCR_SECTION.items() if key != "provider"
-        } | {"mineru_api_url": "http://flakegraph-flakegraph-ocr:8080"}
+        return {key: value for key, value in _FLEET_OCR_SECTION.items() if key != "provider"} | {
+            "mineru_api_url": "http://flakegraph-flakegraph-ocr:8080"
+        }
 
 
 def test_a_fleet_submission_carries_the_deployed_parsing_route(tmp_path: Path) -> None:

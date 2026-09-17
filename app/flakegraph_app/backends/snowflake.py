@@ -201,7 +201,7 @@ class SnowflakeBackend:
         """Return schemas, scoped to a database when one is given."""
 
         target = database.strip()
-        if target and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", target):
+        if target and not _SERVICE_NAME_PATTERN.fullmatch(target):
             return []
         return self._show_names(f"SHOW SCHEMAS IN DATABASE {target}" if target else "SHOW SCHEMAS")
 
@@ -234,7 +234,7 @@ class SnowflakeBackend:
         """
 
         name = pool.strip()
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", name):
+        if not _SERVICE_NAME_PATTERN.fullmatch(name):
             return {}
         try:
             pools = self.session.sql(f"SHOW COMPUTE POOLS LIKE '{name}'").collect()
@@ -293,7 +293,7 @@ class SnowflakeBackend:
         """
 
         target = repository.strip()
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*){0,2}", target):
+        if not _SAFE_STAGE_RE.fullmatch(target):
             return []
         try:
             rows = self.session.sql(f"SHOW IMAGES IN IMAGE REPOSITORY {target}").collect()
@@ -417,16 +417,12 @@ class SnowflakeBackend:
             self.session.sql(f"LIST {launch.spec_stage}").limit(1).collect()
         except Exception as exc:
             errors.append(f"SPCS launch configuration is not ready: {exc}")
-        return {
-            "ok": not errors,
-            "runtime": "snowflake",
-            "checks": [
-                {"name": "canonical_tables", "ok": not (required - visible)},
-                {"name": "embedding_dimension", "ok": not mismatched},
-                {"name": "active_session", "ok": True},
-            ],
-            "errors": errors,
-        }
+        checks = ["Active Snowflake session"]
+        if not (required - visible):
+            checks.append("Queue and graph tables are visible")
+        if not mismatched:
+            checks.append("Embedding dimension fits the graph tables")
+        return {"ok": not errors, "checks": checks, "errors": errors}
 
     def graph_embedding_width(self) -> int | None:
         """Return the width the graph tables store, when they agree on one.

@@ -166,15 +166,13 @@ def test_app_and_processing_core_support_the_same_file_types() -> None:
     assert APP_SUPPORTED_SUFFIXES == CORE_SUPPORTED_SUFFIXES
 
 
-def test_app_uses_one_domain_neutral_base_profile_for_every_runtime() -> None:
-    """Prevent an app runtime from silently inheriting a benchmark corpus policy."""
+def test_the_app_base_profile_is_domain_neutral() -> None:
+    """Prevent the app from silently inheriting a benchmark corpus policy."""
 
-    expected = _ROOT / "configs" / "app-defaults.yaml"
-    profiles = {_default_profile(runtime, _ROOT) for runtime in RuntimeMode}
-    config = yaml.safe_load(expected.read_text(encoding="utf-8"))
-    resolved = Settings.load(expected, env={})
+    profile = _default_profile(_ROOT)
+    config = yaml.safe_load(profile.read_text(encoding="utf-8"))
+    resolved = Settings.load(profile, env={})
 
-    assert profiles == {expected}
     assert "job" not in config
     assert "graph" not in config
     assert config["files"]["input_path"] == "data"
@@ -1583,6 +1581,7 @@ def test_kubernetes_node_inventory_combines_hardware_metrics_and_model_placement
                 "memory_percent": "33%",
             }
         },
+        {},
     )
 
     assert node.ready

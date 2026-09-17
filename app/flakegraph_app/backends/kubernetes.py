@@ -40,6 +40,7 @@ from flakegraph_app.models import (
     StageProgress,
     StorageKind,
     WorkloadStatus,
+    is_safe_id,
 )
 from flakegraph_app.run_catalog import (
     graph_name,
@@ -797,7 +798,7 @@ def _distributed_snapshot(payload: Mapping[str, Any], config_path: Path) -> RunS
 def _validated_run_id(value: str) -> str:
     """Reject path traversal and platform-hostile durable run identifiers."""
 
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
+    if not is_safe_id(value):
         raise ValueError("run ID must be a safe 1-128 character identifier")
     return value
 
@@ -1287,7 +1288,7 @@ def _node_status(
     node: Mapping[str, Any],
     workloads: Sequence[WorkloadStatus],
     metrics: Mapping[str, Mapping[str, Any]],
-    gpu_metrics: Mapping[str, str] | None = None,
+    gpu_metrics: Mapping[str, str],
 ) -> NodeStatus:
     """Combine one Kubernetes node with capacity, usage, and pod placement data.
 
@@ -1320,7 +1321,7 @@ def _node_status(
             "nvidia.com/gpu.family",
             "nvidia.com/gpu.machine",
         ),
-        gpu_percent=(gpu_metrics or {}).get(name),
+        gpu_percent=gpu_metrics.get(name),
         cpu_capacity=_optional_string(capacity.get("cpu")),
         memory_capacity=_optional_string(capacity.get("memory")),
         cpu_usage=_optional_string(usage.get("cpu")),
