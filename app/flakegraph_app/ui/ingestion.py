@@ -873,8 +873,6 @@ def _source_controls(  # noqa: PLR0912, PLR0915 - each branch is one source-spec
         )
     normalized = dict(source)
     normalized.pop("kind", None)
-    if source_kind == SourceKind.LOCAL:
-        normalized = {"path": source["path"]}
     return source_kind, normalized
 
 

@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import yaml
-from flakegraph_app.backends.local import LocalBackend, _last_json_object, _storage_kind
+from flakegraph_app.backends.local import LocalBackend, _bounded, _last_json_object, _storage_kind
 from flakegraph_app.cluster_catalog import ClusterTarget, read_catalog
 from flakegraph_app.configuration import (
     build_run_config,
@@ -135,11 +135,6 @@ class KubernetesBackend(LocalBackend):
             "recover",
             "retry",
         }
-
-    def graph_embedding_width(self) -> int | None:
-        """Report no fixed width: this destination stores vectors as written."""
-
-        return None
 
     def fleet_profile(self) -> Mapping[str, Any]:
         """Return the processing profile the deployed workers actually mount.
@@ -883,8 +878,6 @@ def _recover_kubernetes_workers(
     deterministic failures such as a missing service account or image pull error
     are surfaced for operator correction instead of entering a restart loop.
     """
-    namespace = _validated_fleet_namespace(namespace, namespace)
-
     deployments = _kubectl_json(
         target=target,
         arguments=[
@@ -1867,12 +1860,9 @@ def _command_failure_message(stderr: str, stdout: str) -> str:
 def _bounded_reason(message: str) -> str:
     """Keep one cause readable inside a sidebar notice."""
 
-    collapsed = " ".join(message.split())
-    if not collapsed:
-        return "the fleet coordination store could not be reached"
-    if len(collapsed) <= _STALE_HISTORY_REASON_LIMIT:
-        return collapsed
-    return f"{collapsed[: _STALE_HISTORY_REASON_LIMIT - 1].rstrip()}…"
+    return _bounded(message, _STALE_HISTORY_REASON_LIMIT) or (
+        "the fleet coordination store could not be reached"
+    )
 
 
 @contextmanager

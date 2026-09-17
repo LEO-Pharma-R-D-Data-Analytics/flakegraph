@@ -1662,11 +1662,4 @@ def _variant_value(row: Any, key: str) -> dict[str, Any]:
     """Normalize a Snowpark VARIANT cell into a dictionary."""
 
     values = row.as_dict() if hasattr(row, "as_dict") else dict(row)
-    value = values.get(key) or values.get(key.lower()) or {}
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return dict(value) if isinstance(value, Mapping) else {}
+    return dict(_variant_mapping(values.get(key) or values.get(key.lower())))

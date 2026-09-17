@@ -417,11 +417,11 @@ def format_bytes(value: int) -> str:
 
     amount = float(value)
     units: Sequence[str] = ("B", "KB", "MB", "GB", "TB")
-    for unit in units:
-        if amount < _BYTES_PER_UNIT or unit == units[-1]:
+    for unit in units[:-1]:
+        if amount < _BYTES_PER_UNIT:
             return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
         amount /= _BYTES_PER_UNIT
-    return f"{value} B"
+    return f"{amount:.1f} {units[-1]}"
 
 
 def format_relative_time(value: str | None, *, now: datetime | None = None) -> str:
