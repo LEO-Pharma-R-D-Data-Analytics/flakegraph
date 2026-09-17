@@ -4,29 +4,27 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 from functools import cache
 from pathlib import Path
 from typing import Any
 
-import pytest
 import yaml
+from helm import API_VERSIONS as _API_VERSIONS
+from helm import CHART as _CHART
+from helm import FULLNAME as _FULLNAME
+from helm import NAMESPACE as _NAMESPACE
+from helm import RELEASE as _RELEASE
+from helm import helm as _helm
+from helm import one as _one
+from helm import render as _render
 
-_CHART = Path("deploy/helm/flakegraph")
 _VALUES = _CHART / "values.yaml"
 _SCHEMA = _CHART / "values.schema.json"
 _RULES_TEMPLATE = _CHART / "templates/monitoring-rules.yaml"
 _NETWORK_POLICY_TEMPLATE = _CHART / "templates/model-serving-networkpolicy.yaml"
 _POSTGRES_ADAPTER = Path("src/kg_processor/adapters/distributed/postgres.py")
 
-_RELEASE = "fg"
-_NAMESPACE = "fleet"
-_FULLNAME = f"{_RELEASE}-flakegraph"
-_API_VERSIONS = ",".join(
-    f"monitoring.coreos.com/v1/{kind}"
-    for kind in ("ServiceMonitor", "PodMonitor", "PrometheusRule")
-)
 # Everything the monitoring objects hang off: the database they read, the
 # planes they scrape, and the ingress they publish Grafana through.
 _ENABLED_SETTINGS = (
@@ -522,42 +520,6 @@ def _schema_columns() -> dict[str, set[str]]:
 
 def _gateway_config(rendered: list[dict[str, Any]]) -> str:
     return _one(rendered, "ConfigMap", f"{_FULLNAME}-litellm")["data"]["config.yaml"]
-
-
-def _one(rendered: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
-    """Return exactly one rendered object by kind and name."""
-
-    matches = [doc for doc in rendered if doc["kind"] == kind and doc["metadata"]["name"] == name]
-    assert len(matches) == 1, f"expected one {kind}/{name}, found {len(matches)}"
-    return matches[0]
-
-
-def _helm() -> str:
-    helm = shutil.which("helm")
-    if helm is None:
-        pytest.skip("helm is not installed; the rendered-chart contracts need it")
-    return helm
-
-
-@cache
-def _render(settings: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Render the chart offline, with the operator CRDs declared present."""
-
-    command = [
-        _helm(),
-        "template",
-        _RELEASE,
-        str(_CHART),
-        "--namespace",
-        _NAMESPACE,
-        "--api-versions",
-        _API_VERSIONS,
-    ]
-    for setting in settings:
-        command += ["--set", setting]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stderr
-    return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

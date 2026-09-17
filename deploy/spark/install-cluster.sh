@@ -142,16 +142,26 @@ step "Object storage"
 # replace with a managed endpoint when the fleet outgrows this machine.
 kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-if ! kubectl -n "$namespace" get secret flakegraph-artifacts >/dev/null 2>&1; then
+if kubectl -n "$namespace" get secret flakegraph-artifacts >/dev/null 2>&1; then
+  root_user="$(kubectl -n "$namespace" get secret flakegraph-artifacts -o jsonpath='{.data.rootUser}' | base64 -d)"
+  root_password="$(kubectl -n "$namespace" get secret flakegraph-artifacts -o jsonpath='{.data.rootPassword}' | base64 -d)"
+else
   # Generated once and stored only in the cluster. A checked-in default would be
   # the same password on every Spark LEO ever racks.
-  kubectl -n "$namespace" create secret generic flakegraph-artifacts \
-    --from-literal=rootUser=flakegraph \
-    --from-literal=rootPassword="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)" >/dev/null
+  root_user=flakegraph
+  root_password="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)"
   ok "generated object storage credentials"
 fi
-root_user="$(kubectl -n "$namespace" get secret flakegraph-artifacts -o jsonpath='{.data.rootUser}' | base64 -d)"
-root_password="$(kubectl -n "$namespace" get secret flakegraph-artifacts -o jsonpath='{.data.rootPassword}' | base64 -d)"
+# One secret serves both sides: MinIO's chart reads rootUser/rootPassword,
+# the FlakeGraph chart reads access-key-id/secret-access-key (the names
+# deploy/examples/k3s-spark-values.yaml relies on). Applied rather than
+# created so a secret written before the chart-side keys existed gains them.
+kubectl -n "$namespace" create secret generic flakegraph-artifacts \
+  --from-literal=rootUser="$root_user" \
+  --from-literal=rootPassword="$root_password" \
+  --from-literal=access-key-id="$root_user" \
+  --from-literal=secret-access-key="$root_password" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 helm upgrade --install minio minio/minio \
   --namespace "$namespace" \

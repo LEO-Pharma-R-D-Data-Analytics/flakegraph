@@ -114,7 +114,7 @@ window; model servers remain higher priority than both.
 ## Prerequisites
 
 - Kubernetes 1.34 or newer with reliable cross-node networking and DNS
-- KEDA 2.20.1
+- KEDA, at the version `deploy/spark/install-cluster.sh` pins
 - PostgreSQL 14 or newer
 - S3-compatible storage reachable by workers and Spark executors
 - Worker and Spark images for every node architecture
@@ -296,20 +296,12 @@ magnitude for PDF-heavy corpora.
 
 ## Configure And Install
 
-Keep site-specific values, endpoints, and Secret references outside Git under
-the ignored `deploy/private/` directory:
+KEDA is installed by `deploy/spark/install-cluster.sh`, which is the single
+place its version and settings are pinned. Keep site-specific values,
+endpoints, and Secret references outside Git under the ignored
+`deploy/private/` directory:
 
 ```bash
-helm repo add kedacore https://kedacore.github.io/charts
-helm upgrade --install keda kedacore/keda \
-  --namespace keda \
-  --create-namespace \
-  --version 2.20.1 \
-  --set operator.replicaCount=2 \
-  --set metricsServer.replicaCount=2 \
-  --set webhooks.replicaCount=2 \
-  --wait
-
 cp deploy/examples/k3s-spark-values.yaml deploy/private/fleet-values.yaml
 cp configs/app-defaults.yaml deploy/private/fleet-config.yaml
 

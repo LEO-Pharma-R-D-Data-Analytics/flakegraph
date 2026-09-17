@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from helm import CHART as _CHART
+from helm import FULLNAME as _FULLNAME
+from helm import one as _one
+from helm import render as _render
 
 from kg_processor.serving.sizing import (
     BYTES_PER_GIB,
@@ -16,7 +20,6 @@ from kg_processor.serving.sizing import (
     compute_sizing,
 )
 
-_CHART = Path("deploy/helm/flakegraph")
 _VALUES = _CHART / "values.yaml"
 _SCHEMA = _CHART / "values.schema.json"
 _MODEL_TEMPLATE = _CHART / "templates/model-serving.yaml"
@@ -564,33 +567,24 @@ def test_spark_workers_reserve_memory_for_python_provider_processes() -> None:
     assert "executorMemoryOverhead" in schema["properties"]["spark"]["required"]
 
 
-def test_schema_and_public_fleet_example_expose_local_model_serving() -> None:
-    """Keep strict values validation and the public multi-node example synchronized."""
+def test_the_public_fleet_example_renders_against_the_charts_own_schema() -> None:
+    """The example is the documented path onto a fleet, so it has to install."""
 
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-    example = _load_yaml(_PUBLIC_EXAMPLE)
+    rendered = _render(
+        ("modelServing.server.draftModelSeed.providedExternally=true",),
+        values=(_PUBLIC_EXAMPLE,),
+    )
 
-    assert "modelServing" in schema["required"]
-    assert "gateway" in schema["required"]
-    assert "documentParsing" in schema["required"]
-    assert schema["properties"]["modelServing"]["additionalProperties"] is False
-    assert example["modelServing"] == {
-        "enabled": True,
-        "replicas": 4,
-        "nodeSelector": {"flakegraph.io/node-class": "nvidia-spark"},
+    engines = _one(rendered, "StatefulSet", f"{_FULLNAME}-vllm")
+    assert engines["spec"]["replicas"] == 4
+    finalize = _one(rendered, "Deployment", f"{_FULLNAME}-finalize")
+    (worker,) = finalize["spec"]["template"]["spec"]["containers"]
+    env = {entry["name"]: entry for entry in worker["env"]}
+    assert env["KG_DISTRIBUTED_FINALIZATION_ENGINE"]["value"] == "spark"
+    assert env["KG_DISTRIBUTED_ARTIFACT_ACCESS_KEY_ID"]["valueFrom"]["secretKeyRef"] == {
+        "name": "flakegraph-artifacts",
+        "key": "access-key-id",
     }
-    assert example["gateway"]["placement"]["replicas"] == 2
-    assert example["documentParsing"]["mineru"]["replicas"] == 4
-    prepare = example["workers"]["prepare"]
-    assert prepare["replicas"] == 16
-    assert prepare["autoscaling"]["maxReplicas"] == 16
-    assert prepare["topologySpreadConstraints"][0]["maxSkew"] == 1
-    assert prepare["topologySpreadConstraints"][0]["matchLabelKeys"] == ["pod-template-hash"]
-    extract = example["workers"]["extract"]
-    assert extract["replicas"] == 16
-    assert extract["autoscaling"]["maxReplicas"] == 16
-    assert extract["topologySpreadConstraints"][0]["maxSkew"] == 1
-    assert extract["topologySpreadConstraints"][0]["matchLabelKeys"] == ["pod-template-hash"]
 
 
 def test_worker_pools_autoscale_from_dependency_aware_postgres_demand() -> None:
@@ -726,22 +720,6 @@ def test_scheduling_priorities_preserve_models_and_release_workers_for_spark() -
     assert values["terminationGracePeriodSeconds"] > 3600
 
 
-def test_public_fleet_example_enables_object_backed_spark_finalization() -> None:
-    """Keep the scalable data plane visible in the generic deployment example."""
-
-    example = _load_yaml(_PUBLIC_EXAMPLE)
-
-    assert example["artifactStorage"] == {
-        "uri": "s3://flakegraph-artifacts",
-        "endpointUrl": "https://object-storage.example.com",
-        "existingSecret": "flakegraph-artifacts",
-    }
-    assert example["spark"]["enabled"] is True
-    assert example["spark"]["executorInstances"] == 4
-    assert example["spark"]["executorMemoryOverhead"] == "8g"
-    assert example["spark"]["nodeSelector"] == {"flakegraph.io/node-class": "nvidia-spark"}
-
-
 def test_spark_role_allows_native_executor_creation_and_cleanup() -> None:
     """Permit Spark to remove executor collections when a driver terminates."""
 
@@ -781,7 +759,6 @@ def test_model_serving_documentation_is_consolidated_into_the_fleet_guide() -> N
     ]
     assert not forbidden, f"model-serving documentation must stay in the fleet guide: {forbidden}"
     assert "## Serving Plane" in fleet_guide
-    assert "KEDA 2.20.1" in fleet_guide
     assert "kind: ScaledObject" in _AUTOSCALING_TEMPLATE.read_text(encoding="utf-8")
     assert "autoscaling:" in fleet_guide
     assert "--set-file config.content=deploy/private/fleet-config.yaml" in fleet_guide

@@ -72,9 +72,6 @@ gateway:
 
 documentParsing:
   mineru:
-    image:
-      repository: registry.example.com/mineru-api
-      tag: "2.6.4"
     replicas: 4
     nodeSelector:
       flakegraph.io/node-class: nvidia-spark
