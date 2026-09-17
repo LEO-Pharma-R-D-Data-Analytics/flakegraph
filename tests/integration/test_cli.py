@@ -240,10 +240,11 @@ def test_cli_snowflake_ddl_rejects_non_positive_embedding_dimension() -> None:
     result = runner.invoke(app, ["snowflake", "ddl", "--embedding-dim", "0"])
 
     assert result.exit_code != 0
-    # Rich may style each segment of an option name separately when CI forces
-    # color output. Strip presentation codes so this assertion remains about
-    # the validation contract rather than terminal capabilities.
-    assert "--embedding-dim must be positive" in Text.from_ansi(result.output).plain
+    # The bound lives on the option, so typer states it. Rich may style each
+    # segment of an option name separately when CI forces color output; strip
+    # presentation codes so this assertion remains about the validation
+    # contract rather than terminal capabilities.
+    assert "'--embedding-dim': 0 is not in the range x>=1" in Text.from_ansi(result.output).plain
 
 
 def test_file_queue_worker_drains_claimed_batches(monkeypatch: pytest.MonkeyPatch) -> None:
