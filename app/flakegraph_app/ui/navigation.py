@@ -14,7 +14,6 @@ from flakegraph_app.models import (
     RuntimeMode,
     StorageKind,
 )
-from flakegraph_app.ui.cache_state import invalidate_run_history
 from flakegraph_app.ui.clusters import render_cluster_selector
 
 _HISTORY_PAGE_SIZE = 15
@@ -461,7 +460,6 @@ def _stored_row_counts(backend: ControlPlaneBackend, graph_id: str) -> dict[str,
 def _finish_removal(pending: RunSnapshot, selected_id: object) -> None:
     """Clear the confirmation and leave the reader somewhere that still exists."""
 
-    invalidate_run_history()
     if selected_id == pending.run_id:
         st.session_state["selected_run_id"] = None
         st.session_state["active_page"] = "new"
@@ -508,7 +506,6 @@ def _bulk_forget_dialog(
     ):
         failures = _forget_runs(backend, pending)
         removed_ids = {run.run_id for run in pending} - set(failures)
-        invalidate_run_history()
         for run_id in removed_ids:
             st.session_state.pop(_bulk_checkbox_key(runtime_key, run_id), None)
         if selected_id in removed_ids:

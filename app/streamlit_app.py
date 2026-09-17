@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import os
-import secrets
 from pathlib import Path
-from typing import Any, Protocol, cast
 
 import streamlit as st
 from flakegraph_app.backends import build_backend
@@ -16,11 +14,6 @@ from flakegraph_app.ui.authentication import (
     AuthenticationNotConfigured,
     render_sign_out,
     require_sign_in,
-)
-from flakegraph_app.ui.cache_state import (
-    FLEET_CACHE_GENERATION,
-    RUN_HISTORY_CACHE_GENERATION,
-    cache_generation,
 )
 from flakegraph_app.ui.navigation import render_run_navigation
 from flakegraph_app.ui.shared import concise_error
@@ -37,51 +30,6 @@ REPOSITORY_ROOT = (
 SIDEBAR_LOGO = APPLICATION_ROOT / "assets" / "flakegraph-logo.png"
 _DEFAULT_RUNTIME_ENV = "FLAKEGRAPH_APP_DEFAULT_RUNTIME"
 _REQUIRE_SIGN_IN_ENV = "FLAKEGRAPH_APP_REQUIRE_SIGN_IN"
-
-
-class _SessionState(Protocol):
-    """Minimal session-state contract needed to namespace shared cache entries."""
-
-    def get(self, key: str, default: Any = None, /) -> Any:
-        """Return a stored value or its default."""
-        ...
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        """Store one session-scoped value."""
-        ...
-
-
-def _cached_runs(
-    session_cache_token: str,
-    runtime_key: str,
-    generation: int,
-    limit: int,
-    *,
-    _backend: ControlPlaneBackend,
-) -> list[RunSnapshot]:
-    """Read durable run history, every time.
-
-    Deliberately uncached. Run state is the one thing on the page that changes
-    without the reader touching anything, and a run whose worker died looked
-    alive for as long as a cached answer survived. The saving was never worth
-    showing somebody a status that had stopped being true.
-    """
-
-    del session_cache_token, runtime_key, generation
-    return list(_backend.list_runs(limit=limit))
-
-
-def _cached_cluster(
-    session_cache_token: str,
-    namespace: str,
-    generation: int,
-    *,
-    _backend: ControlPlaneBackend,
-) -> ClusterSnapshot | None:
-    """Cache a Kubernetes inventory only within the requesting UI session."""
-
-    del session_cache_token, generation
-    return _backend.cluster(namespace)
 
 
 def _configured_default_runtime() -> RuntimeMode:
@@ -106,20 +54,14 @@ def _configured_default_runtime() -> RuntimeMode:
     )
 
 
-def _load_runs(
-    backend: ControlPlaneBackend,
-    runtime: RuntimeMode,
-) -> tuple[list[RunSnapshot], str | None]:
+def _load_runs(backend: ControlPlaneBackend) -> tuple[list[RunSnapshot], str | None]:
     """Return recent run history and a displayable error without blocking the app."""
 
+    # Deliberately uncached. Run state is the one thing on the page that changes
+    # without the reader touching anything, and a run whose worker died looked
+    # alive for as long as a cached answer survived.
     try:
-        runs = _cached_runs(
-            _session_cache_token(cast(_SessionState, st.session_state)),
-            runtime.value.lower(),
-            cache_generation(RUN_HISTORY_CACHE_GENERATION),
-            100,
-            _backend=backend,
-        )
+        runs = list(backend.list_runs(limit=100))
     except Exception as exc:
         return [], concise_error(exc)
     return runs, None
@@ -152,12 +94,7 @@ def _load_cluster(
             st.session_state.get(error_key),
         )
     try:
-        cluster = _cached_cluster(
-            _session_cache_token(cast(_SessionState, st.session_state)),
-            namespace,
-            cache_generation(FLEET_CACHE_GENERATION),
-            _backend=backend,
-        )
+        cluster = backend.cluster(namespace)
     except Exception as exc:
         error = str(exc)
         st.session_state[error_key] = error
@@ -213,18 +150,6 @@ def _render_run_page(backend: ControlPlaneBackend, selected_run: RunSnapshot) ->
     render_run_workspace(backend, selected_run)
 
 
-def _session_cache_token(state: _SessionState) -> str:
-    """Return one unguessable cache namespace that remains stable for a session."""
-
-    key = "_flakegraph_cache_session_token"
-    current = state.get(key)
-    if isinstance(current, str) and current:
-        return current
-    token = secrets.token_hex(16)
-    state[key] = token
-    return token
-
-
 def main() -> None:
     """Configure navigation once and delegate each view to a focused UI module."""
 
@@ -278,7 +203,7 @@ def main() -> None:
     except Exception as exc:
         st.error(str(exc))
         return
-    runs, run_list_error = _load_runs(backend, runtime)
+    runs, run_list_error = _load_runs(backend)
     listing_warning = str(getattr(backend, "listing_warning", "") or "")
     namespace, cluster, cluster_error = _load_cluster(backend, runtime)
     with st.sidebar:

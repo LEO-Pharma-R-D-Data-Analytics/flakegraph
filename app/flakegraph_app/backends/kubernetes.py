@@ -1506,14 +1506,11 @@ def _fleet_preflight(
             arguments=["get", "configmap", config_name, "-n", namespace, "-o", "json"],
         )
         deployed_profile = _load_deployed_profile(config_map)
-        profile_errors = _profile_mismatches(request, deployed_profile)
-        # The named comparisons above cover the fields an operator chooses in the
-        # form. The digest a worker claims by covers entire sections, so the
-        # effective configuration is compared too — otherwise a run differing
-        # only in a field the form never shows passes preflight and is never
-        # claimed.
-        with suppress(Exception):
-            profile_errors.extend(_semantic_mismatches(build_run_config(request), deployed_profile))
+        # The digest a worker claims by covers entire sections, so the effective
+        # configuration is compared rather than the fields the form shows —
+        # otherwise a run differing only in a field the form never shows passes
+        # preflight and is never claimed.
+        profile_errors = _semantic_mismatches(build_run_config(request), deployed_profile)
         # The ontology is part of the digest a worker claims by, so a run whose
         # ontology differs from the fleet's is never claimed by anything. It does
         # not fail: it sits queued forever with nothing on the page to say why,
@@ -2234,34 +2231,6 @@ def _semantic_mismatches(
     return mismatches
 
 
-def _profile_mismatches(
-    request: IngestionRequest,
-    deployed: Mapping[str, Any],
-) -> list[str]:
-    """Explain semantic provider differences between one run and homogeneous workers."""
-
-    comparisons = [
-        ("OCR provider", request.ocr.provider, _profile_value(deployed, "ocr", "provider")),
-        ("LLM provider", request.llm.provider, _profile_value(deployed, "llm", "provider")),
-        ("LLM model", request.llm.model, _profile_value(deployed, "llm", "model")),
-        (
-            "embedding provider",
-            request.embedding.provider,
-            _profile_value(deployed, "embedding", "provider"),
-        ),
-        (
-            "embedding model",
-            request.embedding.model,
-            _profile_value(deployed, "embedding", "model"),
-        ),
-    ]
-    return [
-        f"{label} does not match fleet workers: selected {selected!r}, deployed {actual!r}"
-        for label, selected, actual in comparisons
-        if selected and actual and not _environment_placeholder(actual) and selected != actual
-    ]
-
-
 def _ontology_mismatches(
     request: IngestionRequest,
     deployed: Mapping[str, Any],
@@ -2316,15 +2285,6 @@ def _ontology_mismatches(
             "so no worker can claim this run."
         ]
     return []
-
-
-def _profile_value(profile: Mapping[str, Any], section: str, key: str) -> str | None:
-    """Read one optional scalar from a deployed YAML profile."""
-
-    value = profile.get(section, {})
-    if not isinstance(value, Mapping) or value.get(key) in (None, ""):
-        return None
-    return str(value[key])
 
 
 def _loopback_endpoint(endpoint: str | None) -> bool:

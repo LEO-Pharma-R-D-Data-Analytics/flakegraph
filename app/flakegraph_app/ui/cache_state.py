@@ -1,42 +1,8 @@
-"""Small session-state signals for invalidating cached control-plane reads.
-
-Streamlit reruns the application script after most interactions. The UI caches
-read-only control-plane snapshots to keep those reruns fast, while these generation
-counters let write operations request an immediate refresh without coupling UI
-modules to the cache implementation in the application entry point.
-"""
+"""Process-wide caches for the account metadata every viewer sees alike."""
 
 from __future__ import annotations
 
 import streamlit as st
-
-FLEET_CACHE_GENERATION = "fleet_cache_generation"
-RUN_HISTORY_CACHE_GENERATION = "run_history_cache_generation"
-
-
-def cache_generation(key: str) -> int:
-    """Return the current non-negative generation for one cached data family."""
-
-    return int(st.session_state.get(key, 0))
-
-
-def invalidate_run_history() -> None:
-    """Make the next application rerun fetch fresh durable run history."""
-
-    _advance(RUN_HISTORY_CACHE_GENERATION)
-
-
-def invalidate_fleet_snapshot() -> None:
-    """Make the next fleet-page rerun query Kubernetes instead of reusing its cache."""
-
-    _advance(FLEET_CACHE_GENERATION)
-
-
-def _advance(key: str) -> None:
-    """Increment a cache generation using Streamlit's per-browser session state."""
-
-    st.session_state[key] = cache_generation(key) + 1
-
 
 # Account metadata: the databases, schemas, warehouses, roles, stages, compute
 # pools and image repositories the deployment can address. Streamlit in Snowflake

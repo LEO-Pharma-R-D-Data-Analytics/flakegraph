@@ -8,7 +8,6 @@ import pandas as pd
 import streamlit as st
 from flakegraph_app.backends.base import ControlPlaneBackend
 from flakegraph_app.models import ClusterSnapshot, NodeStatus
-from flakegraph_app.ui.cache_state import invalidate_fleet_snapshot
 from flakegraph_app.ui.shared import format_relative_time
 from flakegraph_app.ui.theme import page_heading
 
@@ -46,7 +45,6 @@ def render_fleet(
         width="stretch",
         help="Refresh nodes, workloads, and resource telemetry.",
     ):
-        invalidate_fleet_snapshot()
         st.rerun()
 
     if snapshot is None:

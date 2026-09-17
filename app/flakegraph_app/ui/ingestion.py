@@ -46,7 +46,6 @@ from flakegraph_app.ui.cache_state import (
     account_context,
     account_options,
     graph_embedding_width,
-    invalidate_run_history,
 )
 from flakegraph_app.ui.shared import (
     format_bytes,
@@ -174,7 +173,6 @@ def render_ingestion(
             except Exception as exc:
                 st.error(str(exc))
             else:
-                invalidate_run_history()
                 st.session_state["selected_run_id"] = snapshot.run_id
                 st.session_state["active_page"] = "run"
                 st.session_state["preflight"] = None

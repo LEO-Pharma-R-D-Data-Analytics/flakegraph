@@ -9,7 +9,6 @@ from pathlib import Path
 import streamlit as st
 from flakegraph_app.backends.base import ControlPlaneBackend
 from flakegraph_app.models import ARTIFACTS_UNAVAILABLE_STATUS, RunSnapshot
-from flakegraph_app.ui.cache_state import invalidate_run_history
 from flakegraph_app.ui.consumption import render_consumption
 from flakegraph_app.ui.graph_explorer import render_graph_dataset
 from flakegraph_app.ui.shared import concise_error, render_run_snapshot
@@ -213,7 +212,6 @@ def _render_active_run(
             except Exception as exc:
                 st.error(concise_error(exc))
             else:
-                invalidate_run_history()
                 st.rerun()
         if (
             status_available
@@ -305,7 +303,6 @@ def _render_terminal_run(
         except Exception as exc:
             st.error(f"Retry could not be started: {exc}")
         else:
-            invalidate_run_history()
             st.rerun()
 
 
@@ -442,7 +439,6 @@ def _render_graph_rename_form(
         except Exception as exc:
             st.error(str(exc))
         else:
-            invalidate_run_history()
             st.rerun()
 
 

@@ -1504,7 +1504,7 @@ def test_kubernetes_fleet_preflight_explains_profile_and_model_serving_mismatch(
     assert isinstance(result["errors"], list)
     assert result["ok"] is False
     assert (
-        "OCR provider does not match fleet workers: selected 'fallback', deployed 'builtin_text'"
+        "ocr.provider does not match fleet workers: selected 'fallback', deployed 'builtin_text'"
         in result["errors"]
     )
     assert (

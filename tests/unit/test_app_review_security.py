@@ -34,7 +34,6 @@ from flakegraph_app.ui.ingestion import (
     _synchronize_runtime_provider_state,
 )
 from flakegraph_app.ui.shared import _synchronize_provider_fields
-from streamlit_app import _session_cache_token
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -82,25 +81,6 @@ for name in (
     )
 
     assert result.returncode == 0, result.stderr
-
-
-def test_process_wide_cache_keys_are_namespaced_by_streamlit_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Prevent Streamlit's shared data cache from crossing user-session boundaries."""
-
-    values = iter(("a" * 32, "b" * 32))
-    monkeypatch.setattr("streamlit_app.secrets.token_hex", lambda _bytes: next(values))
-    first_state: dict[str, Any] = {}
-    second_state: dict[str, Any] = {}
-
-    first = _session_cache_token(first_state)
-    second = _session_cache_token(second_state)
-
-    assert first == "a" * 32
-    assert second == "b" * 32
-    assert first != second
-    assert _session_cache_token(first_state) == first
 
 
 def test_provider_switch_clears_stale_fields_and_seeds_new_neutral_defaults() -> None:
