@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
+from itertools import batched
 from pathlib import Path
 from time import sleep
 from typing import Any
@@ -36,7 +37,6 @@ from kg_processor.domain.documents import InputFile
 from kg_processor.domain.extraction import (
     EntityMention,
     ExtractionObservations,
-    ExtractionWindow,
     RelationObservation,
 )
 from kg_processor.domain.finalization import GraphDatasetManifest
@@ -423,8 +423,8 @@ class DistributedWorker:
         )
         return TaskExecution(
             output_artifact_ids=(ref.id,),
-            follow_up_tasks=(context_task,) if windows else (),
-            barrier_task_id=final_task_id if windows else None,
+            follow_up_tasks=(context_task,),
+            barrier_task_id=final_task_id,
         )
 
     def _extract_document_context(self, lease: TaskLease) -> TaskExecution:
@@ -476,7 +476,7 @@ class DistributedWorker:
             self.settings.graph.extraction_parallelism,
             _MAX_LOGICAL_WINDOWS_PER_TASK,
         )
-        for window_batch in _window_batches(windows, windows_per_task):
+        for window_batch in batched(windows, windows_per_task, strict=False):
             batch_id = stable_id("window_batch", *(window.id for window in window_batch))
             window_shard = ExtractionWindowShard(
                 file_ids=contextualized.file_ids,
@@ -543,13 +543,7 @@ class DistributedWorker:
         return TaskExecution(
             output_artifact_ids=(ref.id,),
             follow_up_tasks=tuple(follow_up_tasks),
-            barrier_task_id=stable_id(
-                "task",
-                lease.task.run_id,
-                TaskStage.FINALIZE_GRAPH.value,
-            )
-            if follow_up_tasks
-            else None,
+            barrier_task_id=stable_id("task", lease.task.run_id, TaskStage.FINALIZE_GRAPH.value),
         )
 
     def _extract_entity_window(self, lease: TaskLease) -> str:
@@ -891,16 +885,9 @@ class DistributedWorker:
             {ArtifactKind.EXTRACTED_DOCUMENT},
         )
         document_shards = [
-            ExtractedDocumentShard.model_validate_json(item.payload)
-            for item in inputs
-            if item.ref.kind == ArtifactKind.EXTRACTED_DOCUMENT
+            ExtractedDocumentShard.model_validate_json(item.payload) for item in inputs
         ]
         document_shards.sort(key=lambda shard: tuple(shard.prepared.file_ids))
-        unexpected = [
-            item.ref.id for item in inputs if item.ref.kind != ArtifactKind.EXTRACTED_DOCUMENT
-        ]
-        if unexpected:
-            raise ValueError(f"finalize_graph received unsupported artifacts: {unexpected}")
         if not document_shards:
             raise ValueError("finalize_graph requires at least one extracted document")
         report(finalization_progress("read_artifacts", completed=1, total=1))
@@ -931,13 +918,11 @@ class DistributedWorker:
     ) -> Callable[[TaskProgress], None]:
         """Return a best-effort reporter bound to the task's current lease owner."""
 
-        writer = self.task_store
-
         def report(progress: TaskProgress) -> None:
             """Persist progress without allowing observability failure to abort work."""
 
             try:
-                writer.report_task_progress(lease.task.id, self.worker_id, progress)
+                self.task_store.report_task_progress(lease.task.id, self.worker_id, progress)
             except Exception:
                 # Lease heartbeat remains authoritative for ownership and
                 # availability. A progress write is useful but non-critical.
@@ -957,7 +942,7 @@ class DistributedWorker:
             for dependency_id in sorted(lease.dependency_outputs)
             for artifact_id in lease.dependency_outputs[dependency_id]
         ]
-        artifacts = self._load_artifacts(artifact_ids)
+        artifacts = self.artifact_store.get_many(artifact_ids)
         unexpected = [item.ref.id for item in artifacts if item.ref.kind != expected_kind]
         if unexpected:
             raise ValueError(
@@ -973,11 +958,6 @@ class DistributedWorker:
             for dependency_id in sorted(lease.dependency_outputs)
             for artifact_id in lease.dependency_outputs[dependency_id]
         ]
-        return self._load_artifacts(artifact_ids)
-
-    def _load_artifacts(self, artifact_ids: list[str]) -> list[StoredArtifact]:
-        """Resolve a task's inputs in one store round trip."""
-
         return self.artifact_store.get_many(artifact_ids)
 
 
@@ -996,23 +976,6 @@ def _unique_relations(relations: list[RelationObservation]) -> list[RelationObse
     """Deduplicate identical grounded relation observations after queue fan-in."""
 
     return list({relation.id: relation for relation in relations}.values())
-
-
-def _window_batches(
-    windows: list[ExtractionWindow],
-    size: int,
-) -> Iterator[list[ExtractionWindow]]:
-    """Group adjacent logical windows into bounded durable queue work units.
-
-    Model extraction still reconstructs and processes each logical window
-    independently. The caller limits a pack to its provider concurrency, reducing
-    coordination metadata without creating a serial wave hidden from work stealing.
-    """
-
-    if size <= 0:
-        raise ValueError("window batch size must be positive")
-    for index in range(0, len(windows), size):
-        yield windows[index : index + size]
 
 
 def _prepared_projection_for_extracted_artifact(

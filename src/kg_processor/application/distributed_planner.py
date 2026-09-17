@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time
-from itertools import chain, islice
+from itertools import batched, chain
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -130,7 +130,7 @@ class DistributedRunPlanner:
         slow object overlap later files without changing retry or graph semantics.
         """
 
-        for file_batch in _batches(files, _SOURCE_STAGING_BATCH_SIZE):
+        for file_batch in batched(files, _SOURCE_STAGING_BATCH_SIZE, strict=False):
             for file, source_ref in self._iter_staged_sources(run_id, file_batch):
                 yield TaskDefinition(
                     id=stable_id("task", run_id, TaskStage.PREPARE_DOCUMENT.value, file.id),
@@ -165,7 +165,7 @@ class DistributedRunPlanner:
     def _iter_staged_sources(
         self,
         run_id: str,
-        files: list[InputFile],
+        files: Sequence[InputFile],
     ) -> Iterator[tuple[InputFile, ArtifactRef]]:
         """Yield source/reference pairs as bounded concurrent uploads complete.
 
@@ -292,7 +292,7 @@ def _validate_finalizer_credential_slot(
         )
 
 
-def _source_staging_workers(files: list[InputFile]) -> int:
+def _source_staging_workers(files: Sequence[InputFile]) -> int:
     """Bound upload concurrency by both object count and worst-case memory.
 
     ``ArtifactStore.put`` accepts immutable bytes, so each active staging worker
@@ -310,16 +310,6 @@ def _source_staging_workers(files: list[InputFile]) -> int:
         _SOURCE_STAGING_MAX_IN_FLIGHT_BYTES // max(largest_file, 1),
     )
     return min(_SOURCE_STAGING_PARALLELISM, len(files), byte_limited_workers)
-
-
-def _batches[T](items: Iterable[T], size: int) -> Iterator[list[T]]:
-    """Yield non-empty bounded lists from a potentially corpus-sized iterator."""
-
-    if size <= 0:
-        raise ValueError("batch size must be positive")
-    iterator = iter(items)
-    while batch := list(islice(iterator, size)):
-        yield batch
 
 
 def _iter_unique_file_ids(files: Iterable[InputFile]) -> Iterator[InputFile]:
