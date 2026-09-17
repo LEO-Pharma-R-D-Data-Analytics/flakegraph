@@ -183,9 +183,7 @@ class TesseractInternalOcrProvider:
 
 
 def _parse_page_range(page_range: str | None) -> tuple[int | None, int | None]:
-    windows = parse_page_range(
-        page_range, provider="tesseract_internal", minimum=1, allow_multiple=False, allow_open=True
-    )
+    windows = parse_page_range(page_range, "tesseract_internal")
     return windows[0] if windows else (None, None)
 
 

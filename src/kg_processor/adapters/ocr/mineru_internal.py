@@ -15,6 +15,7 @@ from kg_processor.adapters.ocr.mineru_common import (
     first_string,
     mineru_assets_from_payloads,
     resolve_page_window,
+    shape_description,
 )
 from kg_processor.domain.documents import (
     InputFile,
@@ -174,7 +175,7 @@ def _pages_from_mineru_payload(file: InputFile, payload: object) -> list[ParsedP
         raise RuntimeError(
             "MinerU produced an unrecognized JSON output for "
             f"{file.source_uri}: expected a page list or an object with pages, "
-            f"got {_shape_description(payload)}"
+            f"got {shape_description(payload)}"
         )
 
     pages: list[ParsedPage] = []
@@ -198,14 +199,6 @@ def _pages_from_mineru_payload(file: InputFile, payload: object) -> list[ParsedP
             )
         )
     return pages
-
-
-def _shape_description(value: object) -> str:
-    """Describe a rejected payload by shape without echoing its content."""
-
-    if isinstance(value, dict):
-        return f"object with keys {sorted(str(key) for key in value)}"
-    return type(value).__name__
 
 
 def _pages_from_content_list(file: InputFile, items: list[object]) -> list[ParsedPage]:

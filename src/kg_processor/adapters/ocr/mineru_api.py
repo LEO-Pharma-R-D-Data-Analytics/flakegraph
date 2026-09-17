@@ -7,7 +7,11 @@ from typing import Any
 
 import httpx
 
-from kg_processor.adapters.ocr.generic_http import _json_payload
+from kg_processor.adapters.ocr.generic_http import (
+    _json_payload,
+    _optional_bool_text,
+    _set_if_present,
+)
 from kg_processor.adapters.ocr.mineru_common import (
     first_int,
     first_string,
@@ -267,15 +271,6 @@ def _maybe_json_object(value: object) -> dict[str, Any] | None:
             return None
         return parsed if isinstance(parsed, dict) else None
     return None
-
-
-def _set_if_present(data: dict[str, str], key: str, value: str | None) -> None:
-    if value is not None:
-        data[key] = value
-
-
-def _optional_bool_text(value: bool | None) -> str | None:
-    return _bool_text(value) if value is not None else None
 
 
 def _optional_int_text(value: int | None) -> str | None:

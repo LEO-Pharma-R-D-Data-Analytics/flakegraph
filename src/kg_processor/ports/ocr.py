@@ -87,23 +87,29 @@ class OcrOptions(BaseModel):
 
 PageWindow = tuple[int | None, int | None]
 
+# What each provider's own page filter takes: the first page's number, whether
+# several windows may be listed, and whether an end may be left open. Builtin
+# text and Tesseract count pages the way readers do; MinerU and Snowflake
+# expose index-style ids.
+PAGE_RANGE_GRAMMARS: dict[str, tuple[int, bool, bool]] = {
+    "builtin_text": (1, True, False),
+    "tesseract_internal": (1, False, True),
+    "mineru_internal": (0, False, True),
+    "mineru_api": (0, False, True),
+    "snowflake_cortex": (0, True, True),
+}
 
-def parse_page_range(
-    text: str | None,
-    *,
-    provider: str,
-    minimum: int,
-    allow_multiple: bool,
-    allow_open: bool,
-) -> list[PageWindow]:
+
+def parse_page_range(text: str | None, provider: str) -> list[PageWindow]:
     """Read ``page_range`` as inclusive windows in the provider's own numbering.
 
     Every provider takes the same "3", "2-5" or "1-3,7" spelling, but they
     number pages from zero or one and accept different subsets of it, so the
-    caller says what its provider takes and an error names that provider.
-    An open end is ``None``.
+    grammar is looked up by provider and an error names that provider. An
+    open end is ``None``.
     """
 
+    minimum, allow_multiple, allow_open = PAGE_RANGE_GRAMMARS[provider]
     raw = (text or "").strip()
     if not raw:
         return []

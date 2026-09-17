@@ -55,7 +55,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 from starlette.requests import ClientDisconnect
 
-from kg_processor.serving.priority import ConsumerKeyring, load_keyring
+from kg_processor.serving.priority import ConsumerKeyring, load_keyring, presented_key
 
 logger = logging.getLogger(__name__)
 
@@ -608,7 +608,7 @@ def create_app(
         if route in UNAUTHENTICATED_PATHS:
             return JSONResponse({"status": "ok"})
 
-        consumer_class = resolved.classify(_presented_key(request))
+        consumer_class = resolved.classify(presented_key(request.headers.get("authorization", "")))
         if consumer_class is None:
             metrics.requests.labels(UNAUTHENTICATED_CLASS, OUTCOME_REJECTED).inc()
             return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -851,16 +851,6 @@ def _owner_id() -> str:
     """Identify this replica so its rows can be reclaimed if the process dies."""
 
     return os.environ.get("POD_NAME") or socket.gethostname()
-
-
-def _presented_key(request: Request) -> str:
-    """Extract a bearer credential without treating a malformed header as valid."""
-
-    header = request.headers.get("authorization", "")
-    scheme, _, credential = header.partition(" ")
-    if scheme.lower() != "bearer":
-        return ""
-    return credential.strip()
 
 
 def _settle_backend(content_type: str, body: bytes) -> bytes | JSONResponse:

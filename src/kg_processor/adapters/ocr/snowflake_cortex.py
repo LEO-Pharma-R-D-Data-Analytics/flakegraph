@@ -9,6 +9,7 @@ from kg_processor.adapters.ocr.mineru_common import (
     first_int,
     first_string,
     redact_blob_metadata,
+    shape_description,
 )
 from kg_processor.adapters.snowflake import (
     ConnectorFactory,
@@ -117,9 +118,7 @@ def _page_filter_from_range(page_range: str | None) -> list[dict[str, int]] | No
     # AI_PARSE_DOCUMENT takes half-open windows; an open start begins at 0 and
     # an open end is simply omitted.
     filters: list[dict[str, int]] = []
-    for start, end in parse_page_range(
-        page_range, provider="snowflake_cortex", minimum=0, allow_multiple=True, allow_open=True
-    ):
+    for start, end in parse_page_range(page_range, "snowflake_cortex"):
         entry = {"start": start or 0}
         if end is not None:
             entry["end"] = end + 1
@@ -161,16 +160,8 @@ def _pages_from_value(file: InputFile, value: object, source_uri: str) -> list[P
         return [_page_from_text(file, 1, value, {})]
     raise RuntimeError(
         f"Snowflake AI_PARSE_DOCUMENT returned an unrecognized response for {source_uri}: "
-        f"expected pages or one of {sorted(_CONTENT_KEYS)}, got {_shape_description(value)}"
+        f"expected pages or one of {sorted(_CONTENT_KEYS)}, got {shape_description(value)}"
     )
-
-
-def _shape_description(value: object) -> str:
-    """Describe a rejected response by shape without echoing its content."""
-
-    if isinstance(value, dict):
-        return f"object with keys {sorted(str(key) for key in value)}"
-    return type(value).__name__
 
 
 def _page_from_raw(file: InputFile, raw_page: object, index: int) -> ParsedPage:

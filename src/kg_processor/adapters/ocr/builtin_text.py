@@ -409,9 +409,7 @@ def _select_pages(pages: list[ParsedPage], page_range: str | None) -> list[Parse
 
 def _parse_builtin_page_range(page_range: str) -> set[int]:
     selected: set[int] = set()
-    for start, end in parse_page_range(
-        page_range, provider="builtin_text", minimum=1, allow_multiple=True, allow_open=False
-    ):
+    for start, end in parse_page_range(page_range, "builtin_text"):
         if start is None or end is None:
             # The parser refuses open ends for this provider; this keeps the
             # bounds typed as integers for the arithmetic below.

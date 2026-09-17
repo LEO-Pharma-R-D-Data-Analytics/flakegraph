@@ -23,7 +23,12 @@ from kg_processor.adapters.files.manifest import manifest_candidate_paths
 from kg_processor.adapters.snowflake import validate_stage_location
 from kg_processor.application.ontology import load_ontology
 from kg_processor.config.settings import Settings
-from kg_processor.ports.ocr import OCR_SUPPORTED_SUFFIXES, PageWindow, parse_page_range
+from kg_processor.ports.ocr import (
+    OCR_SUPPORTED_SUFFIXES,
+    PAGE_RANGE_GRAMMARS,
+    PageWindow,
+    parse_page_range,
+)
 
 _TESSERACT_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 _SPCS_FILE_SOURCES = {"stage", "snowflake_stage"}
@@ -406,67 +411,12 @@ def _validate_ocr_page_range(settings: Settings, result: PreflightResult) -> Non
         )
         return
 
-    if settings.ocr.provider == "builtin_text" and page_range:
-        _require_page_range(
-            result,
-            lambda: parse_page_range(
-                page_range,
-                provider="builtin_text",
-                minimum=1,
-                allow_multiple=True,
-                allow_open=False,
-            ),
-            "builtin_text OCR page_range is valid",
-        )
-        return
-
-    if settings.ocr.provider == "tesseract_internal" and page_range:
-        windows = _require_page_range(
-            result,
-            lambda: parse_page_range(
-                page_range,
-                provider="tesseract_internal",
-                minimum=1,
-                allow_multiple=False,
-                allow_open=True,
-            ),
-            "tesseract_internal OCR page_range is valid",
-        )
-        if windows is not None:
-            _validate_tesseract_image_page_range(settings, windows, result)
-        return
-
-    if settings.ocr.provider in {"mineru_internal", "mineru_api"}:
-        _validate_mineru_page_window(settings, result, page_range)
-        return
-
-    if settings.ocr.provider == "snowflake_cortex" and page_range:
-        _require_page_range(
-            result,
-            lambda: parse_page_range(
-                page_range,
-                provider="snowflake_cortex",
-                minimum=0,
-                allow_multiple=True,
-                allow_open=True,
-            ),
-            "snowflake_cortex OCR page_range is valid",
-        )
-
-
-def _validate_mineru_page_window(
-    settings: Settings,
-    result: PreflightResult,
-    page_range: str | None,
-) -> None:
     provider = settings.ocr.provider
     start = settings.ocr.mineru_start_page_id
     end = settings.ocr.mineru_end_page_id
-
-    # MinerU's explicit page ids take precedence over the portable page_range
-    # field, so validate them first and do not reinterpret page_range when
-    # either of those ids is configured.
-    if start is not None or end is not None:
+    if provider.startswith("mineru") and (start is not None or end is not None):
+        # MinerU's explicit page ids take precedence over the portable
+        # page_range field, so page_range is not reinterpreted beside them.
         result.require(
             start is None or end is None or end >= start,
             f"{provider} OCR explicit page window is valid",
@@ -474,20 +424,15 @@ def _validate_mineru_page_window(
         )
         return
 
-    if not page_range:
+    if not page_range or provider not in PAGE_RANGE_GRAMMARS:
         return
-
-    _require_page_range(
+    windows = _require_page_range(
         result,
-        lambda: parse_page_range(
-            page_range,
-            provider=provider,
-            minimum=0,
-            allow_multiple=False,
-            allow_open=True,
-        ),
+        lambda: parse_page_range(page_range, provider),
         f"{provider} OCR page_range is valid",
     )
+    if provider == "tesseract_internal" and windows is not None:
+        _validate_tesseract_image_page_range(settings, windows, result)
 
 
 def _validate_tesseract_image_page_range(

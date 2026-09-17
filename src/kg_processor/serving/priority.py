@@ -29,6 +29,15 @@ DEFAULT_PRIORITY_BANDS: dict[str, int] = {
 }
 
 
+def presented_key(authorization: str) -> str:
+    """Extract a bearer credential without treating a malformed header as valid."""
+
+    scheme, _, credential = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return credential.strip()
+
+
 class ConsumerKeyring(BaseModel):
     """Resolve presented credentials to a consumer class and its priority band."""
 

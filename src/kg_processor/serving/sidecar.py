@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from kg_processor import __version__
-from kg_processor.serving.priority import ConsumerKeyring, load_keyring
+from kg_processor.serving.priority import ConsumerKeyring, load_keyring, presented_key
 from kg_processor.serving.sizing import (
     BYTES_PER_GIB,
     DeviceBudget,
@@ -364,7 +364,7 @@ def create_app(
         if route in UNAUTHENTICATED_PATHS:
             return await _relay(request, route, body, None)
 
-        consumer_class = resolved.classify(_presented_key(request))
+        consumer_class = resolved.classify(presented_key(request.headers.get("authorization", "")))
         if consumer_class is None:
             rejected = _Accounting(metrics, UNAUTHENTICATED_CLASS, route)
             return rejected.close(JSONResponse({"error": "unauthorized"}, status_code=401))
@@ -452,16 +452,6 @@ def run(config: SidecarConfig | None = None) -> None:
         port=resolved.listen_port,
         log_level="info",
     )
-
-
-def _presented_key(request: Request) -> str:
-    """Extract a bearer credential without treating a malformed header as valid."""
-
-    header = request.headers.get("authorization", "")
-    scheme, _, credential = header.partition(" ")
-    if scheme.lower() != "bearer":
-        return ""
-    return credential.strip()
 
 
 def _stamped_body(

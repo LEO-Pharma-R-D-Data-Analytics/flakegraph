@@ -25,14 +25,16 @@ def resolve_page_window(options: OcrOptions, *, provider: str) -> PageWindow:
 
     if options.start_page_id is not None or options.end_page_id is not None:
         return options.start_page_id, options.end_page_id
-    windows = parse_page_range(
-        options.page_range,
-        provider=provider,
-        minimum=0,
-        allow_multiple=False,
-        allow_open=True,
-    )
+    windows = parse_page_range(options.page_range, provider)
     return windows[0] if windows else (None, None)
+
+
+def shape_description(value: object) -> str:
+    """Describe a rejected payload by shape without echoing its content."""
+
+    if isinstance(value, dict):
+        return f"object with keys {sorted(str(key) for key in value)}"
+    return type(value).__name__
 
 
 _ASSET_COLLECTION_KEYS = ("images", "assets", "media", "figures")
