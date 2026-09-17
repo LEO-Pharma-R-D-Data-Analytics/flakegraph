@@ -39,6 +39,8 @@ def test_build_run_report_artifacts_counts_providers_cache_and_quality() -> None
         description="Person",
         source_chunk_id=chunk.id,
         quote="Alice",
+        start_offset=0,
+        end_offset=5,
     )
     acme = ExtractedEntity(
         name="Acme",
@@ -46,6 +48,8 @@ def test_build_run_report_artifacts_counts_providers_cache_and_quality() -> None
         description="Company",
         source_chunk_id=chunk.id,
         quote="Acme",
+        start_offset=15,
+        end_offset=19,
     )
     relation = ExtractedRelation(
         source_name="Alice",
@@ -54,6 +58,8 @@ def test_build_run_report_artifacts_counts_providers_cache_and_quality() -> None
         description="Alice works at Acme.",
         source_chunk_id=chunk.id,
         quote="Alice works at Acme.",
+        start_offset=0,
+        end_offset=20,
     )
     extraction = ExtractionResult(
         entities=[alice, acme],

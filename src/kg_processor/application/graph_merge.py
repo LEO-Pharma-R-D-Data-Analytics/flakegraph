@@ -25,7 +25,6 @@ from kg_processor.domain.graph import (
 from kg_processor.domain.ids import stable_id
 from kg_processor.domain.ontology import normalize_ontology_label
 
-_QUOTE_SEED_MIN_LEN = 3
 # Persisted relation labels stay within a bounded identifier length so canonical
 # predicates remain usable as Snowflake identifiers and stable join keys.
 MAX_RELATION_LABEL_LENGTH = 80
@@ -330,17 +329,16 @@ def _assemble_entities(
         for chunk_id in source_chunk_ids:
             chunk = chunks_by_id.get(chunk_id)
             if chunk:
-                selected_observation = observations_by_chunk.get(chunk_id)
+                selected_observation = observations_by_chunk[chunk_id]
                 evidence.append(
                     _evidence_for_observation(
                         graph_id,
                         node.id,
                         "node",
                         chunk,
-                        display_name,
-                        selected_observation.quote if selected_observation else None,
-                        selected_observation.start_offset if selected_observation else None,
-                        selected_observation.end_offset if selected_observation else None,
+                        selected_observation.quote,
+                        selected_observation.start_offset,
+                        selected_observation.end_offset,
                     )
                 )
         counts_by_file = Counter(
@@ -537,7 +535,6 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
                 edge.id,
                 "edge",
                 chunk,
-                relation.description,
                 relation.quote,
                 relation.start_offset,
                 relation.end_offset,
@@ -598,7 +595,6 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
                 prior.id,
                 "edge",
                 chunk,
-                relation.description,
                 relation.quote,
                 relation.start_offset,
                 relation.end_offset,
@@ -692,14 +688,10 @@ def _best_description(descriptions: list[str]) -> str:
     return max(descriptions, key=lambda description: (len(description), description), default="")
 
 
-def _observation_quality_key(observation: ExtractedEntity) -> tuple[bool, bool, int]:
-    """Rank one observation without rescanning its full canonical group."""
+def _observation_quality_key(observation: ExtractedEntity) -> int:
+    """Prefer the observation with the richest description for a chunk."""
 
-    return (
-        observation.quote is None,
-        observation.start_offset is None,
-        -len(observation.description),
-    )
+    return -len(observation.description)
 
 
 def _evidence_for_observation(
@@ -707,7 +699,6 @@ def _evidence_for_observation(
     subject_id: str,
     subject_kind: str,
     chunk: Chunk,
-    quote_seed: str,
     quote: str | None,
     start_offset: int | None,
     end_offset: int | None,
@@ -717,7 +708,6 @@ def _evidence_for_observation(
         quote,
         start_offset,
         end_offset,
-        quote_seed,
     )
     return Evidence(
         id=stable_id("evidence", graph_id, subject_id, chunk.id),
@@ -738,77 +728,16 @@ def _evidence_quote_and_offsets(
     quote: str | None,
     start_offset: int | None,
     end_offset: int | None,
-    quote_seed: str,
 ) -> tuple[str, int, int]:
-    if start_offset is not None and end_offset is not None:
-        local_quote = quote or chunk.content[start_offset:end_offset]
-        return (
-            local_quote.strip(),
-            chunk.start_offset + start_offset,
-            chunk.start_offset + end_offset,
-        )
-    if quote:
-        local_start, local_end = _casefold_span(chunk.content, quote.strip())
-        if local_start >= 0:
-            return quote.strip(), chunk.start_offset + local_start, chunk.start_offset + local_end
-        return quote.strip(), chunk.start_offset, chunk.end_offset
-    inferred = _quote(chunk.content, quote_seed)
-    local_start = chunk.content.find(inferred)
-    if local_start >= 0:
-        return (
-            inferred,
-            chunk.start_offset + local_start,
-            chunk.start_offset + local_start + len(inferred),
-        )
-    return inferred, chunk.start_offset, chunk.end_offset
-
-
-def _quote(content: str, quote_seed: str) -> str:
-    seed_words = [word for word in quote_seed.split() if len(word) > _QUOTE_SEED_MIN_LEN]
-    for word in seed_words:
-        index = _casefold_find(content, word)
-        if index >= 0:
-            start = max(0, index - 120)
-            end = min(len(content), index + 240)
-            return content[start:end].strip()
-    return content[:360].strip()
-
-
-def _casefold_find(content: str, needle: str) -> int:
-    return _casefold_span(content, needle)[0]
-
-
-def _casefold_span(content: str, needle: str) -> tuple[int, int]:
-    """Map a casefolded match back to its exact original-codepoint span."""
-
-    if not needle:
-        return -1, -1
-    folded_content, starts, ends = _casefold_with_offsets(content)
-    folded_needle = unicodedata.normalize("NFC", needle).casefold()
-    folded_index = folded_content.find(folded_needle)
-    if folded_index < 0 or folded_index >= len(starts):
-        return -1, -1
-    folded_end = folded_index + len(folded_needle)
-    if folded_end <= folded_index or folded_end > len(starts):
-        return -1, -1
-    return starts[folded_index], ends[folded_end - 1]
-
-
-def _casefold_with_offsets(value: str) -> tuple[str, list[int], list[int]]:
-    chars: list[str] = []
-    starts: list[int] = []
-    ends: list[int] = []
-    index = 0
-    while index < len(value):
-        cluster_end = index + 1
-        while cluster_end < len(value) and unicodedata.combining(value[cluster_end]):
-            cluster_end += 1
-        folded = unicodedata.normalize("NFC", value[index:cluster_end]).casefold()
-        chars.append(folded)
-        starts.extend([index] * len(folded))
-        ends.extend([cluster_end] * len(folded))
-        index = cluster_end
-    return "".join(chars), starts, ends
+    # Every extractor grounds its observations; a missing span is a bug, not repairable.
+    if start_offset is None or end_offset is None:
+        raise ValueError(f"observation in chunk {chunk.id} has no grounded offsets")
+    local_quote = quote or chunk.content[start_offset:end_offset]
+    return (
+        local_quote.strip(),
+        chunk.start_offset + start_offset,
+        chunk.start_offset + end_offset,
+    )
 
 
 def _assign_degrees(nodes: list[GraphNode], edges: list[GraphEdge]) -> None:
