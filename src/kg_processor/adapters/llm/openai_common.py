@@ -15,6 +15,8 @@ from kg_processor.application.prompt_registry import structured_output_repair_sy
 from kg_processor.application.structured_output import response_schema_name, strict_json_schema
 from kg_processor.domain.consumption import TokenUsage
 from kg_processor.ports.llm import (
+    CommunitySummaryRequest,
+    CommunitySummaryResult,
     StructuredCompletionRequest,
     StructuredCompletionResult,
 )
@@ -40,6 +42,44 @@ def coerce_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [text for item in value if isinstance(item, str) and (text := item.strip())]
+
+
+def optional_string(value: object) -> str:
+    """Normalize nullable provider fields without materializing the word ``None``."""
+
+    return value if isinstance(value, str) else ""
+
+
+def community_summary_result(
+    payload: dict[str, object],
+    request: CommunitySummaryRequest,
+    *,
+    usage: TokenUsage,
+    provider_metadata: dict[str, Any],
+) -> CommunitySummaryResult:
+    """Build the community summary from a provider's JSON object.
+
+    Providers sometimes return optional community fields as the wrong scalar
+    type. Coercion is intentionally narrow: keep grounded strings and drop
+    malformed lists rather than guessing new content.
+    """
+
+    raw_findings = payload.get("findings", [])
+    findings = raw_findings if isinstance(raw_findings, list) else []
+    return CommunitySummaryResult(
+        title=optional_string(payload.get("title")) or request.title_seed,
+        summary=optional_string(payload.get("summary")),
+        rating=coerce_rating(payload.get("rating", 0.0)),
+        rating_explanation=optional_string(payload.get("rating_explanation")),
+        findings=[
+            (optional_string(item.get("summary")), optional_string(item.get("explanation")))
+            for item in findings
+            if isinstance(item, dict)
+        ],
+        suggested_questions=coerce_string_list(payload.get("suggested_questions", [])),
+        usage=usage,
+        provider_metadata=provider_metadata,
+    )
 
 
 def parse_chat_choice_content(payload: Any) -> str:

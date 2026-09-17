@@ -8,10 +8,10 @@ from typing import Any, cast
 
 from kg_processor.adapters.llm.openai_common import (
     ChatCompletion,
-    coerce_rating,
-    coerce_string_list,
+    community_summary_result,
     complete_json_object_with_retry,
     complete_structured_with_retry,
+    optional_string,
 )
 from kg_processor.adapters.snowflake import (
     ConnectorFactory,
@@ -191,7 +191,7 @@ class SnowflakeCortexLlmProvider:
             response_format=_description_merge_response_format(),
         )
         return DescriptionMergeResult(
-            description=_optional_string(payload.get("description")),
+            description=optional_string(payload.get("description")),
             usage=_metadata_usage(metadata),
             provider_metadata={
                 "provider": "snowflake_cortex",
@@ -210,22 +210,9 @@ class SnowflakeCortexLlmProvider:
             max_tokens=2048,
             response_format=_community_response_format(),
         )
-        raw_findings = payload.get("findings", [])
-        findings = raw_findings if isinstance(raw_findings, list) else []
-        return CommunitySummaryResult(
-            title=_optional_string(payload.get("title")) or request.title_seed,
-            summary=_optional_string(payload.get("summary")),
-            rating=coerce_rating(payload.get("rating", 0.0)),
-            rating_explanation=_optional_string(payload.get("rating_explanation")),
-            findings=[
-                (
-                    _optional_string(item.get("summary")),
-                    _optional_string(item.get("explanation")),
-                )
-                for item in findings
-                if isinstance(item, dict)
-            ],
-            suggested_questions=coerce_string_list(payload.get("suggested_questions", [])),
+        return community_summary_result(
+            payload,
+            request,
             usage=_metadata_usage(metadata),
             provider_metadata={
                 "provider": "snowflake_cortex",
@@ -458,10 +445,6 @@ def _object_payload(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return {str(key): item for key, item in value.items()}
     raise ValueError("Snowflake AI_COMPLETE structured output must be a JSON object")
-
-
-def _optional_string(value: object) -> str:
-    return value if isinstance(value, str) else ""
 
 
 def _metadata_usage(metadata: Mapping[str, Any]) -> TokenUsage:

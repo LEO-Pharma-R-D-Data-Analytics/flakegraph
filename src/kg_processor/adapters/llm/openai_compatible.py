@@ -7,10 +7,10 @@ import httpx
 from kg_processor.adapters.llm.openai_common import (
     ChatCompletion,
     chat_completion_from_payload,
-    coerce_rating,
-    coerce_string_list,
+    community_summary_result,
     complete_json_object_with_retry,
     complete_structured_with_retry,
+    optional_string,
     send_with_http_retry,
 )
 from kg_processor.application.prompt_registry import (
@@ -145,7 +145,7 @@ class OpenAICompatibleLlmProvider:
             ],
         )
         return DescriptionMergeResult(
-            description=_optional_string(payload.get("description")),
+            description=optional_string(payload.get("description")),
             usage=usage,
             provider_metadata={
                 "provider": self.provider_name,
@@ -170,26 +170,9 @@ class OpenAICompatibleLlmProvider:
                 {"role": "user", "content": prompt.user},
             ],
         )
-        raw_findings = payload.get("findings", [])
-        findings = raw_findings if isinstance(raw_findings, list) else []
-        rating = payload.get("rating", 0.0)
-        # Providers sometimes return optional community fields as the wrong
-        # scalar type. Coercion is intentionally narrow: keep grounded strings
-        # and drop malformed lists rather than guessing new content.
-        return CommunitySummaryResult(
-            title=_optional_string(payload.get("title")) or request.title_seed,
-            summary=_optional_string(payload.get("summary")),
-            rating=coerce_rating(rating),
-            rating_explanation=_optional_string(payload.get("rating_explanation")),
-            findings=[
-                (
-                    _optional_string(item.get("summary")),
-                    _optional_string(item.get("explanation")),
-                )
-                for item in findings
-                if isinstance(item, dict)
-            ],
-            suggested_questions=coerce_string_list(payload.get("suggested_questions", [])),
+        return community_summary_result(
+            payload,
+            request,
             usage=usage,
             provider_metadata={
                 "provider": self.provider_name,
@@ -269,9 +252,3 @@ class OpenAICompatibleLlmProvider:
         """
 
         return {}
-
-
-def _optional_string(value: object) -> str:
-    """Normalize nullable provider fields without materializing the word ``None``."""
-
-    return value if isinstance(value, str) else ""
