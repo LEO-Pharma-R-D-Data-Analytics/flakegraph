@@ -1,7 +1,17 @@
-{{- if .Values.ingress.authProxy.enabled }}
+{{- if and .Values.ingress.enabled .Values.ingress.authProxy.enabled }}
 {{- $proxy := .Values.ingress.authProxy }}
 {{- $ingress := .Values.ingress }}
 {{- $authHost := printf "%s.%s" $proxy.host $ingress.domain }}
+{{- /*
+The header is proof of identity only while nothing but the ingress controller
+can reach the pods behind the gate. Without the policy any workload in the
+cluster may address a Service directly and set it to whoever it likes, so the
+gate is refused rather than rendered unsound. The check lives with the gate,
+not with one of its consumers, so it holds for Grafana on its own too.
+*/}}
+{{- if not .Values.controlPlane.networkPolicy.enabled }}
+{{- fail "ingress.authProxy.enabled needs controlPlane.networkPolicy.enabled: behind the gate the control plane and Grafana trust X-Auth-Request-Email, which is proof only when nothing but the ingress controller can reach them. Name your controller in controlPlane.networkPolicy.from." }}
+{{- end }}
 {{- /*
 One gate in front of every routed service, rather than an identity integration
 per application.

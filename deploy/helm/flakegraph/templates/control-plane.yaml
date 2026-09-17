@@ -180,15 +180,6 @@ spec:
             - name: FLAKEGRAPH_APP_REQUIRE_SIGN_IN
               value: {{ $controlPlane.auth.required | quote }}
             {{- if and .Values.ingress.enabled .Values.ingress.authProxy.enabled }}
-            {{- /*
-            The header is proof of identity only while nothing but the ingress
-            controller can reach this pod. Without the policy any workload in
-            the cluster may address the Service directly and set it to whoever
-            it likes, so the gate is refused rather than rendered unsound.
-            */}}
-            {{- if not $controlPlane.networkPolicy.enabled }}
-            {{- fail "ingress.authProxy.enabled needs controlPlane.networkPolicy.enabled: behind the gate the control plane (and Grafana) trust X-Auth-Request-Email, which is proof only when nothing but the ingress controller can reach them. Name your controller in controlPlane.networkPolicy.from." }}
-            {{- end }}
             # A gate already authenticated this request, so the application
             # reads who the viewer is instead of signing them in a second time.
             - name: FLAKEGRAPH_APP_FORWARDED_IDENTITY_HEADER

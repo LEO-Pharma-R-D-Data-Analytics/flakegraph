@@ -218,6 +218,19 @@ def test_the_gate_is_refused_without_the_policy_that_makes_it_sound() -> None:
 
     refusal = fails(("ingress.enabled=true", "ingress.authProxy.enabled=true"))
     assert "ingress.authProxy.enabled needs controlPlane.networkPolicy.enabled" in refusal
+    # Grafana trusts the same header, so the refusal holds with the control
+    # plane off, and a gate with no Ingress to sit in front of is not rendered.
+    grafana_only = fails(
+        (
+            "ingress.enabled=true",
+            "ingress.authProxy.enabled=true",
+            "controlPlane.enabled=false",
+            "monitoring.enabled=true",
+            "database.cloudNativePG.enabled=true",
+        )
+    )
+    assert "ingress.authProxy.enabled needs controlPlane.networkPolicy.enabled" in grafana_only
+    assert "auth-proxy" not in render(("ingress.enabled=false", "ingress.authProxy.enabled=true"))
 
     rendered = render(
         (
