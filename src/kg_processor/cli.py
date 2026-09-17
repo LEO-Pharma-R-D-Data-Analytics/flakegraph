@@ -344,8 +344,12 @@ def distributed_status(
     settings = Settings.load(config)
     store = build_distributed_store(settings)
     store.initialize()
-    result = store.get_run(run_id) if include_tasks else store.get_run_summary(run_id)
-    _echo_json(run_status_payload(result, settings))
+    payload = run_status_payload(store.get_run_summary(run_id), settings)
+    # Diagnostics come from the bounded aggregates either way: the full task
+    # list is for reading attempts and leases, not for changing the verdict.
+    if include_tasks:
+        payload["tasks"] = [task.model_dump(mode="json") for task in store.get_run(run_id).tasks]
+    _echo_json(payload)
 
 
 @distributed_app.command("list")

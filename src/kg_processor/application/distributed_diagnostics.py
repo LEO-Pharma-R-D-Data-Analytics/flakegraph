@@ -7,13 +7,7 @@ from typing import Any
 
 from kg_processor.application.distributed_planner import distributed_processing_config_digest
 from kg_processor.config.settings import Settings
-from kg_processor.domain.distributed import (
-    RunSnapshot,
-    RunStatus,
-    RunSummary,
-    TaskStage,
-    TaskStatus,
-)
+from kg_processor.domain.distributed import RunStatus, RunSummary, TaskStage, TaskStatus
 
 _STALLED_AFTER_SECONDS = 300.0
 _TERMINAL_RUN_STATUSES = {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}
@@ -51,17 +45,17 @@ def worker_ready_payload(
 
 
 def run_status_payload(
-    result: RunSummary | RunSnapshot,
+    result: RunSummary,
     settings: Settings,
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Add actionable compatibility and liveness diagnostics to run status.
 
-    The function remains constant-size for ``RunSummary`` responses. It uses only
-    durable task aggregates and timestamps, so status never needs a worker registry
-    or an expensive task scan to identify the common cases of incompatible workers
-    and queued work that is no longer advancing.
+    The payload is constant-size: it uses only durable task aggregates and
+    timestamps, so status never needs a worker registry or an expensive task
+    scan to identify the common cases of incompatible workers and queued work
+    that is no longer advancing.
     """
 
     observed_at = _as_utc(now or datetime.now(UTC))
@@ -178,25 +172,17 @@ def run_status_payload(
     return payload
 
 
-def _active_task_counts(result: RunSummary | RunSnapshot) -> tuple[int, int]:
-    """Return queued and running task totals from either bounded status shape."""
+def _active_task_counts(result: RunSummary) -> tuple[int, int]:
+    """Return queued and running task totals from the bounded stage aggregates."""
 
-    if isinstance(result, RunSummary):
-        queued = sum(item.count for item in result.task_counts if item.status == TaskStatus.QUEUED)
-        running = sum(
-            item.count for item in result.task_counts if item.status == TaskStatus.RUNNING
-        )
-        return queued, running
-    queued = sum(task.status == TaskStatus.QUEUED for task in result.tasks)
-    running = sum(task.status == TaskStatus.RUNNING for task in result.tasks)
+    queued = sum(item.count for item in result.task_counts if item.status == TaskStatus.QUEUED)
+    running = sum(item.count for item in result.task_counts if item.status == TaskStatus.RUNNING)
     return queued, running
 
 
-def _stages_served_at_another_digest(result: RunSummary | RunSnapshot) -> list[str]:
+def _stages_served_at_another_digest(result: RunSummary) -> list[str]:
     """Name the stages with open work whose fleet declared a different digest."""
 
-    if not isinstance(result, RunSummary):
-        return []
     open_stages = {
         item.stage.value
         for item in result.task_counts

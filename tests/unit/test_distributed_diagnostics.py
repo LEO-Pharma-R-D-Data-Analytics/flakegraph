@@ -12,12 +12,9 @@ from kg_processor.application.distributed_planner import distributed_processing_
 from kg_processor.config.settings import Settings
 from kg_processor.domain.distributed import (
     RunDefinition,
-    RunSnapshot,
     RunStatus,
     RunSummary,
     TaskCount,
-    TaskDefinition,
-    TaskSnapshot,
     TaskStage,
     TaskStatus,
 )
@@ -273,41 +270,23 @@ def test_failed_status_preserves_one_redacted_root_error() -> None:
     assert payload["diagnostics"]["state"] == "terminal"
 
 
-def test_detailed_terminal_status_counts_tasks_without_irrelevant_claim_warning() -> None:
-    """Keep completed detailed status useful even when inspected with another config."""
+def test_terminal_status_carries_no_claim_warning_under_another_config() -> None:
+    """Keep completed status useful even when inspected with another config."""
 
     settings = _settings()
-    now = datetime(2026, 7, 15, 10, 0)
-    snapshot = RunSnapshot(
-        run=RunDefinition(
-            id="run-1",
-            graph_id="graph-1",
-            config={},
-            config_digest="historical-digest",
-            status=RunStatus.SUCCEEDED,
-        ),
-        tasks=[
-            TaskSnapshot(
-                task=TaskDefinition(
-                    id="task-1",
-                    run_id="run-1",
-                    stage=TaskStage.FINALIZE_GRAPH,
-                    scope_id="graph-1",
-                ),
-                status=TaskStatus.SUCCEEDED,
-                attempts=1,
-            )
-        ],
-        created_at=now - timedelta(minutes=1),
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
+    summary = _summary(
+        config_digest="historical-digest",
+        status=RunStatus.SUCCEEDED,
         updated_at=now,
+        counts=[TaskCount(stage=TaskStage.FINALIZE_GRAPH, status=TaskStatus.SUCCEEDED, count=1)],
     )
 
-    payload = run_status_payload(snapshot, settings, now=now + timedelta(minutes=5))
+    payload = run_status_payload(summary, settings, now=now + timedelta(minutes=5))
 
     assert payload["diagnostics"]["state"] == "terminal"
     assert payload["diagnostics"]["config_digest"]["matches"] is False
     assert payload["diagnostics"]["warnings"] == []
-    assert len(payload["tasks"]) == 1
 
 
 def _settings() -> Settings:

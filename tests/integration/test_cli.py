@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -11,10 +12,22 @@ from typer.testing import CliRunner
 
 from kg_processor import __version__
 from kg_processor.adapters.jobs.snowflake import SnowflakeJobManager
+from kg_processor.application.distributed_planner import distributed_processing_config_digest
 from kg_processor.application.progress import ProgressEvent, ProgressSink
 from kg_processor.application.snowflake_access import SnowflakeAccessCheck, SnowflakeAccessReport
 from kg_processor.cli import WorkerQueueBlockedError, _run_file_queue_worker, app
 from kg_processor.config.settings import Settings
+from kg_processor.domain.distributed import (
+    RunDefinition,
+    RunSnapshot,
+    RunStatus,
+    RunSummary,
+    TaskCount,
+    TaskDefinition,
+    TaskSnapshot,
+    TaskStage,
+    TaskStatus,
+)
 from kg_processor.domain.documents import InputFile
 from kg_processor.domain.graph import GraphWriteBatch
 from kg_processor.domain.jobs import JobFileClaim, JobFileResult
@@ -245,6 +258,65 @@ def test_cli_snowflake_ddl_rejects_non_positive_embedding_dimension() -> None:
     # presentation codes so this assertion remains about the validation
     # contract rather than terminal capabilities.
     assert "'--embedding-dim': 0 is not in the range x>=1" in Text.from_ansi(result.output).plain
+
+
+def test_distributed_status_keeps_the_fleet_warning_when_tasks_are_included(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The verdict comes from the aggregates whether or not the tasks are printed."""
+
+    settings = Settings.load(overrides={"distributed": {"database_url": "postgresql://fleet"}})
+    now = datetime.now(UTC)
+    run = RunDefinition(
+        id="run-1",
+        graph_id="graph-1",
+        config={},
+        config_digest=distributed_processing_config_digest(settings),
+        status=RunStatus.RUNNING,
+    )
+    task = TaskDefinition(
+        id="task-1", run_id="run-1", stage=TaskStage.EXTRACT_ENTITY_WINDOW, scope_id="w-1"
+    )
+
+    class FleetStore:
+        def initialize(self) -> None:
+            return None
+
+        def get_run_summary(self, run_id: str) -> RunSummary:
+            assert run_id == "run-1"
+            return RunSummary(
+                run=run,
+                task_counts=[
+                    TaskCount(
+                        stage=TaskStage.EXTRACT_ENTITY_WINDOW, status=TaskStatus.QUEUED, count=1
+                    )
+                ],
+                total_tasks=1,
+                created_at=now,
+                updated_at=now,
+                fleet_config_digests={TaskStage.EXTRACT_ENTITY_WINDOW.value: "after-upgrade"},
+            )
+
+        def get_run(self, run_id: str) -> RunSnapshot:
+            assert run_id == "run-1"
+            return RunSnapshot(
+                run=run,
+                tasks=[TaskSnapshot(task=task, status=TaskStatus.QUEUED, attempts=0)],
+                created_at=now,
+                updated_at=now,
+            )
+
+    monkeypatch.setattr("kg_processor.cli.build_distributed_store", lambda _settings: FleetStore())
+    monkeypatch.setattr("kg_processor.cli.Settings.load", lambda _config: settings)
+
+    result = runner.invoke(app, ["distributed", "status", "--run-id", "run-1", "--include-tasks"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert [item["code"] for item in payload["diagnostics"]["warnings"]] == [
+        "FLEET_DIGEST_MISMATCH"
+    ]
+    assert [item["task"]["id"] for item in payload["tasks"]] == ["task-1"]
 
 
 def test_file_queue_worker_drains_claimed_batches(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -977,9 +1049,7 @@ def test_file_queue_worker_still_succeeds_when_the_queue_genuinely_finished() ->
 
     manager = _FakeQueueManager([[]], status_counts={"DONE": 10})
 
-    summary = _run_file_queue_worker(
-        _queue_worker_settings(), cast(SnowflakeJobManager, manager)
-    )
+    summary = _run_file_queue_worker(_queue_worker_settings(), cast(SnowflakeJobManager, manager))
 
     assert summary["drained"] is True
     assert summary["files_processed"] == 0
@@ -992,9 +1062,7 @@ def test_file_queue_worker_tolerates_a_partially_failed_queue() -> None:
 
     manager = _FakeQueueManager([[]], status_counts={"DONE": 7, "FAILED": 3})
 
-    summary = _run_file_queue_worker(
-        _queue_worker_settings(), cast(SnowflakeJobManager, manager)
-    )
+    summary = _run_file_queue_worker(_queue_worker_settings(), cast(SnowflakeJobManager, manager))
 
     assert summary["queue_status_counts"] == {"DONE": 7, "FAILED": 3}
     assert "blocked_files" not in summary
