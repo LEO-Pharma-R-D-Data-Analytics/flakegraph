@@ -210,11 +210,7 @@ def _mention_span(mention: EntityMention) -> tuple[int, int]:
     return mention.start_offset, mention.end_offset
 
 
-def _text_windows(
-    text: str,
-    max_words: int = _MAX_WINDOW_WORDS,
-    overlap_words: int = _WINDOW_OVERLAP_WORDS,
-) -> list[tuple[int, str]]:
+def _text_windows(text: str) -> list[tuple[int, str]]:
     """Split long text into overlapping word windows with source offsets.
 
     GLiNER models commonly truncate inputs around a few hundred tokens. Character
@@ -222,15 +218,13 @@ def _text_windows(
     overlap protects entities that straddle a boundary.
     """
 
-    if max_words <= 0 or not 0 <= overlap_words < max_words:
-        raise ValueError("GLiNER window sizes must be positive with overlap below max words")
     words = list(re.finditer(r"\S+", text))
-    if len(words) <= max_words:
+    if len(words) <= _MAX_WINDOW_WORDS:
         return [(0, text)]
     windows: list[tuple[int, str]] = []
-    step = max_words - overlap_words
+    step = _MAX_WINDOW_WORDS - _WINDOW_OVERLAP_WORDS
     for word_start in range(0, len(words), step):
-        word_end = min(word_start + max_words, len(words))
+        word_end = min(word_start + _MAX_WINDOW_WORDS, len(words))
         start = words[word_start].start()
         end = words[word_end - 1].end()
         windows.append((start, text[start:end]))

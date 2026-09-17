@@ -28,7 +28,6 @@ from kg_processor.domain.jobs import JobFileClaim, JobFileResult
 
 _SUBMISSION_BATCH_SIZE = 10_000
 _OWNERSHIP_COUNT_COLUMNS = 2
-_STATUS_COUNT_COLUMNS = 2
 
 
 class JobRetryResult(BaseModel):
@@ -336,13 +335,8 @@ class SnowflakeJobManager:
         graph_id: str,
     ) -> dict[str, int]:
         cursor.execute(build_count_job_files_by_status_statement(), [job_id, graph_id])
-        counts: dict[str, int] = {}
-        for row in cursor.fetchall():
-            values = cast(Sequence[object], row)
-            if len(values) < _STATUS_COUNT_COLUMNS:
-                continue
-            counts[str(values[0])] = int(str(values[1] or 0))
-        return counts
+        rows = cast(list[tuple[object, object]], cursor.fetchall())
+        return {str(status): int(str(count or 0)) for status, count in rows}
 
     def heartbeat_job_files(
         self,
