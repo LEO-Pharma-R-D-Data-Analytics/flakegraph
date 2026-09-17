@@ -688,8 +688,21 @@ def build_heartbeat_job_statement(lease_seconds: int) -> str:
     )
 
 
+# A file row a worker may take: never claimed, or claimed by one whose lease
+# ran out.
+_CLAIMABLE_FILE = (
+    "(STATUS = 'QUEUED' OR (STATUS = 'CLAIMED' AND LEASE_UNTIL < CURRENT_TIMESTAMP()))"
+)
+
+
 def build_claim_job_files_statement(lease_seconds: int, batch_size: int) -> str:
-    """Return SQL that claims the next queued or expired file rows."""
+    """Return SQL that claims the next queued or expired file rows.
+
+    The rows are picked in a subquery and re-checked in the UPDATE itself, so a
+    row another worker claimed between the two is left alone. The graph-level
+    claim already keeps two workers from reaching this statement at once; the
+    predicate is there so the statement is safe on its own.
+    """
 
     if lease_seconds <= 0:
         raise ValueError("lease_seconds must be positive")
@@ -700,11 +713,10 @@ def build_claim_job_files_statement(lease_seconds: int, batch_size: int) -> str:
         f"LEASE_UNTIL = DATEADD(second, {lease_seconds}, CURRENT_TIMESTAMP()), "
         "ATTEMPTS = COALESCE(ATTEMPTS, 0) + 1, ERROR = NULL, "
         "UPDATED_AT = CURRENT_TIMESTAMP() "
-        "WHERE JOB_ID = ? AND GRAPH_ID = ? AND FILE_ID IN ("
+        f"WHERE JOB_ID = ? AND GRAPH_ID = ? AND {_CLAIMABLE_FILE} AND FILE_ID IN ("
         "SELECT FILE_ID FROM ("
         "SELECT FILE_ID FROM KG_JOB_FILE "
-        "WHERE JOB_ID = ? AND GRAPH_ID = ? AND "
-        "(STATUS = 'QUEUED' OR (STATUS = 'CLAIMED' AND LEASE_UNTIL < CURRENT_TIMESTAMP())) "
+        f"WHERE JOB_ID = ? AND GRAPH_ID = ? AND {_CLAIMABLE_FILE} "
         "AND EXISTS (SELECT 1 FROM KG_JOB "
         "WHERE ID = ? AND GRAPH_ID = ? AND STATUS = 'RUNNING') "
         "ORDER BY UPDATED_AT, FILE_ID "

@@ -529,6 +529,9 @@ def test_job_file_claim_sql_uses_parent_job_state_and_claim_token() -> None:
     assert "STAGE = ?" in claim_sql
     assert "AND EXISTS (SELECT 1 FROM KG_JOB" in claim_sql
     assert "STATUS = 'RUNNING'" in claim_sql
+    # Picked in the subquery and re-checked by the UPDATE, so a row taken in
+    # between is not claimed twice.
+    assert claim_sql.count("STATUS = 'CLAIMED' AND LEASE_UNTIL < CURRENT_TIMESTAMP()") == 2
     assert "AND WORKER_ID = ? AND STAGE = ?" in select_sql
     assert "STATUS IN ('QUEUED', 'CLAIMED')" in drain_sql
     assert "'failed_files'" in drain_sql
