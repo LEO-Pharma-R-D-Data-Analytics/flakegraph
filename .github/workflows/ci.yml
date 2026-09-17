@@ -107,7 +107,7 @@ jobs:
       - name: Validate Helm chart
         run: |
           helm lint deploy/helm/flakegraph
-          helm template ci deploy/helm/flakegraph --set providerSecret.optional=true >/dev/null
+          helm template ci deploy/helm/flakegraph >/dev/null
 
   docker-smoke:
     name: Docker smoke

@@ -24,3 +24,7 @@ tmp/
 # under deploy/examples; real fleet overrides stay untracked here.
 deploy/private/
 *.private.yaml
+
+# stage-artifacts.sh --local-only drops the k3s binary and its installer here.
+deploy/spark/k3s
+deploy/spark/install.sh
