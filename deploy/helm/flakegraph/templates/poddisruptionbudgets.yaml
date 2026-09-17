@@ -13,9 +13,7 @@ spec:
   maxUnavailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ $root.Chart.Name }}
-      app.kubernetes.io/instance: {{ $root.Release.Name }}
-      app.kubernetes.io/component: worker-{{ $poolName }}
+      {{- include "flakegraph.selectorLabels" (dict "root" $root "component" (printf "worker-%s" $poolName)) | nindent 6 }}
 {{- end }}
 {{- end }}
 {{- if and .Values.modelServing.enabled (gt (int .Values.modelServing.replicas) 1) }}
@@ -31,9 +29,7 @@ spec:
   maxUnavailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: model-serving
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "model-serving") | nindent 6 }}
 {{- end }}
 {{- if and .Values.documentParsing.enabled (gt (int .Values.documentParsing.mineru.replicas) 1) }}
 ---
@@ -48,7 +44,5 @@ spec:
   maxUnavailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: document-parsing
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "document-parsing") | nindent 6 }}
 {{- end }}

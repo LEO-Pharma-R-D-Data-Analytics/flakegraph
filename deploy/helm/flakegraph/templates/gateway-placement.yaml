@@ -275,9 +275,7 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: inference-router
+    {{- include "flakegraph.selectorLabels" (dict "root" . "component" "inference-router") | nindent 4 }}
   ports:
     - name: http
       port: {{ $placement.service.port }}
@@ -304,15 +302,11 @@ spec:
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: inference-router
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "inference-router") | nindent 6 }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
-        app.kubernetes.io/component: inference-router
+        {{- include "flakegraph.selectorLabels" (dict "root" . "component" "inference-router") | nindent 8 }}
       annotations:
         checksum/inference-router: {{ $placement | toJson | sha256sum }}
     spec:
@@ -429,27 +423,6 @@ spec:
           configMap:
             name: {{ include "flakegraph.inferenceRouterName" . }}
 {{- if $placement.autoscaling.enabled }}
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: {{ include "flakegraph.inferenceRouterName" . }}
-  labels:
-    {{- include "flakegraph.labels" . | nindent 4 }}
-    app.kubernetes.io/component: inference-router
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: {{ include "flakegraph.inferenceRouterName" . }}
-  minReplicas: {{ $placement.autoscaling.minReplicas }}
-  maxReplicas: {{ $placement.autoscaling.maxReplicas }}
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ $placement.autoscaling.targetCpuUtilizationPercentage }}
+{{ include "flakegraph.cpuHpa" (dict "root" . "name" (include "flakegraph.inferenceRouterName" .) "kind" "Deployment" "component" "inference-router" "autoscaling" $placement.autoscaling) }}
 {{- end }}
 {{- end }}

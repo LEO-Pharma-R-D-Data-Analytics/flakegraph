@@ -10,9 +10,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: model-serving
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "model-serving") | nindent 6 }}
   policyTypes: [Ingress]
   ingress:
     # The router is the only thing that may reach the enforcement floor. The
@@ -21,9 +19,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: {{ .Chart.Name }}
-              app.kubernetes.io/instance: {{ .Release.Name }}
-              app.kubernetes.io/component: inference-router
+              {{- include "flakegraph.selectorLabels" (dict "root" . "component" "inference-router") | nindent 14 }}
       ports:
         - port: http
           protocol: TCP
@@ -33,9 +29,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: {{ .Chart.Name }}
-              app.kubernetes.io/instance: {{ .Release.Name }}
-              app.kubernetes.io/component: inference-router
+              {{- include "flakegraph.selectorLabels" (dict "root" . "component" "inference-router") | nindent 14 }}
       ports:
         - port: kv-events
           protocol: TCP

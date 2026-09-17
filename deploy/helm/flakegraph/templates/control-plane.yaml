@@ -93,9 +93,7 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: control-plane
+    {{- include "flakegraph.selectorLabels" (dict "root" . "component" "control-plane") | nindent 4 }}
   ports:
     - name: http
       port: {{ $controlPlane.service.port }}
@@ -118,14 +116,11 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: control-plane
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "control-plane") | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "flakegraph.labels" . | nindent 8 }}
-        app.kubernetes.io/component: control-plane
+        {{- include "flakegraph.selectorLabels" (dict "root" . "component" "control-plane") | nindent 8 }}
       annotations:
         checksum/config: {{ .Values.config.content | sha256sum }}
     spec:

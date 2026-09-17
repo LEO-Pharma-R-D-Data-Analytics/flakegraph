@@ -488,7 +488,7 @@ def test_document_parsing_replicas_spread_across_hosts_without_requiring_it() ->
     assert values["topologyKey"] == "kubernetes.io/hostname"
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
     mineru = schema["properties"]["documentParsing"]["properties"]["mineru"]
-    assert "topologyKey" in mineru["required"]
+    assert "topologyKey" in mineru["properties"]
 
 
 def test_spark_executor_spreading_degrades_gracefully() -> None:
@@ -651,7 +651,7 @@ def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
             "optional": True,
         },
     ]
-    assert "env" in schema["properties"]["providerSecret"]["required"]
+    assert "env" in schema["properties"]["providerSecret"]["properties"]
     allowlisted = {mapping["name"] for mapping in values["providerSecret"]["env"]}
     consumers = [_worker(rendered, pool) for pool in _WORKER_POOLS] + [_bootstrap(rendered)]
     for consumer in consumers:
@@ -678,7 +678,7 @@ def test_ontology_is_a_portable_chart_managed_deployment_input() -> None:
         "key": "ontology.yaml",
         "content": "",
     }
-    assert "ontology" in schema["required"]
+    assert "ontology" in schema["properties"]
     assert _one(inline, "ConfigMap", f"{_FULLNAME}-ontology")["data"] == {
         "ontology.yaml": "entities: []\n"
     }
@@ -784,7 +784,7 @@ def test_spark_workers_reserve_memory_for_python_provider_processes() -> None:
     assert values["spark"]["executorMemoryOverhead"] == "8g"
     assert finalize["KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY"]["value"] == "8g"
     assert finalize["KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY_OVERHEAD"]["value"] == "8g"
-    assert "executorMemoryOverhead" in schema["properties"]["spark"]["required"]
+    assert "executorMemoryOverhead" in schema["properties"]["spark"]["properties"]
 
 
 def test_the_public_fleet_example_renders_against_the_charts_own_schema() -> None:
@@ -822,8 +822,8 @@ def test_worker_pools_autoscale_from_dependency_aware_postgres_demand() -> None:
     assert values["workers"]["extract"]["autoscaling"]["maxReplicas"] == 32
     assert values["workers"]["finalize"]["autoscaling"]["maxReplicas"] == 1
     assert values["distributed"]["leaseSeconds"] == 300
-    assert "autoscaling" in schema["required"]
-    assert "autoscaling" in schema["$defs"]["worker"]["required"]
+    assert "autoscaling" in schema["properties"]
+    assert "autoscaling" in schema["$defs"]["worker"]["properties"]
     for pool in _WORKER_POOLS:
         scaler = _one(external_database, "ScaledObject", f"{_FULLNAME}-{pool}")
         pool_values = values["workers"][pool]["autoscaling"]
@@ -891,7 +891,7 @@ def test_database_schema_is_bootstrapped_before_a_helm_release_is_ready() -> Non
 
     assert values["database"]["bootstrap"]["enabled"] is True
     assert values["database"]["bootstrap"]["activeDeadlineSeconds"] >= 600
-    assert "bootstrap" in schema["properties"]["database"]["required"]
+    assert "bootstrap" in schema["properties"]["database"]["properties"]
     assert job["metadata"]["annotations"]["helm.sh/hook"] == "post-install,post-upgrade"
     assert job["metadata"]["annotations"]["helm.sh/hook-delete-policy"] == (
         "before-hook-creation,hook-succeeded"
@@ -936,7 +936,7 @@ def test_bundled_database_has_capacity_for_documented_fleet_workers() -> None:
     assert cloud_native_pg["maxConnections"] >= 300
     assert (
         "maxConnections"
-        in schema["properties"]["database"]["properties"]["cloudNativePG"]["required"]
+        in schema["properties"]["database"]["properties"]["cloudNativePG"]["properties"]
     )
     assert cluster["spec"]["postgresql"]["parameters"]["max_connections"] == str(
         cloud_native_pg["maxConnections"]

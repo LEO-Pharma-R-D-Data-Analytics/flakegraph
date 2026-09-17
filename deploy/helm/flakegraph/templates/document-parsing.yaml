@@ -15,9 +15,7 @@ spec:
   # admission control has to count.
   clusterIP: None
   selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: document-parsing
+    {{- include "flakegraph.selectorLabels" (dict "root" . "component" "document-parsing") | nindent 4 }}
   ports:
     - name: http
       port: {{ $mineru.service.port }}
@@ -38,15 +36,11 @@ spec:
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: document-parsing
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "document-parsing") | nindent 6 }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
-        app.kubernetes.io/component: document-parsing
+        {{- include "flakegraph.selectorLabels" (dict "root" . "component" "document-parsing") | nindent 8 }}
     spec:
       {{- if .Values.scheduling.priorityClasses.enabled }}
       priorityClassName: {{ include "flakegraph.servingPriorityClassName" . }}
@@ -75,9 +69,7 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: {{ .Chart.Name }}
-              app.kubernetes.io/instance: {{ .Release.Name }}
-              app.kubernetes.io/component: document-parsing
+              {{- include "flakegraph.selectorLabels" (dict "root" . "component" "document-parsing") | nindent 14 }}
       containers:
         - name: mineru
           image: {{ include "flakegraph.image" . }}
@@ -165,28 +157,7 @@ spec:
             storage: {{ $mineru.persistence.size }}
   {{- end }}
 {{- if $mineru.autoscaling.enabled }}
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: {{ include "flakegraph.mineruName" . }}
-  labels:
-    {{- include "flakegraph.labels" . | nindent 4 }}
-    app.kubernetes.io/component: document-parsing
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: StatefulSet
-    name: {{ include "flakegraph.mineruName" . }}
-  minReplicas: {{ $mineru.autoscaling.minReplicas }}
-  maxReplicas: {{ $mineru.autoscaling.maxReplicas }}
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ $mineru.autoscaling.targetCpuUtilizationPercentage }}
+{{ include "flakegraph.cpuHpa" (dict "root" . "name" (include "flakegraph.mineruName" .) "kind" "StatefulSet" "component" "document-parsing" "autoscaling" $mineru.autoscaling) }}
 {{- end }}
 ---
 apiVersion: v1
@@ -199,9 +170,7 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: ocr-shim
+    {{- include "flakegraph.selectorLabels" (dict "root" . "component" "ocr-shim") | nindent 4 }}
   ports:
     - name: http
       port: {{ $shim.service.port }}
@@ -220,15 +189,11 @@ spec:
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: ocr-shim
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "ocr-shim") | nindent 6 }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
-        app.kubernetes.io/component: ocr-shim
+        {{- include "flakegraph.selectorLabels" (dict "root" . "component" "ocr-shim") | nindent 8 }}
       annotations:
         checksum/ocr-shim: {{ $shim | toJson | sha256sum }}
     spec:
@@ -313,27 +278,6 @@ spec:
         - name: tmp
           emptyDir: {}
 {{- if $shim.autoscaling.enabled }}
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: {{ include "flakegraph.ocrShimName" . }}
-  labels:
-    {{- include "flakegraph.labels" . | nindent 4 }}
-    app.kubernetes.io/component: ocr-shim
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: {{ include "flakegraph.ocrShimName" . }}
-  minReplicas: {{ $shim.autoscaling.minReplicas }}
-  maxReplicas: {{ $shim.autoscaling.maxReplicas }}
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ $shim.autoscaling.targetCpuUtilizationPercentage }}
+{{ include "flakegraph.cpuHpa" (dict "root" . "name" (include "flakegraph.ocrShimName" .) "kind" "Deployment" "component" "ocr-shim" "autoscaling" $shim.autoscaling) }}
 {{- end }}
 {{- end }}

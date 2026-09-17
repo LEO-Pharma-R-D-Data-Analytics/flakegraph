@@ -74,9 +74,7 @@ metadata:
 spec:
   type: {{ $litellm.service.type }}
   selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: gateway
+    {{- include "flakegraph.selectorLabels" (dict "root" . "component" "gateway") | nindent 4 }}
   ports:
     - name: http
       port: {{ $litellm.service.port }}
@@ -98,15 +96,11 @@ spec:
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: gateway
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "gateway") | nindent 6 }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
-        app.kubernetes.io/component: gateway
+        {{- include "flakegraph.selectorLabels" (dict "root" . "component" "gateway") | nindent 8 }}
       annotations:
         # Two hashes, two reasons to roll. The values one catches changes to
         # the Secret references and arguments below; the config one catches
@@ -208,29 +202,8 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
 {{- if $litellm.autoscaling.enabled }}
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: {{ include "flakegraph.gatewayName" . }}
-  labels:
-    {{- include "flakegraph.labels" . | nindent 4 }}
-    app.kubernetes.io/component: gateway
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: {{ include "flakegraph.gatewayName" . }}
-  minReplicas: {{ $litellm.autoscaling.minReplicas }}
-  maxReplicas: {{ $litellm.autoscaling.maxReplicas }}
-  metrics:
-    # Sized against total request rate, which the batch pipeline dominates —
-    # not against tenant count. CPU is the observable proxy for that here.
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ $litellm.autoscaling.targetCpuUtilizationPercentage }}
+{{- /* Sized against total request rate, which the batch pipeline dominates —
+     not against tenant count. CPU is the observable proxy for that here. */}}
+{{ include "flakegraph.cpuHpa" (dict "root" . "name" (include "flakegraph.gatewayName" .) "kind" "Deployment" "component" "gateway" "autoscaling" $litellm.autoscaling) }}
 {{- end }}
 {{- end }}

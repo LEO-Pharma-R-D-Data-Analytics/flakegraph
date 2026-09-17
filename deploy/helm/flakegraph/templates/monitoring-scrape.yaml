@@ -19,9 +19,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: model-serving
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "model-serving") | nindent 6 }}
       # The headless Service, so each engine is its own target. Selecting on
       # the component alone would also match the load-balanced Service and
       # scrape every engine twice.
@@ -52,9 +50,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: gateway
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "gateway") | nindent 6 }}
   endpoints:
     # Served once the prometheus callback is in the proxy's config, which the
     # gateway template adds whenever monitoring is on.
@@ -75,9 +71,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: inference-router
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "inference-router") | nindent 6 }}
   endpoints:
     # The picker authenticates scrapes: it hands the bearer token to the API
     # server's TokenReview, then asks SubjectAccessReview whether that identity
@@ -105,9 +99,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: ocr-shim
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "ocr-shim") | nindent 6 }}
   endpoints:
     - port: http
       path: /metrics

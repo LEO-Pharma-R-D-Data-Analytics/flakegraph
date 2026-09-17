@@ -25,9 +25,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: control-plane
+      {{- include "flakegraph.selectorLabels" (dict "root" . "component" "control-plane") | nindent 6 }}
   policyTypes: [Ingress]
   ingress:
     - from:

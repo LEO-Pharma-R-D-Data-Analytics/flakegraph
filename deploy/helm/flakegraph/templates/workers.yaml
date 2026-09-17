@@ -36,9 +36,7 @@ spec:
   revisionHistoryLimit: {{ $root.Values.revisionHistoryLimit }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ $root.Chart.Name }}
-      app.kubernetes.io/instance: {{ $root.Release.Name }}
-      app.kubernetes.io/component: worker-{{ $poolName }}
+      {{- include "flakegraph.selectorLabels" (dict "root" $root "component" (printf "worker-%s" $poolName)) | nindent 6 }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -47,9 +45,7 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ $root.Chart.Name }}
-        app.kubernetes.io/instance: {{ $root.Release.Name }}
-        app.kubernetes.io/component: worker-{{ $poolName }}
+        {{- include "flakegraph.selectorLabels" (dict "root" $root "component" (printf "worker-%s" $poolName)) | nindent 8 }}
         {{- with $root.Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -107,7 +103,7 @@ spec:
       initContainers:
         - name: seed-provider-cache
           {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
-          image: {{ include "flakegraph.sparkImage" $root }}
+          image: {{ include "flakegraph.componentImage" $root.Values.spark.image }}
           imagePullPolicy: {{ $root.Values.spark.image.pullPolicy }}
           {{- else }}
           image: {{ include "flakegraph.image" $root }}
@@ -146,7 +142,7 @@ spec:
       containers:
         - name: worker
           {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
-          image: {{ include "flakegraph.sparkImage" $root }}
+          image: {{ include "flakegraph.componentImage" $root.Values.spark.image }}
           imagePullPolicy: {{ $root.Values.spark.image.pullPolicy }}
           command: ["/opt/entrypoint.sh"]
           {{- else }}
@@ -221,7 +217,7 @@ spec:
             - name: KG_DISTRIBUTED_SPARK_MASTER
               value: {{ $root.Values.spark.master | quote }}
             - name: KG_DISTRIBUTED_SPARK_IMAGE
-              value: {{ include "flakegraph.sparkImage" $root | quote }}
+              value: {{ include "flakegraph.componentImage" $root.Values.spark.image | quote }}
             - name: KG_DISTRIBUTED_SPARK_NAMESPACE
               value: {{ $root.Release.Namespace | quote }}
             - name: KG_DISTRIBUTED_SPARK_SERVICE_ACCOUNT

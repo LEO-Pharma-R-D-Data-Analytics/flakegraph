@@ -3,15 +3,6 @@
 {{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{/* Resolve the FlakeGraph Spark driver/executor image. */}}
-{{- define "flakegraph.sparkImage" -}}
-{{- if .Values.spark.image.digest -}}
-{{- printf "%s@%s" .Values.spark.image.repository .Values.spark.image.digest -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.spark.image.repository .Values.spark.image.tag -}}
-{{- end -}}
-{{- end -}}
-
 {{/* Select an explicitly named or chart-managed service account. */}}
 {{- define "flakegraph.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
@@ -42,15 +33,6 @@
 {{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
 {{- else -}}
 {{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
-{{- end -}}
-{{- end -}}
-
-{{/* Resolve the immutable local model-server image when model serving is enabled. */}}
-{{- define "flakegraph.modelServingImage" -}}
-{{- if .Values.modelServing.image.digest -}}
-{{- printf "%s@%s" .Values.modelServing.image.repository .Values.modelServing.image.digest -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.modelServing.image.repository .Values.modelServing.image.tag -}}
 {{- end -}}
 {{- end -}}
 
@@ -191,6 +173,48 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
+{{- end -}}
+
+{{/* The labels a selector matches on, and nothing else.
+
+     Selectors are immutable once applied, and a pod template that carries
+     helm.sh/chart rolls every pod on every chart bump. Both are avoided by
+     keeping this triple apart from the ownership labels above. Takes a dict:
+     "root" is the top-level context, "component" the pool being selected. */}}
+{{- define "flakegraph.selectorLabels" -}}
+app.kubernetes.io/name: {{ .root.Chart.Name }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/component: {{ .component }}
+{{- end -}}
+
+{{/* A CPU-utilisation HorizontalPodAutoscaler for one workload.
+
+     Takes a dict: "root" is the top-level context, "name" the workload and the
+     HPA, "kind" the workload's kind, "component" its selector component, and
+     "autoscaling" the values block with min/max replicas and the CPU target. */}}
+{{- define "flakegraph.cpuHpa" -}}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "flakegraph.labels" .root | nindent 4 }}
+    app.kubernetes.io/component: {{ .component }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: {{ .kind }}
+    name: {{ .name }}
+  minReplicas: {{ .autoscaling.minReplicas }}
+  maxReplicas: {{ .autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .autoscaling.targetCpuUtilizationPercentage }}
 {{- end -}}
 
 {{/* The gate's middlewares, as the annotation every gated Ingress carries.

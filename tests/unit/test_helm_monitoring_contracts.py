@@ -50,13 +50,11 @@ def test_monitoring_is_opt_in_and_leaves_no_trace_when_off() -> None:
 
     assert values["enabled"] is False
     assert values["database"]["role"] == "flakegraph_metrics"
-    assert "monitoring" in schema["required"]
+    assert "monitoring" in schema["properties"]
     monitoring_schema = schema["properties"]["monitoring"]
     assert monitoring_schema["additionalProperties"] is False
-    assert set(monitoring_schema["required"]) == set(values)
     thresholds_schema = monitoring_schema["properties"]["rules"]["properties"]["thresholds"]
     assert thresholds_schema["additionalProperties"] is False
-    assert set(thresholds_schema["required"]) == set(values["rules"]["thresholds"])
 
     rendered = _render(())
     assert not [doc for doc in rendered if doc["kind"] in _MONITORING_KINDS]

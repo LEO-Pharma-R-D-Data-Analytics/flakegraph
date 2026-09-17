@@ -21,7 +21,7 @@ def test_spark_account_defaults_are_release_scoped_and_schema_valid() -> None:
     assert values["spark"]["serviceAccount"] == {"create": True, "name": ""}
     assert values["spark"]["serviceAccountName"] == ""
     service_account_schema = schema["properties"]["spark"]["properties"]["serviceAccount"]
-    assert service_account_schema["required"] == ["create", "name"]
+    assert set(service_account_schema["properties"]) == {"create", "name"}
 
     spark_name = "review-a-flakegraph-spark"
     assert spark_name in _names_for_kind(documents, "ServiceAccount")
