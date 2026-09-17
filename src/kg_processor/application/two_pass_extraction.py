@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from itertools import batched
 from typing import Any
 
 from kg_processor.application.bibliography import is_reference_text
@@ -691,13 +692,17 @@ def _extract_window_relations(  # noqa: PLR0912
     ]
     if settings.verify_relations and relations_requiring_verification:
         decisions: dict[str, VerificationDecision] = {}
-        for batch_index, start in enumerate(
-            range(0, len(relations_requiring_verification), _RELATION_VERIFICATION_BATCH_SIZE),
+        for batch_index, batch in enumerate(
+            (
+                list(batch)
+                for batch in batched(
+                    relations_requiring_verification,
+                    _RELATION_VERIFICATION_BATCH_SIZE,
+                    strict=False,
+                )
+            ),
             start=1,
         ):
-            batch = relations_requiring_verification[
-                start : start + _RELATION_VERIFICATION_BATCH_SIZE
-            ]
             try:
                 verification = verifier.verify(
                     window,
@@ -990,7 +995,7 @@ def _relation_inventory_for_window(
     grouped: dict[tuple[str, str], list[EntityMention]] = {}
     order: list[tuple[str, str]] = []
     for entity in entities:
-        key = (_normalize(entity.name), entity.type)
+        key = (normalize_ontology_label(entity.name), entity.type)
         if key not in grouped:
             grouped[key] = []
             order.append(key)
@@ -1204,12 +1209,12 @@ def _canonical_aliases(mention: EntityMention, canonical_name: str) -> list[str]
     """
 
     values = [*mention.aliases]
-    if _normalize(mention.name) != _normalize(canonical_name):
+    if normalize_ontology_label(mention.name) != normalize_ontology_label(canonical_name):
         values.append(mention.name)
-    seen = {_normalize(canonical_name)}
+    seen = {normalize_ontology_label(canonical_name)}
     result: list[str] = []
     for value in values:
-        key = _normalize(value)
+        key = normalize_ontology_label(value)
         if value.strip() and key not in seen:
             seen.add(key)
             result.append(value.strip())
@@ -1226,7 +1231,7 @@ def _dedupe_mentions(mentions: list[EntityMention]) -> list[EntityMention]:
     result: list[EntityMention] = []
     for mention in mentions:
         key = (
-            _normalize(mention.name),
+            normalize_ontology_label(mention.name),
             mention.type,
             mention.source_chunk_id,
             mention.start_offset,
@@ -1269,13 +1274,3 @@ def _dedupe_relations(relations: list[RelationObservation]) -> list[RelationObse
                 }
             )
     return result
-
-
-def _normalize(value: str) -> str:
-    """Create a stable case-, space-, and hyphen-insensitive key for names and aliases.
-
-    Grouping and deduplication share the ontology label rule so one spelling
-    variant is never treated as two identities here and one identity there.
-    """
-
-    return normalize_ontology_label(value)
