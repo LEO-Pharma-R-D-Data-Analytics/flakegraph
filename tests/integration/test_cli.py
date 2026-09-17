@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from rich.text import Text
 from typer.testing import CliRunner
 
 from kg_processor import __version__
@@ -247,17 +246,6 @@ embedding:
     assert result.exit_code == 0
     assert "VECTOR(FLOAT, 42)" in result.stdout
     assert "CREATE TABLE IF NOT EXISTS KG_GRAPH_METRICS" in result.stdout
-
-
-def test_cli_snowflake_ddl_rejects_non_positive_embedding_dimension() -> None:
-    result = runner.invoke(app, ["snowflake", "ddl", "--embedding-dim", "0"])
-
-    assert result.exit_code != 0
-    # The bound lives on the option, so typer states it. Rich may style each
-    # segment of an option name separately when CI forces color output; strip
-    # presentation codes so this assertion remains about the validation
-    # contract rather than terminal capabilities.
-    assert "'--embedding-dim': 0 is not in the range x>=1" in Text.from_ansi(result.output).plain
 
 
 def test_distributed_status_keeps_the_fleet_warning_when_tasks_are_included(

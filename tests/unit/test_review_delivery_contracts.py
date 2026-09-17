@@ -2,25 +2,21 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-import yaml
-from helm import CHART as _CHART
 from helm import one as _one
 from helm import render as _render
+from helm import schema, values
 
 _SPARK = ("spark.enabled=true",)
 
 
 def test_spark_account_defaults_are_release_scoped_and_schema_valid() -> None:
-    values = yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
-    schema = json.loads((_CHART / "values.schema.json").read_text(encoding="utf-8"))
     documents = _render(_SPARK, release="review-a")
 
-    assert values["spark"]["serviceAccount"] == {"create": True, "name": ""}
-    assert values["spark"]["serviceAccountName"] == ""
-    service_account_schema = schema["properties"]["spark"]["properties"]["serviceAccount"]
+    assert values()["spark"]["serviceAccount"] == {"create": True, "name": ""}
+    assert values()["spark"]["serviceAccountName"] == ""
+    service_account_schema = schema()["properties"]["spark"]["properties"]["serviceAccount"]
     assert set(service_account_schema["properties"]) == {"create", "name"}
 
     spark_name = "review-a-flakegraph-spark"

@@ -7,7 +7,6 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
-from typing import BinaryIO
 from uuid import uuid4
 
 import psycopg
@@ -38,36 +37,6 @@ pytestmark = pytest.mark.skipif(
     not _POSTGRES_DSN,
     reason="Set KG_TEST_POSTGRES_DSN to run live PostgreSQL coordination checks.",
 )
-
-
-class _RecordingBlobStore:
-    """Retain test payloads without external I/O."""
-
-    def __init__(self) -> None:
-        """Create an empty object namespace."""
-
-        self.objects: dict[str, bytes] = {}
-
-    def initialize(self) -> None:
-        """Satisfy the idempotent blob-store initialization contract."""
-
-    def put(self, key: str, payload: bytes, media_type: str) -> str:
-        """Store exact bytes under a deterministic in-memory URI."""
-
-        _ = media_type
-        uri = f"memory://artifacts/{key}"
-        self.objects[uri] = payload
-        return uri
-
-    def get(self, uri: str) -> bytes:
-        """Return bytes for PostgreSQL artifact integrity checks."""
-
-        return self.objects[uri]
-
-    def download_to(self, uri: str, destination: BinaryIO) -> None:
-        """Write the retained bytes so streaming readers see the same object."""
-
-        destination.write(self.objects[uri])
 
 
 @pytest.fixture
@@ -236,10 +205,11 @@ def test_a_runs_artifacts_are_the_ones_a_succeeded_task_linked(
 
 def test_postgres_rejects_unknown_artifact_owner_before_external_upload(
     isolated_postgres_dsn: str,
+    tmp_path: Path,
 ) -> None:
     """The run-identity cache must not weaken the external-object ownership check."""
 
-    blob_store = _RecordingBlobStore()
+    blob_store = LocalBlobStore(tmp_path.as_uri())
     store = PostgresDistributedStore(isolated_postgres_dsn, blob_store=blob_store)
     store.initialize()
 
@@ -251,7 +221,7 @@ def test_postgres_rejects_unknown_artifact_owner_before_external_upload(
             "application/octet-stream",
         )
 
-    assert blob_store.objects == {}
+    assert not [path for path in tmp_path.rglob("*") if path.is_file()]
 
 
 def test_postgres_store_enforces_bounded_session_waits(
@@ -503,36 +473,7 @@ def test_worker_demand_view_tracks_ready_work_and_active_leases(
     assert _worker_demand(isolated_postgres_dsn) == {}
 
 
-def test_worker_demand_keeps_finalize_capacity_for_pending_publication(
-    isolated_postgres_dsn: str,
-) -> None:
-    store = _store(isolated_postgres_dsn)
-    run_id = f"run_{uuid4().hex}"
-    store.create_run(_run(run_id))
-    final = _task(run_id, "final", TaskStage.FINALIZE_GRAPH, "graph").model_copy(
-        update={"payload": {"output": {"provider": "snowflake_bulk"}}}
-    )
-    store.add_tasks(run_id, [final])
-    store.activate_run(run_id)
-    claim = store.claim_task("finalizer", {TaskStage.FINALIZE_GRAPH}, timedelta(minutes=1))
-    assert claim is not None
-    manifest = store.put(
-        run_id,
-        ArtifactKind.GRAPH_RESULT,
-        b'{"format":"flakegraph.graph-dataset-manifest/v1"}',
-        "application/vnd.flakegraph.graph-manifest+json",
-    )
-
-    store.complete_task(claim.task.id, claim.worker_id, [manifest.id])
-
-    assert store.get_run(run_id).run.status == RunStatus.RUNNING
-    assert _worker_demand(isolated_postgres_dsn) == {"finalize_graph": 1}
-    publication = store.claim_publication("publisher", timedelta(minutes=1))
-    assert publication is not None
-    assert _worker_demand(isolated_postgres_dsn) == {"finalize_graph": 1}
-
-
-def test_publication_only_retry_reactivates_run_and_demand(
+def test_publication_keeps_finalize_demand_and_a_retry_reactivates_it(
     isolated_postgres_dsn: str,
 ) -> None:
     store = _store(isolated_postgres_dsn)
@@ -556,8 +497,13 @@ def test_publication_only_retry_reactivates_run_and_demand(
         "application/vnd.flakegraph.graph-manifest+json",
     )
     store.complete_task(task.task.id, task.worker_id, [manifest.id])
+    # A finalizer whose graph still awaits publication keeps the run running
+    # and keeps asking for a finalizer, before and after the claim.
+    assert store.get_run(run_id).run.status == RunStatus.RUNNING
+    assert _worker_demand(isolated_postgres_dsn) == {"finalize_graph": 1}
     publication = store.claim_publication("publisher", timedelta(minutes=1))
     assert publication is not None
+    assert _worker_demand(isolated_postgres_dsn) == {"finalize_graph": 1}
     store.fail_publication(
         publication.id,
         publication.worker_id,

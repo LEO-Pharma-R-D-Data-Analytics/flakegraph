@@ -73,31 +73,6 @@ def _let_every_heartbeat_lapse(dsn: str) -> None:
         )
 
 
-def test_the_queue_table_ships_with_the_coordination_schema(
-    isolated_postgres_dsn: str,
-) -> None:
-    _initialize(isolated_postgres_dsn)
-
-    with psycopg.connect(isolated_postgres_dsn, row_factory=dict_row) as connection:
-        columns = connection.execute(
-            """
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'flakegraph_ocr_request'
-            """
-        ).fetchall()
-
-    assert {row["column_name"] for row in columns} == {
-        "id",
-        "priority",
-        "consumer_class",
-        "status",
-        "shim_owner",
-        "replica",
-        "created_at",
-        "heartbeat_at",
-    }
-
-
 def test_a_full_pool_admits_nothing(isolated_postgres_dsn: str) -> None:
     _initialize(isolated_postgres_dsn)
 

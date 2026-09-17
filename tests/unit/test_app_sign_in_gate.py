@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import yaml
 from flakegraph_app.ui import authentication
-from helm import FULLNAME, fails, one, render
+from helm import CHART, FULLNAME, fails, one, render, schema, values
 
-_CHART = Path("deploy/helm/flakegraph")
-_AUTH_PROXY_TEMPLATE = _CHART / "templates/auth-proxy.yaml"
-_CONTROL_PLANE_TEMPLATE = _CHART / "templates/control-plane.yaml"
+_AUTH_PROXY_TEMPLATE = CHART / "templates/auth-proxy.yaml"
+_CONTROL_PLANE_TEMPLATE = CHART / "templates/control-plane.yaml"
 
 
 def test_the_gate_claims_only_its_own_path_segment() -> None:
@@ -121,8 +117,7 @@ def test_machine_interfaces_are_routed_without_the_browser_gate() -> None:
     to the layer that can actually perform it.
     """
 
-    values = yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
-    machine_paths = values["ingress"]["machineApiPaths"]
+    machine_paths = values()["ingress"]["machineApiPaths"]
 
     # A namespace is never routed past the gate, only verified paths. The
     # gateway declares its key check per route, so `/v1` contains routes that
@@ -134,12 +129,12 @@ def test_machine_interfaces_are_routed_without_the_browser_gate() -> None:
     assert machine_paths["ocr"] == ["/file_parse"]
 
     # Exactly, so a path cannot admit whatever upstream later adds beside it.
-    assert "pathType: Exact" in (_CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
+    assert "pathType: Exact" in (CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
     # The control plane is a browser application throughout: it has no interface
     # a program authenticates to, so nothing of it may leave the gate.
     assert "controlPlane" not in machine_paths
 
-    template = (_CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
+    template = (CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
     assert "machineApiPaths" in template
     # The gate's middleware is annotated onto one Ingress; the machine-API rules
     # are a second one precisely so they do not inherit it.
@@ -154,13 +149,12 @@ def test_the_header_trusting_application_cannot_be_routed_past_the_gate() -> Non
     parameter any caller may set. Both the schema and the template refuse it.
     """
 
-    schema = json.loads((_CHART / "values.schema.json").read_text(encoding="utf-8"))
-    node = schema["properties"]["ingress"]["properties"]["machineApiPaths"]
+    node = schema()["properties"]["ingress"]["properties"]["machineApiPaths"]
 
     assert set(node["properties"]) == {"gateway", "ocr"}
     assert node["additionalProperties"] is False
 
-    template = (_CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
+    template = (CHART / "templates/ingress.yaml").read_text(encoding="utf-8")
     assert 'hasKey ($ingress.machineApiPaths | default dict) "controlPlane"' in template
     assert "{{- fail " in template
 
@@ -174,16 +168,13 @@ def test_no_path_is_exempted_across_every_host_at_once() -> None:
     Streamlit answers it with the application shell.
     """
 
-    values = yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
-
-    assert values["ingress"]["authProxy"]["skipAuthRoutes"] == []
+    assert values()["ingress"]["authProxy"]["skipAuthRoutes"] == []
 
 
 def test_a_bare_namespace_cannot_be_routed_past_the_gate() -> None:
     """`/v1` is not a thing that authenticates; the paths under it are, or not."""
 
-    schema = json.loads((_CHART / "values.schema.json").read_text(encoding="utf-8"))
-    pattern = schema["properties"]["ingress"]["properties"]["machineApiPaths"]["properties"][
+    pattern = schema()["properties"]["ingress"]["properties"]["machineApiPaths"]["properties"][
         "gateway"
     ]["items"]["pattern"]
 
@@ -199,18 +190,18 @@ def test_only_the_ingress_controller_may_reach_the_header_trusting_application()
     address the Service directly it is a field it may set to anything.
     """
 
-    template = (_CHART / "templates/control-plane-networkpolicy.yaml").read_text(encoding="utf-8")
+    template = (CHART / "templates/control-plane-networkpolicy.yaml").read_text(encoding="utf-8")
 
     assert "kind: NetworkPolicy" in template
     assert "app.kubernetes.io/component: control-plane" in template
     assert "policyTypes: [Ingress]" in template
     assert ".Values.controlPlane.networkPolicy.from" in template
 
-    values = _load_chart_values()["controlPlane"]["networkPolicy"]
+    policy = values()["controlPlane"]["networkPolicy"]
     # Off by default: naming the wrong peer makes the application unreachable,
     # which is a worse default than leaving the restriction to the operator.
-    assert values["enabled"] is False
-    assert values["from"], "a default peer must be shown, even while disabled"
+    assert policy["enabled"] is False
+    assert policy["from"], "a default peer must be shown, even while disabled"
 
 
 def test_the_gate_is_refused_without_the_policy_that_makes_it_sound() -> None:
@@ -241,9 +232,3 @@ def test_the_gate_is_refused_without_the_policy_that_makes_it_sound() -> None:
         )
     )
     assert one(rendered, "NetworkPolicy", f"{FULLNAME}-app")
-
-
-def _load_chart_values() -> dict[str, Any]:
-    values = yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
-    assert isinstance(values, dict)
-    return values

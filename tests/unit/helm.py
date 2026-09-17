@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -117,6 +118,20 @@ def load_yaml(path: Path) -> dict[str, Any]:
     value = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert isinstance(value, dict)
     return value
+
+
+def values() -> dict[str, Any]:
+    """Return the chart's default values."""
+
+    return load_yaml(CHART / "values.yaml")
+
+
+def schema() -> dict[str, Any]:
+    """Return the chart's values schema."""
+
+    loaded = json.loads((CHART / "values.schema.json").read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    return loaded
 
 
 def one(rendered: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
