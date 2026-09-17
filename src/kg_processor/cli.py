@@ -12,7 +12,7 @@ from dataclasses import asdict
 from enum import StrEnum
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 
@@ -188,7 +188,7 @@ def print_providers(
         raise typer.BadParameter(
             f"Unsupported provider kind '{kind}'. Supported kinds: {supported}"
         )
-    _echo_json(provider_catalog_for_kind(_provider_kind(kind)))
+    _echo_json(provider_catalog_for_kind(cast(ProviderKind, kind)))
 
 
 @app.command()
@@ -1217,19 +1217,3 @@ def _worker_iteration_payload(iteration: WorkerIteration) -> dict[str, Any]:
     """Convert an immutable worker result into a JSON-safe operator event."""
 
     return asdict(iteration)
-
-
-def _provider_kind(value: str) -> ProviderKind:
-    if value == "file_source":
-        return "file_source"
-    if value == "ocr":
-        return "ocr"
-    if value == "llm":
-        return "llm"
-    if value == "embedding":
-        return "embedding"
-    if value == "writer":
-        return "writer"
-    if value == "cache":
-        return "cache"
-    raise ValueError(f"Unsupported provider kind: {value}")

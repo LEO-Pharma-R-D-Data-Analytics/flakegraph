@@ -40,9 +40,8 @@ def locality_for(provider: str) -> Locality:
 class ConsumptionCollector:
     """Accumulate consumption events for one run."""
 
-    def __init__(self, graph_id: str, run_id: str = "", job_id: str = "") -> None:
+    def __init__(self, graph_id: str, job_id: str = "") -> None:
         self.graph_id = graph_id
-        self.run_id = run_id
         self.job_id = job_id
         self._events: list[ConsumptionEvent] = []
         self._lock = threading.Lock()
@@ -56,21 +55,18 @@ class ConsumptionCollector:
         model: str,
         usage: TokenUsage | None = None,
         pages: int = 0,
-        calls: int = 1,
         file_id: str | None = None,
     ) -> None:
         """Record one unit of provider work that actually executed."""
 
         event = ConsumptionEvent(
             graph_id=self.graph_id,
-            run_id=self.run_id,
             job_id=self.job_id,
             stage=stage,
             operation=operation,
             provider=provider,
             model=model,
             locality=locality_for(provider),
-            calls=calls,
             usage=usage or TokenUsage(),
             pages=pages,
             file_id=file_id,
@@ -153,12 +149,3 @@ class ConsumptionCollector:
             },
             "events": [event.model_dump(mode="json") for event in events],
         }
-
-
-class NullConsumptionCollector(ConsumptionCollector):
-    """Record nothing, for callers that do not track consumption."""
-
-    def record(self, **_kwargs: object) -> None:
-        """Ignore the event."""
-
-        return None
