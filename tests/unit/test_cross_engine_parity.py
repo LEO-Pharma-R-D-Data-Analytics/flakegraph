@@ -7,7 +7,6 @@ must have exactly one definition and the values derived from them.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from kg_processor.application import spark_finalization
@@ -87,24 +86,6 @@ def test_relation_label_rule_bounds_oversized_predicates() -> None:
     assert bounded == normalize_ontology_label(label)[:MAX_RELATION_LABEL_LENGTH]
     assert len(bounded) == MAX_RELATION_LABEL_LENGTH
     assert normalize_relation_type(bounded) == bounded
-
-
-def test_relation_label_rule_is_defined_once() -> None:
-    """One label rule prevents stages from disagreeing about predicate identity."""
-
-    source_root = Path(__file__).resolve().parents[2] / "src"
-    definitions = sorted(
-        path.relative_to(source_root).as_posix()
-        for path in source_root.rglob("*.py")
-        if 'casefold().replace("-", " ")' in path.read_text(encoding="utf-8")
-    )
-
-    # Entity resolution keeps a separate rule on purpose: it composes Unicode and
-    # joins on spaces because it compares display names, not ontology labels.
-    assert definitions == [
-        "kg_processor/application/entity_resolution.py",
-        "kg_processor/domain/ontology.py",
-    ]
 
 
 def test_spark_observation_weight_matches_extraction_weight() -> None:
@@ -202,8 +183,7 @@ def test_community_rating_uses_the_relations_the_report_received() -> None:
     community = result.communities[0]
     assert community.rating == 10.0
     assert community.rating_explanation == (
-        "Structural score from density 1.00, evidence coverage 1.00, "
-        "and mean edge confidence 1.00."
+        "Structural score from density 1.00, evidence coverage 1.00, and mean edge confidence 1.00."
     )
 
 

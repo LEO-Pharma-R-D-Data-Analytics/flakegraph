@@ -4,25 +4,20 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 from functools import cache
 from pathlib import Path
 from typing import Any
 
 import yaml
-from helm import API_VERSIONS as _API_VERSIONS
 from helm import CHART as _CHART
 from helm import FULLNAME as _FULLNAME
 from helm import NAMESPACE as _NAMESPACE
-from helm import RELEASE as _RELEASE
-from helm import helm as _helm
+from helm import fails as _fails
 from helm import one as _one
 from helm import render as _render
 
 _VALUES = _CHART / "values.yaml"
 _SCHEMA = _CHART / "values.schema.json"
-_RULES_TEMPLATE = _CHART / "templates/monitoring-rules.yaml"
-_NETWORK_POLICY_TEMPLATE = _CHART / "templates/model-serving-networkpolicy.yaml"
 _POSTGRES_ADAPTER = Path("src/kg_processor/adapters/distributed/postgres.py")
 
 # Everything the monitoring objects hang off: the database they read, the
@@ -74,33 +69,11 @@ def test_monitoring_is_opt_in_and_leaves_no_trace_when_off() -> None:
 def test_monitoring_refuses_to_render_where_it_cannot_be_applied() -> None:
     """Name the missing prerequisite once, first, rather than per object at apply."""
 
-    helm = _helm()
-    without_crds = subprocess.run(
-        [helm, "template", _RELEASE, str(_CHART), "--set", "monitoring.enabled=true"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert without_crds.returncode != 0
-    assert "monitoring.coreos.com/v1" in without_crds.stderr
+    without_crds = _fails(("monitoring.enabled=true",), api_versions="")
+    assert "monitoring.coreos.com/v1" in without_crds
 
-    without_bundled_database = subprocess.run(
-        [
-            helm,
-            "template",
-            _RELEASE,
-            str(_CHART),
-            "--api-versions",
-            _API_VERSIONS,
-            "--set",
-            "monitoring.enabled=true",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert without_bundled_database.returncode != 0
-    assert "database.cloudNativePG.enabled" in without_bundled_database.stderr
+    without_bundled_database = _fails(("monitoring.enabled=true",))
+    assert "database.cloudNativePG.enabled" in without_bundled_database
 
 
 def test_every_plane_is_scraped_through_its_own_service() -> None:
@@ -198,9 +171,22 @@ def test_prometheus_may_reach_the_engines_and_nothing_else_changes() -> None:
         for rule in policy["spec"]["ingress"]
         for peer in rule["from"]
     )
-    assert ".Values.modelServing.networkPolicy.extraIngress" in _NETWORK_POLICY_TEMPLATE.read_text(
-        encoding="utf-8"
+    # A site with its own scraper or client widens the floor itself, per rule.
+    widened = _one(
+        _render(
+            (
+                *_ENABLED_SETTINGS,
+                "modelServing.networkPolicy.extraIngress[0].from[0].podSelector.matchLabels.app=site",
+                "modelServing.networkPolicy.extraIngress[0].ports[0].port=http",
+            )
+        ),
+        "NetworkPolicy",
+        f"{_FULLNAME}-vllm",
     )
+    assert {
+        "from": [{"podSelector": {"matchLabels": {"app": "site"}}}],
+        "ports": [{"port": "http"}],
+    } in widened["spec"]["ingress"]
 
 
 def test_the_gateway_exports_metrics_and_restarts_when_its_config_changes() -> None:
@@ -308,12 +294,11 @@ def test_grafana_shares_the_fleets_front_door() -> None:
     ]
 
 
-def test_alerts_cover_each_plane_and_take_every_threshold_from_values() -> None:
+def test_alerts_cover_each_plane_and_take_every_threshold_from_values(tmp_path: Path) -> None:
     """Keep every alert explained, actionable, and tunable without editing PromQL."""
 
     rendered = _render(_ENABLED_SETTINGS)
     values = _load_yaml(_VALUES)
-    template = _RULES_TEMPLATE.read_text(encoding="utf-8")
 
     prometheus_rule = _one(rendered, "PrometheusRule", _FULLNAME)
     groups = {group["name"]: group["rules"] for group in prometheus_rule["spec"]["groups"]}
@@ -355,8 +340,21 @@ def test_alerts_cover_each_plane_and_take_every_threshold_from_values() -> None:
     assert "{{ $value" in alerts["FlakeGraphKvCacheSaturated"]["annotations"]["description"]
 
     thresholds = values["monitoring"]["rules"]["thresholds"]
-    for key in thresholds:
-        assert f"$t.{key}" in template, f"threshold {key} is declared but no rule uses it"
+    # Every declared threshold moves some rule: set each to a value nothing
+    # else renders and look for it in the rules that come out.
+    sentinels = {
+        key: f"{731 + index}m" if isinstance(default, str) else round(0.5 + index / 100, 2)
+        for index, (key, default) in enumerate(thresholds.items())
+    }
+    overrides = tmp_path / "thresholds.yaml"
+    overrides.write_text(
+        yaml.safe_dump({"monitoring": {"rules": {"thresholds": sentinels}}}), encoding="utf-8"
+    )
+    tuned = json.dumps(
+        _one(_render(_ENABLED_SETTINGS, values=(overrides,)), "PrometheusRule", _FULLNAME)
+    )
+    for key, value in sentinels.items():
+        assert str(value) in tuned, f"threshold {key} is declared but no rule uses it"
     assert alerts["FlakeGraphKvCacheSaturated"]["for"] == thresholds["kvCacheUsageFor"]
     assert alerts["FlakeGraphKvCacheSaturated"]["expr"].endswith(f"> {thresholds['kvCacheUsage']}")
 
@@ -519,7 +517,8 @@ def _schema_columns() -> dict[str, set[str]]:
 
 
 def _gateway_config(rendered: list[dict[str, Any]]) -> str:
-    return _one(rendered, "ConfigMap", f"{_FULLNAME}-litellm")["data"]["config.yaml"]
+    config: str = _one(rendered, "ConfigMap", f"{_FULLNAME}-litellm")["data"]["config.yaml"]
+    return config
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

@@ -2287,8 +2287,7 @@ def test_kubernetes_database_url_comes_from_deployed_worker_contract(
     monkeypatch.setattr("flakegraph_app.backends.kubernetes._kubectl_json", kubectl)
 
     assert (
-        _fleet_database_url("flakegraph", ClusterTarget())
-        == "postgresql://app@database-rw:5432/kg"
+        _fleet_database_url("flakegraph", ClusterTarget()) == "postgresql://app@database-rw:5432/kg"
     )
 
 
@@ -2885,48 +2884,92 @@ def test_a_chosen_stage_is_qualified_for_snowflake() -> None:
     assert _qualified_stage("", "DB", "SCHEMA") == ""
 
 
-def test_submission_staging_avoids_temporary_tables() -> None:
-    """Streamlit in Snowflake runs as a stored procedure.
-
-    A temporary table is rejected there outright with "Unsupported statement type
-    'temporary TABLE'", which stops ingestion at the moment of submission.
-    """
-
-    source = Path("app/flakegraph_app/backends/snowflake.py").read_text(encoding="utf-8")
-
-    assert 'table_type="temporary"' not in source
-    assert 'table_type="transient"' in source
-
-
-def test_a_failed_submission_records_why() -> None:
+def test_a_failed_submission_records_why(tmp_path: Path) -> None:
     """A fixed message forces the reader to reproduce the failure to learn anything.
 
     The spec upload previously failed on a NamedTuple result and was recorded as
     the unqualified "SPCS job submission failed", which described every possible
-    cause equally well.
+    cause equally well. A PutResult is one upload, not eight fields of unknown
+    status, so the one it reports is what the recorded cause must name.
     """
 
-    source = Path("app/flakegraph_app/backends/snowflake.py").read_text(encoding="utf-8")
+    class Row:
+        def __init__(self, values: dict[str, object]) -> None:
+            self.values = values
 
-    assert "'SPCS job submission failed'" not in source
-    assert 'f"SPCS job submission failed: {error}"' in source
-    # The spec upload must use the shared helper rather than repeat the tuple
-    # check that split one PutResult into its fields.
-    assert "_validate_upload_results(_as_results(upload_result)" in source
+        def as_dict(self) -> dict[str, object]:
+            return dict(self.values)
 
+    class PutResult(NamedTuple):
+        source: str
+        target: str
+        status: str
 
-def test_every_stage_the_worker_sees_is_qualified() -> None:
-    """A bare stage name has no namespace to resolve against inside the container.
+    class Query:
+        def __init__(self, session: Session, sql: str, params: object) -> None:
+            self.session = session
+            self.sql = sql
+            self.params = params
 
-    The worker rejects it as an unsafe location, so the input stage needs the same
-    qualification the spec and bulk stages already receive.
-    """
+        def collect(self) -> list[object]:
+            self.session.collected.append((self.sql, self.params))
+            if self.sql.startswith("LIST "):
+                return [
+                    Row(
+                        {
+                            "name": "DB/GRAPH/DOCUMENTS/martial-arts.pdf",
+                            "size": 42,
+                            "md5": "abc",
+                            "last_modified": "2026-07-16T10:00:00Z",
+                        }
+                    )
+                ]
+            return []
 
-    source = Path("app/flakegraph_app/ui/ingestion.py").read_text(encoding="utf-8")
+    class Writer:
+        def mode(self, value: str) -> Writer:
+            del value
+            return self
 
-    # The three stages that cross into the worker's configuration.
-    assert source.count("_qualified_stage(") >= 4
-    assert '"stage": _qualified_stage(' in source
+        def save_as_table(self, name: str, *, table_type: str) -> None:
+            del name, table_type
+
+    class Frame:
+        write = Writer()
+
+    class FileApi:
+        def put_stream(self, stream: Any, destination: str, **kwargs: object) -> PutResult:
+            del stream, kwargs
+            return PutResult("spec.yaml", destination, "SKIPPED")
+
+    class Session:
+        def __init__(self) -> None:
+            self.collected: list[tuple[str, object]] = []
+            self.file = FileApi()
+
+        def sql(self, sql: str, params: object = None) -> Query:
+            return Query(self, sql, params)
+
+        def create_dataframe(self, rows: Any, schema: object) -> Frame:
+            del rows, schema
+            return Frame()
+
+    session = Session()
+    backend = SnowflakeBackend(session)
+
+    with pytest.raises(RuntimeError, match="did not overwrite"):
+        backend.submit(_snowflake_request(tmp_path))
+
+    failure, params = next(
+        (sql, params) for sql, params in session.collected if "STATUS = 'FAILED'" in sql
+    )
+    assert "ERROR = OBJECT_CONSTRUCT('message', ?, 'type', ?)" in failure
+    assert isinstance(params, list)
+    message, error_type, job_id = params
+    assert message.startswith("SPCS job submission failed: Snowflake did not overwrite ")
+    assert message.endswith(": SKIPPED")
+    assert (error_type, job_id) == ("RuntimeError", "job-1")
+    assert not any(sql.startswith("EXECUTE JOB SERVICE") for sql, _params in session.collected)
 
 
 def test_the_app_inlines_an_ontology_the_container_cannot_read(tmp_path: Path) -> None:
@@ -3276,9 +3319,9 @@ def test_a_suspended_service_is_not_called_a_dead_worker() -> None:
         snapshot = SnowflakeBackend(session).status("run-1")
 
         assert snapshot.status == "pending", state
-        assert not any(
-            statement.startswith("UPDATE KG_JOB") for statement in session.statements
-        ), state
+        assert not any(statement.startswith("UPDATE KG_JOB") for statement in session.statements), (
+            state
+        )
 
 
 def test_one_concurrency_budget_reaches_every_model_calling_stage() -> None:

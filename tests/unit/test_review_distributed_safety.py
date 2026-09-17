@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import inspect
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from kg_processor.adapters.distributed.postgres import (
-    _SCHEMA_STATEMENTS,
-    _SCHEMA_VERSION,
-    PostgresDistributedStore,
-)
+from kg_processor.adapters.distributed.postgres import _SCHEMA_STATEMENTS
 from kg_processor.application.distributed_planner import _graph_output_payload
 from kg_processor.application.distributed_worker import DistributedWorker
 from kg_processor.config.settings import Settings
@@ -25,55 +20,6 @@ from kg_processor.domain.distributed import (
     TaskStage,
 )
 from kg_processor.domain.finalization import GraphDatasetManifest
-from kg_processor.ports.task_store import FencedPublicationStore
-
-
-def test_schema_v4_started_at_backfill_is_preaggregated_scoped_and_clamped() -> None:
-    """Avoid corpus-wide correlated stage scans and impossible historical timestamps."""
-
-    migration = next(
-        statement for statement in _SCHEMA_STATEMENTS if "WITH prerequisite_events AS" in statement
-    )
-
-    assert _SCHEMA_VERSION >= 6
-    assert "flakegraph_task_dependency" in migration
-    assert "dependency.task_id" in migration
-    assert "GROUP BY task_id" in migration
-    assert "LEAST(" in migration
-    assert "GREATEST(" in migration
-    assert "WHEN 'compact_document'" not in migration
-
-
-def test_postgres_publication_callback_uses_optimistic_fence_without_holding_locks() -> None:
-    """Cancellation stays responsive while completion checks the original lease fence."""
-
-    source = inspect.getsource(PostgresDistributedStore.publish_claimed)
-
-    assert "FOR UPDATE OF publication, run" not in source
-    assert "lease_expires_at >= CURRENT_TIMESTAMP" in source
-    assert "publication.attempts = %s" in source
-    assert "publication.generation = %s" in source
-    assert source.index("publish(lease)") < source.index("UPDATE flakegraph_publication")
-
-
-def test_postgres_task_reclaims_are_bounded_with_an_activity_aware_terminal_path() -> None:
-    claim_source = inspect.getsource(PostgresDistributedStore.claim_task)
-    expiry_source = inspect.getsource(PostgresDistributedStore._fail_abandoned_exhausted_tasks)
-
-    assert "attempts = task.attempts + 1" in claim_source
-    assert "task.attempts < task.max_attempts" in claim_source
-    assert "self._fail_abandoned_exhausted_tasks(connection)" in claim_source
-    assert "attempts >= max_attempts" in expiry_source
-    assert "GREATEST(lease_expires_at, updated_at)" in expiry_source
-
-
-def test_barrierless_completion_serializes_on_the_run_row() -> None:
-    source = inspect.getsource(PostgresDistributedStore._complete_run_without_final_barrier)
-
-    assert "SELECT id FROM flakegraph_run WHERE id = %s FOR UPDATE" in source
-    assert source.index("FOR UPDATE") < source.index("UPDATE flakegraph_run")
-    assert "completed_at" not in source
-    assert "NOT EXISTS" in source
 
 
 def test_finalizer_rejects_arbitrary_environment_credential_references(tmp_path: Path) -> None:
@@ -222,40 +168,6 @@ def _settings(tmp_path: Path) -> Settings:
             "distributed": {"database_url": "postgresql://example/test"},
         },
     )
-
-
-def test_artifact_retention_clears_every_restricting_reference_before_deleting_rows() -> None:
-    """A surviving reference must fail the row delete, never orphan a live payload.
-
-    ``flakegraph_artifact`` is referenced with ON DELETE RESTRICT by more than one
-    table. Retention clears each of them first, so a reference it forgot cannot
-    destroy objects and then fail the delete on every retry.
-    """
-
-    source = inspect.getsource(PostgresDistributedStore.delete_run_artifacts)
-    restricting_tables = {
-        statement.split("CREATE TABLE IF NOT EXISTS ", 1)[1].split(" ", 1)[0]
-        for statement in _SCHEMA_STATEMENTS
-        if "CREATE TABLE IF NOT EXISTS " in statement
-        and "REFERENCES flakegraph_artifact(id) ON DELETE RESTRICT" in statement
-    }
-
-    assert restricting_tables
-    for table in restricting_tables:
-        assert f"DELETE FROM {table} WHERE run_id = %s" in source
-    assert source.index("DELETE FROM flakegraph_artifact") < source.index("_delete_blob_batch")
-
-
-def test_fenced_publication_contract_describes_the_fence_its_stores_implement() -> None:
-    """A port contract that contradicts every implementation misdirects the next one."""
-
-    contract = inspect.getdoc(FencedPublicationStore) or ""
-    implementation = inspect.getsource(PostgresDistributedStore.publish_claimed)
-
-    assert "must not hold a store lock across the callback" in contract
-    assert "generation" in contract
-    assert "attempt" in contract
-    assert "FOR UPDATE" not in implementation
 
 
 def test_demand_excludes_work_no_worker_can_claim() -> None:

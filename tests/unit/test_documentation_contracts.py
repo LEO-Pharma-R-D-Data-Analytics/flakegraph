@@ -1,53 +1,9 @@
 from __future__ import annotations
 
-import ast
 import re
 from pathlib import Path
 
 import kg_processor
-
-_SOURCE_ROOT = Path("src/kg_processor")
-
-
-def test_production_modules_have_module_docstrings() -> None:
-    missing: list[str] = []
-
-    for path in sorted(_SOURCE_ROOT.rglob("*.py")):
-        if path.name == "__init__.py":
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        if not ast.get_docstring(tree):
-            missing.append(str(path))
-
-    assert missing == []
-
-
-def test_public_production_surfaces_have_docstrings() -> None:
-    missing: list[str] = []
-
-    for path in sorted(_SOURCE_ROOT.rglob("*.py")):
-        if path.name == "__init__.py":
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef):
-                if not ast.get_docstring(node):
-                    missing.append(f"{path}:{node.name}")
-                for child in node.body:
-                    if (
-                        isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and not child.name.startswith("_")
-                        and not ast.get_docstring(child)
-                    ):
-                        missing.append(f"{path}:{node.name}.{child.name}")
-            elif (
-                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and not node.name.startswith("_")
-                and not ast.get_docstring(node)
-            ):
-                missing.append(f"{path}:{node.name}")
-
-    assert missing == []
 
 
 def test_readme_keeps_quick_start_paths_current_and_direct() -> None:

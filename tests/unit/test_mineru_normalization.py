@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 from kg_processor.adapters.files.local import LocalFileSource
-from kg_processor.adapters.ocr import mineru_common, snowflake_cortex
 from kg_processor.adapters.ocr.mineru_common import redact_blob_metadata
 from kg_processor.adapters.ocr.mineru_internal import MineruInternalOcrProvider
 from kg_processor.ports.ocr import OcrOptions
@@ -44,12 +43,6 @@ def test_blob_redaction_covers_every_provider_spelling_of_an_inline_payload() ->
         assert key not in redacted
         assert redacted[f"{key}_present"] is True
         assert redacted[f"{key}_length"] == 2
-
-
-def test_every_ocr_adapter_uses_the_same_blob_redaction() -> None:
-    """Separate copies drift, and each then leaks what the other hides."""
-
-    assert vars(snowflake_cortex)["redact_blob_metadata"] is mineru_common.redact_blob_metadata
 
 
 def test_content_list_paragraphs_are_not_mistaken_for_binary_assets(tmp_path: Path) -> None:

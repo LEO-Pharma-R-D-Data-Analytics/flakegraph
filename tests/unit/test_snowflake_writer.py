@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import inspect
-import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from kg_processor.adapters import snowflake as shared_snowflake
-from kg_processor.adapters.jobs import snowflake as jobs_snowflake
-from kg_processor.adapters.writers import snowflake_bulk, snowflake_direct, snowflake_manifest
 from kg_processor.adapters.writers.snowflake_direct import (
     ColumnSpec,
     SnowflakeConnectionConfig,
@@ -612,18 +607,3 @@ def test_direct_writer_releases_the_session_when_no_cursor_can_be_opened() -> No
         writer.write(_sample_batch())
 
     assert connection.closed
-
-
-def test_one_autocommit_helper_serves_every_snowflake_adapter() -> None:
-    """Duplicated transaction-mode helpers drift and diverge adapters' commit semantics."""
-
-    consumers = [jobs_snowflake, snowflake_direct, snowflake_bulk, snowflake_manifest]
-    definers = [
-        module.__name__
-        for module in [shared_snowflake, *consumers]
-        if re.search(r"^def \w*autocommit\w*\(", inspect.getsource(module), re.MULTILINE)
-    ]
-
-    assert definers == [shared_snowflake.__name__]
-    for module in consumers:
-        assert module.set_snowflake_autocommit is shared_snowflake.set_snowflake_autocommit

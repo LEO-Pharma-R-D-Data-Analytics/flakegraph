@@ -10,9 +10,12 @@ from typing import Any
 import yaml
 from helm import CHART as _CHART
 from helm import FULLNAME as _FULLNAME
+from helm import fails as _fails
+from helm import notes as _notes
 from helm import one as _one
 from helm import render as _render
 
+from kg_processor.adapters.distributed.postgres import _SCHEMA_STATEMENTS
 from kg_processor.serving.sizing import (
     BYTES_PER_GIB,
     DeviceBudget,
@@ -22,20 +25,26 @@ from kg_processor.serving.sizing import (
 
 _VALUES = _CHART / "values.yaml"
 _SCHEMA = _CHART / "values.schema.json"
-_MODEL_TEMPLATE = _CHART / "templates/model-serving.yaml"
-_NETWORK_POLICY_TEMPLATE = _CHART / "templates/model-serving-networkpolicy.yaml"
-_LITELLM_TEMPLATE = _CHART / "templates/gateway-litellm.yaml"
-_PLACEMENT_TEMPLATE = _CHART / "templates/gateway-placement.yaml"
-_DOCUMENT_PARSING_TEMPLATE = _CHART / "templates/document-parsing.yaml"
-_WORKER_TEMPLATE = _CHART / "templates/workers.yaml"
-_AUTOSCALING_TEMPLATE = _CHART / "templates/queue-autoscaling.yaml"
-_DATABASE_BOOTSTRAP_TEMPLATE = _CHART / "templates/database-bootstrap-job.yaml"
-_NOTES_TEMPLATE = _CHART / "templates/NOTES.txt"
-_CLOUDNATIVEPG_TEMPLATE = _CHART / "templates/cloudnativepg.yaml"
-_PRIORITY_TEMPLATE = _CHART / "templates/priorityclasses.yaml"
-_SPARK_RBAC_TEMPLATE = _CHART / "templates/spark-rbac.yaml"
 _PUBLIC_EXAMPLE = Path("deploy/examples/k3s-spark-values.yaml")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+# The serving plane is opt-in, and its shipped draft model is a path that
+# something outside the chart has to supply.
+_SERVING = (
+    "modelServing.enabled=true",
+    "modelServing.server.draftModelSeed.providedExternally=true",
+)
+_SPARK = (*_SERVING, "spark.enabled=true")
+_VLLM = f"{_FULLNAME}-vllm"
+_ROUTER = f"{_FULLNAME}-inference-router"
+_WORKER_POOLS = ("prepare", "extract", "finalize")
+_CONSUMER_ENV = (
+    "KG_LLM_ENDPOINT",
+    "KG_LLM_MODEL",
+    "KG_LLM_API_KEY",
+    "KG_MINERU_API_URL",
+    "KG_MINERU_API_KEY",
+)
 
 
 def test_model_serving_defaults_are_pinned_and_resource_bounded() -> None:
@@ -141,29 +150,63 @@ def test_the_shipped_sequence_limit_is_one_the_sizing_formula_supports() -> None
     assert verdict.sequence_limit_binds_first, verdict.detail
 
 
-def test_model_serving_template_owns_the_complete_model_lifecycle() -> None:
+def test_the_engine_owns_the_complete_model_lifecycle() -> None:
     """Require storage, pinned model loading, probes, spreading, and service discovery."""
 
-    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+    values = _load_yaml(_VALUES)["modelServing"]
+    rendered = _render(_SERVING)
+    engines = _one(rendered, "StatefulSet", _VLLM)
+    pod = _pod(engines)
+    engine = _container(pod, "vllm")
+    args = _args(engine)
 
-    required_fragments = [
-        "kind: StatefulSet",
-        "kind: Service",
-        "volumeClaimTemplates:",
-        "requiredDuringSchedulingIgnoredDuringExecution:",
-        "--revision",
-        "--max-num-batched-tokens",
-        "VLLM_MARLIN_USE_ATOMIC_ADD",
-        "huggingFaceTokenSecret",
-        "--load-format",
-        "--skip-mm-profiling",
-        "--limit-mm-per-prompt",
-        "startupProbe:",
-        "readinessProbe:",
-        "livenessProbe:",
+    assert (
+        _one(rendered, "Service", _VLLM)["spec"]["selector"]
+        == engines["spec"]["selector"]["matchLabels"]
+    )
+    assert engines["spec"]["serviceName"] == f"{_VLLM}-headless"
+    assert [claim["metadata"]["name"] for claim in engines["spec"]["volumeClaimTemplates"]] == [
+        "models"
     ]
-    for fragment in required_fragments:
-        assert fragment in template
+    # One engine per host, and required: two engines cannot share the GPU.
+    required = pod["affinity"]["podAntiAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+    assert required[0]["labelSelector"]["matchLabels"] == engines["spec"]["selector"]["matchLabels"]
+    assert args["--revision"] == values["model"]["revision"]
+    assert args["--max-num-batched-tokens"] == str(values["server"]["maxNumBatchedTokens"])
+    assert args["--limit-mm-per-prompt"] == json.dumps(
+        values["server"]["limitMultimodalPerPrompt"], separators=(",", ":")
+    )
+    assert _env(engine)["VLLM_MARLIN_USE_ATOMIC_ADD"]["value"] == "1"
+    # Probes belong to the enforcement floor, which the next test pins.
+    assert {"startupProbe", "readinessProbe", "livenessProbe"} <= set(_container(pod, "sidecar"))
+
+
+def test_the_engine_reads_a_private_hub_and_a_named_loader_only_when_told() -> None:
+    """A Hub token and a loader are opt-in, and each reaches the engine intact."""
+
+    gated = _render(
+        (
+            *_SERVING,
+            "modelServing.huggingFaceTokenSecret.name=hub-token",
+            "modelServing.server.loadFormat=safetensors",
+            "modelServing.server.skipMultimodalProfiling=true",
+        )
+    )
+    engine = _container(_pod(_one(gated, "StatefulSet", _VLLM)), "vllm")
+    values = _load_yaml(_VALUES)["modelServing"]["huggingFaceTokenSecret"]
+
+    assert _env(engine)["HF_TOKEN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "hub-token",
+        "key": values["key"],
+        "optional": values["optional"],
+    }
+    assert _args(engine)["--load-format"] == "safetensors"
+    assert "--skip-mm-profiling" in engine["args"]
+
+    default = _container(_pod(_one(_render(_SERVING), "StatefulSet", _VLLM)), "vllm")
+    assert "HF_TOKEN" not in _env(default)
+    assert "--load-format" not in default["args"]
+    assert "--skip-mm-profiling" not in default["args"]
 
 
 def test_engine_tuning_flags_can_be_configured_away() -> None:
@@ -176,51 +219,93 @@ def test_engine_tuning_flags_can_be_configured_away() -> None:
     stranded this deployment on a fork.
     """
 
-    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+    flags = {
+        "quantization": "--quantization",
+        "attentionBackend": "--attention-backend",
+        "moeBackend": "--moe-backend",
+        "loadFormat": "--load-format",
+    }
+    cleared = _render((*_SERVING, *(f"modelServing.server.{key}=" for key in flags)))
+    engine = _container(_pod(_one(cleared, "StatefulSet", _VLLM)), "vllm")
 
-    for key in ("quantization", "attentionBackend", "moeBackend", "loadFormat"):
-        guard = f"{{{{- with .Values.modelServing.server.{key} }}}}"
-        assert guard in template, key
+    for flag in flags.values():
+        assert flag not in engine["args"], flag
+    assert "" not in engine["args"]
 
 
 def test_priority_scheduling_cannot_be_configured_away() -> None:
     """Render the flag unconditionally; without it every stamp is silently ignored.
 
-    There is no values key that omits it and no branch that guards it, because
-    an engine serving FIFO looks exactly like an engine honouring priority until
-    someone measures the wait.
+    There is no values key that omits it, because an engine serving FIFO looks
+    exactly like an engine honouring priority until someone measures the wait.
     """
 
-    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
-    before, _, after = template.partition("- --scheduling-policy")
+    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    server = schema["properties"]["modelServing"]["properties"]["server"]
 
-    assert after.startswith("\n            - priority")
-    # Nothing between the engine's own argument list and the flag may branch,
-    # so no values file can leave it out.
-    assert "{{- if" not in before.rsplit("- serve", maxsplit=1)[1]
+    assert server["additionalProperties"] is False
+    assert not any("scheduling" in key.lower() for key in server["properties"])
+    for rendered in (
+        _render(_SERVING),
+        _render((*_SERVING, "modelServing.server.quantization=")),
+        _render(_SERVING[1:], values=(_PUBLIC_EXAMPLE,)),
+    ):
+        engine = _container(_pod(_one(rendered, "StatefulSet", _VLLM)), "vllm")
+        assert _args(engine)["--scheduling-policy"] == "priority"
 
 
 def test_the_engine_is_reachable_only_through_the_enforcement_floor() -> None:
     """Bind the engine to loopback so no route to inference skips the sidecar."""
 
-    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
-    policy = _NETWORK_POLICY_TEMPLATE.read_text(encoding="utf-8")
+    values = _load_yaml(_VALUES)["modelServing"]
+    rendered = _render(_SERVING)
+    pod = _pod(_one(rendered, "StatefulSet", _VLLM))
+    engine = _container(pod, "vllm")
+    sidecar = _container(pod, "sidecar")
+    sidecar_env = _env(sidecar)
 
-    assert "- --host\n            - 127.0.0.1" in template
-    assert "command: [flakegraph, serving, sidecar]" in template
-    assert "FLAKEGRAPH_SIDECAR_KEYS_FILE" in template
-    assert "FLAKEGRAPH_SIDECAR_BANDS" in template
+    assert _args(engine)["--host"] == "127.0.0.1"
+    assert _args(engine)["--port"] == str(values["server"]["enginePort"])
+    # The engine's own port is never a container port, so no Service can name it.
+    assert values["server"]["enginePort"] not in {
+        port["containerPort"] for container in pod["containers"] for port in container["ports"]
+    }
+    assert sidecar["command"] == ["flakegraph", "serving", "sidecar"]
+    assert sidecar_env["FLAKEGRAPH_SIDECAR_UPSTREAM"]["value"] == (
+        f"http://127.0.0.1:{values['server']['enginePort']}"
+    )
+    assert sidecar_env["FLAKEGRAPH_SIDECAR_KEYS_FILE"]["value"].endswith(
+        values["sidecar"]["keySecret"]["key"]
+    )
+    assert (
+        json.loads(sidecar_env["FLAKEGRAPH_SIDECAR_BANDS"]["value"]) == values["sidecar"]["bands"]
+    )
     # The sidecar refuses to start on a limit the KV budget cannot support, so
     # the numbers it checks must actually reach it.
-    assert "FLAKEGRAPH_SIDECAR_GEOMETRY" in template
-    assert "FLAKEGRAPH_SIDECAR_DEVICE_BUDGET" in template
-    assert "FLAKEGRAPH_SIDECAR_MAX_NUM_SEQS" in template
+    geometry = json.loads(sidecar_env["FLAKEGRAPH_SIDECAR_GEOMETRY"]["value"])
+    assert geometry["kv_heads"] == values["sizing"]["kvHeads"]
+    assert geometry["weights_bytes"] == int(values["sizing"]["weightsGiB"] * BYTES_PER_GIB)
+    budget = json.loads(sidecar_env["FLAKEGRAPH_SIDECAR_DEVICE_BUDGET"]["value"])
+    assert budget["gpu_memory_utilization"] == values["server"]["gpuMemoryUtilization"]
+    assert sidecar_env["FLAKEGRAPH_SIDECAR_MAX_NUM_SEQS"]["value"] == str(
+        values["server"]["maxNumSeqs"]
+    )
     # Probes belong to the floor: a healthy engine behind an unhealthy sidecar
     # is not a servable replica.
-    assert template.index("startupProbe:") < template.index("name: vllm")
-    assert "kind: NetworkPolicy" in policy
-    assert "app.kubernetes.io/component: inference-router" in policy
-    assert "enginePort" not in policy
+    assert {"startupProbe", "readinessProbe", "livenessProbe"} <= set(sidecar)
+    assert not {"startupProbe", "readinessProbe", "livenessProbe"} & set(engine)
+
+    policy = _one(rendered, "NetworkPolicy", _VLLM)
+    router = {"app.kubernetes.io/component": "inference-router"}
+    admitted = {
+        port["port"]
+        for rule in policy["spec"]["ingress"]
+        for peer in rule["from"]
+        for port in rule["ports"]
+        if router.items() <= peer["podSelector"]["matchLabels"].items()
+    }
+    assert "http" in admitted
+    assert values["server"]["enginePort"] not in admitted
 
 
 def test_the_engine_pod_accepts_a_site_supplied_trust_store() -> None:
@@ -233,90 +318,151 @@ def test_the_engine_pod_accepts_a_site_supplied_trust_store() -> None:
     """
 
     values = _load_yaml(_VALUES)["modelServing"]
-    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
-
     for field in ("extraEnv", "extraVolumes", "extraVolumeMounts"):
         assert values[field] == []
-        assert f".Values.modelServing.{field}" in template
+
+    rendered = _render(
+        (
+            *_SERVING,
+            "modelServing.extraEnv[0].name=SSL_CERT_FILE",
+            "modelServing.extraEnv[0].value=/etc/ssl/site/ca.crt",
+            "modelServing.extraVolumes[0].name=site-ca",
+            "modelServing.extraVolumes[0].secret.secretName=site-ca",
+            "modelServing.extraVolumeMounts[0].name=site-ca",
+            "modelServing.extraVolumeMounts[0].mountPath=/etc/ssl/site",
+        )
+    )
+    pod = _pod(_one(rendered, "StatefulSet", _VLLM))
+    engine = _container(pod, "vllm")
+
     # The mounts belong to the engine, which is the container that downloads.
-    engine = template.split("name: vllm", maxsplit=1)[1]
-    assert ".Values.modelServing.extraVolumeMounts" in engine
-    assert ".Values.modelServing.extraEnv" in engine
+    assert _env(engine)["SSL_CERT_FILE"]["value"] == "/etc/ssl/site/ca.crt"
+    assert {"name": "site-ca", "mountPath": "/etc/ssl/site"} in engine["volumeMounts"]
+    assert {"name": "site-ca", "secret": {"secretName": "site-ca"}} in pod["volumes"]
+    sidecar = _container(pod, "sidecar")
+    assert "SSL_CERT_FILE" not in _env(sidecar)
+    assert "site-ca" not in {mount["name"] for mount in sidecar["volumeMounts"]}
 
 
 def test_the_gateway_expresses_priority_as_which_alias_a_key_may_call() -> None:
     """Keep the class-to-band mapping out of the request body entirely."""
 
-    template = _LITELLM_TEMPLATE.read_text(encoding="utf-8")
     values = _load_yaml(_VALUES)["gateway"]
+    rendered = _render(())
+    config = yaml.safe_load(
+        _one(rendered, "ConfigMap", f"{_FULLNAME}-litellm")["data"]["config.yaml"]
+    )
+    gateway = _container(_pod(_one(rendered, "Deployment", f"{_FULLNAME}-litellm")), "litellm")
+    env = _env(gateway)
 
     assert values["enabled"] is True
     assert set(values["litellm"]["aliases"]) == {"interactive", "dev", "batch"}
     # Each alias must present a *different* upstream key. Sharing one would make
     # every class the same band while still looking correctly configured.
+    upstream = values["litellm"]["upstreamKeySecret"]
+    served = {entry["model_name"]: entry["litellm_params"] for entry in config["model_list"]}
+    assert set(served) == set(values["litellm"]["aliases"].values())
+    assert {params["api_key"] for params in served.values()} == {
+        f"os.environ/{upstream[field]}" for field in ("interactiveKey", "devKey", "batchKey")
+    }
+    assert len({params["api_key"] for params in served.values()}) == 3
     for field in ("interactiveKey", "devKey", "batchKey"):
-        assert f"upstreamKeySecret.{field}" in template
-    upstream_keys = values["litellm"]["upstreamKeySecret"]
-    assert len({upstream_keys[field] for field in ("interactiveKey", "devKey", "batchKey")}) == 3
-    assert len(set(values["litellm"]["aliases"].values())) == 3
+        assert env[upstream[field]]["valueFrom"]["secretKeyRef"] == {
+            "name": upstream["name"],
+            "key": upstream[field],
+        }
     # Body injection would be stripped by the sidecar and would collide with
     # LiteLLM's own reserved field name besides.
-    assert "priority:" not in template
+    assert "priority" not in json.dumps(config)
     # Pointed at FlakeGraph's own schema, LiteLLM's migration tool baselines
     # instead of migrating and silently creates none of its tables.
     assert values["litellm"]["databaseUrlSuffix"].endswith("schema=litellm")
-    assert "$(FLAKEGRAPH_DATABASE_URI)" in template
-    assert "proxy_batch_write_at" in template
+    assert env["DATABASE_URL"]["value"] == (
+        f"$(FLAKEGRAPH_DATABASE_URI){values['litellm']['databaseUrlSuffix']}"
+    )
+    assert (
+        config["general_settings"]["proxy_batch_write_at"]
+        == (values["litellm"]["spendLogging"]["batchWriteIntervalSeconds"])
+    )
 
 
 def test_placement_routes_on_the_pickers_choice_and_needs_no_crds() -> None:
     """Keep the chart installable where no Inference Extension CRDs exist."""
 
-    template = _PLACEMENT_TEMPLATE.read_text(encoding="utf-8")
-    chart_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(_CHART.rglob("*")) if path.is_file()
-    )
+    rendered = _render(_SERVING)
+    router = _one(rendered, "ConfigMap", _ROUTER)["data"]
+    envoy = yaml.safe_load(router["envoy.yaml"])
+    plugins = yaml.safe_load(router["default-plugins.yaml"])
+    picker = _container(_pod(_one(rendered, "Deployment", _ROUTER)), "endpoint-picker")
 
-    assert "type: ORIGINAL_DST" in template
-    assert "http_header_name: x-gateway-destination-endpoint" in template
-    assert "envoy.filters.http.ext_proc" in template
-    assert "--endpoint-selector" in template
-    assert "prefix-cache-scorer" in template
+    clusters = {cluster["name"]: cluster for cluster in envoy["static_resources"]["clusters"]}
+    assert clusters["original_destination"]["type"] == "ORIGINAL_DST"
+    assert clusters["original_destination"]["original_dst_lb_config"] == {
+        "use_http_header": True,
+        "http_header_name": "x-gateway-destination-endpoint",
+    }
+    listener = next(
+        listener
+        for listener in envoy["static_resources"]["listeners"]
+        if listener["name"] == "inference"
+    )
+    http_filters = listener["filter_chains"][0]["filters"][0]["typed_config"]["http_filters"]
+    assert "envoy.filters.http.ext_proc" in {http_filter["name"] for http_filter in http_filters}
+    assert _args(picker)["--endpoint-selector"].endswith(
+        "app.kubernetes.io/component=model-serving"
+    )
+    assert "prefix-cache-scorer" in {plugin["type"] for plugin in plugins["plugins"]}
     # An InferencePool would make a CRD a precondition for installing at all.
-    assert "InferencePool" not in chart_text
-    assert "kind: Role" in template
-    assert "resources: [pods]" in template
+    assert not [doc for doc in rendered if doc["kind"] == "InferencePool"]
+    role = _one(rendered, "Role", _ROUTER)
+    assert role["rules"] == [
+        {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "watch", "list"]}
+    ]
 
 
 def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
     """Give the shim a resolvable pool and the capacity it must not exceed."""
 
-    template = _DOCUMENT_PARSING_TEMPLATE.read_text(encoding="utf-8")
-    values = _load_yaml(_VALUES)["documentParsing"]
+    values = _load_yaml(_VALUES)
+    parsing = values["documentParsing"]
+    rendered = _render(())
+    pool = _one(rendered, "StatefulSet", f"{_FULLNAME}-mineru")
+    parser = _container(_pod(pool), "mineru")
+    shim = _container(_pod(_one(rendered, "Deployment", f"{_FULLNAME}-ocr")), "ocr-shim")
+    shim_env = _env(shim)
 
-    assert values["enabled"] is True
+    assert parsing["enabled"] is True
     # MinerU's own default of three is too low to keep a node busy.
-    assert values["mineru"]["maxConcurrentRequests"] > 3
-    assert "command: [flakegraph, serving, ocr-shim]" in template
-    assert "FLAKEGRAPH_OCR_SHIM_UPSTREAM_CAPACITY" in template
-    assert "FLAKEGRAPH_OCR_SHIM_DATABASE_URL" in template
-    assert "MINERU_API_MAX_CONCURRENT_REQUESTS" in template
-    assert "- 0.0.0.0" in template
+    assert parsing["mineru"]["maxConcurrentRequests"] > 3
+    assert shim["command"] == ["flakegraph", "serving", "ocr-shim"]
+    assert shim_env["FLAKEGRAPH_OCR_SHIM_UPSTREAM_CAPACITY"]["value"] == str(
+        parsing["mineru"]["maxConcurrentRequests"]
+    )
+    assert shim_env["FLAKEGRAPH_OCR_SHIM_UPSTREAM_HOST"]["value"] == f"{_FULLNAME}-mineru"
+    assert shim_env["FLAKEGRAPH_OCR_SHIM_DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {
+        "name": values["database"]["secretName"],
+        "key": values["database"]["secretKey"],
+    }
+    assert _env(parser)["MINERU_API_MAX_CONCURRENT_REQUESTS"]["value"] == str(
+        parsing["mineru"]["maxConcurrentRequests"]
+    )
+    assert _args(parser)["--host"] == "0.0.0.0"
     # Headless: a load-balanced ClusterIP would hide the per-replica load that
     # admission control has to count.
-    assert "clusterIP: None" in template
+    assert _one(rendered, "Service", f"{_FULLNAME}-mineru")["spec"]["clusterIP"] == "None"
     # The parsing pool runs the same image as everything else. MinerU is already
     # installed in it and exposes an entry point, so a second image would only
     # add another artefact to keep on the right architecture.
-    assert "command: [mineru-api]" in template
+    assert parser["command"] == ["mineru-api"]
+    assert "image" not in parsing["mineru"]
+    worker = _worker(rendered, "extract")
+    assert parser["image"] == worker["image"]
+    assert shim["image"] == worker["image"]
     # Every path the parser writes to has to be one of the writable mounts; the
     # image's defaults sit inside the read-only layer.
-    assert "MINERU_API_OUTPUT_ROOT" in template
+    writable = tuple(mount["mountPath"] for mount in parser["volumeMounts"])
     for variable in ("MINERU_API_OUTPUT_ROOT", "XDG_CACHE_HOME", "HF_HOME", "HOME"):
-        value = template.split(f"name: {variable}", maxsplit=1)[1].split("value:", maxsplit=1)[1]
-        assert value.strip().splitlines()[0].strip().startswith(("/tmp", "/models")), variable
-    assert "mineru" not in values or "image" not in values["mineru"]
-    assert template.count('include "flakegraph.image"') == 2
+        assert _env(parser)[variable]["value"].startswith(writable), variable
 
 
 def test_document_parsing_replicas_spread_across_hosts_without_requiring_it() -> None:
@@ -328,16 +474,17 @@ def test_document_parsing_replicas_spread_across_hosts_without_requiring_it() ->
     doubles up rather than pending forever.
     """
 
-    template = _DOCUMENT_PARSING_TEMPLATE.read_text(encoding="utf-8")
     values = _load_yaml(_VALUES)["documentParsing"]["mineru"]
+    pool = _one(_render(()), "StatefulSet", f"{_FULLNAME}-mineru")
 
-    statefulset = template.split("kind: StatefulSet", maxsplit=1)[1].split("kind: ", maxsplit=1)[0]
-    assert "topologySpreadConstraints:" in statefulset
-    assert "maxSkew: 1" in statefulset
-    assert "whenUnsatisfiable: ScheduleAnyway" in statefulset
-    assert "topologyKey: {{ $mineru.topologyKey }}" in statefulset
-    spread = statefulset.split("topologySpreadConstraints:", maxsplit=1)[1]
-    assert "app.kubernetes.io/component: document-parsing" in spread
+    assert _pod(pool)["topologySpreadConstraints"] == [
+        {
+            "maxSkew": 1,
+            "topologyKey": values["topologyKey"],
+            "whenUnsatisfiable": "ScheduleAnyway",
+            "labelSelector": {"matchLabels": pool["spec"]["selector"]["matchLabels"]},
+        }
+    ]
     assert values["topologyKey"] == "kubernetes.io/hostname"
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
     mineru = schema["properties"]["documentParsing"]["properties"]["mineru"]
@@ -347,17 +494,30 @@ def test_document_parsing_replicas_spread_across_hosts_without_requiring_it() ->
 def test_spark_executor_spreading_degrades_gracefully() -> None:
     """Prefer fleet-wide placement without deadlocking finalization on node loss."""
 
-    template = (_CHART / "templates/spark-rbac.yaml").read_text(encoding="utf-8")
+    values = _load_yaml(_VALUES)["spark"]
+    executor = _executor_template(_render(_SPARK))
+    (container,) = executor["spec"]["containers"]
 
-    assert "preferredDuringSchedulingIgnoredDuringExecution:" in template
-    assert "weight: 100" in template
-    assert "podAffinityTerm:" in template
-    assert "spark-role: executor" in template
-    assert ".Values.spark.executorPodSecurityContext" in template
-    assert ".Values.spark.executorContainerSecurityContext" in template
-    values = _load_yaml(_VALUES)
-    assert values["spark"]["executorPodSecurityContext"]["runAsUser"] == 185
-    assert values["spark"]["executorContainerSecurityContext"]["allowPrivilegeEscalation"] is False
+    preferred = executor["spec"]["affinity"]["podAntiAffinity"][
+        "preferredDuringSchedulingIgnoredDuringExecution"
+    ]
+    assert preferred == [
+        {
+            "weight": 100,
+            "podAffinityTerm": {
+                "topologyKey": values["topologyKey"],
+                "labelSelector": {"matchLabels": {"spark-role": "executor"}},
+            },
+        }
+    ]
+    assert (
+        "requiredDuringSchedulingIgnoredDuringExecution"
+        not in executor["spec"]["affinity"]["podAntiAffinity"]
+    )
+    assert executor["spec"]["securityContext"] == values["executorPodSecurityContext"]
+    assert container["securityContext"] == values["executorContainerSecurityContext"]
+    assert values["executorPodSecurityContext"]["runAsUser"] == 185
+    assert values["executorContainerSecurityContext"]["allowPrivilegeEscalation"] is False
 
 
 def test_the_pipeline_is_a_metered_consumer_like_any_other() -> None:
@@ -369,23 +529,40 @@ def test_the_pipeline_is_a_metered_consumer_like_any_other() -> None:
     left that GPU idle too.
     """
 
-    template = _WORKER_TEMPLATE.read_text(encoding="utf-8")
-    helpers = (_CHART / "templates/_helpers.tpl").read_text(encoding="utf-8")
-    consumer_env = helpers.split('define "flakegraph.consumerEnv"', maxsplit=1)[1].split(
-        "{{- end -}}", maxsplit=1
-    )[0]
+    values = _load_yaml(_VALUES)
+    litellm = values["gateway"]["litellm"]
+    rendered = _render(
+        (
+            "workers.extract.topologySpreadConstraints[0].maxSkew=1",
+            "workers.extract.topologySpreadConstraints[0].topologyKey=kubernetes.io/hostname",
+            "workers.extract.topologySpreadConstraints[0].whenUnsatisfiable=ScheduleAnyway",
+        )
+    )
 
-    assert "KG_LLM_ENDPOINT" in consumer_env
-    assert "KG_LLM_MODEL" in consumer_env
-    assert "KG_LLM_API_KEY" in consumer_env
-    assert 'include "flakegraph.gatewayEndpoint"' in consumer_env
-    assert ".Values.gateway.litellm.aliases.batch" in consumer_env
-    assert "KG_MINERU_API_URL" in consumer_env
-    assert 'include "flakegraph.consumerEnv"' in template
-    # Embeddings stay an independently configured provider.
-    assert "KG_EMBED_ENDPOINT" not in template
-    assert "KG_EMBED_MODEL" not in template
-    assert "topologySpreadConstraints:" in template
+    for pool in _WORKER_POOLS:
+        env = _env(_worker(rendered, pool))
+        assert env["KG_LLM_ENDPOINT"]["value"] == (
+            f"http://{_FULLNAME}-litellm:{litellm['service']['port']}/v1"
+        )
+        assert env["KG_LLM_MODEL"]["value"] == litellm["aliases"]["batch"]
+        assert env["KG_LLM_API_KEY"]["valueFrom"]["secretKeyRef"] == {
+            "name": litellm["virtualKeySecret"]["name"],
+            "key": litellm["virtualKeySecret"]["batchKey"],
+        }
+        assert env["KG_MINERU_API_URL"]["value"] == (
+            f"http://{_FULLNAME}-ocr:{values['documentParsing']['shim']['service']['port']}"
+        )
+        # Embeddings stay an independently configured provider.
+        assert "KG_EMBED_ENDPOINT" not in env
+        assert "KG_EMBED_MODEL" not in env
+    extract = _pod(_one(rendered, "Deployment", f"{_FULLNAME}-extract"))
+    assert extract["topologySpreadConstraints"] == [
+        {
+            "maxSkew": 1,
+            "topologyKey": "kubernetes.io/hostname",
+            "whenUnsatisfiable": "ScheduleAnyway",
+        }
+    ]
 
 
 def test_the_llm_credential_is_declared_exactly_once_per_container() -> None:
@@ -397,11 +574,22 @@ def test_the_llm_credential_is_declared_exactly_once_per_container() -> None:
     mapping must stand aside.
     """
 
-    template = _WORKER_TEMPLATE.read_text(encoding="utf-8")
+    litellm = _load_yaml(_VALUES)["gateway"]["litellm"]
+    with_gateway = _render(("providerSecret.name=provider",))
+    without_gateway = _render(("providerSecret.name=provider", "gateway.enabled=false"))
 
-    assert 'eq $mapping.name "KG_LLM_API_KEY"' in template
-    guard = template.split("range $mapping := $root.Values.providerSecret.env", maxsplit=1)[1]
-    assert "$root.Values.gateway.enabled" in guard.split("- name: {{ $mapping.name }}")[0]
+    for pool in _WORKER_POOLS:
+        gateway_worker = _worker(with_gateway, pool)
+        names = [entry["name"] for entry in gateway_worker["env"]]
+        assert len(names) == len(set(names)), pool
+        assert (
+            _env(gateway_worker)["KG_LLM_API_KEY"]["valueFrom"]["secretKeyRef"]["name"]
+            == (litellm["virtualKeySecret"]["name"])
+        )
+        provider_worker = _worker(without_gateway, pool)
+        assert _env(provider_worker)["KG_LLM_API_KEY"]["valueFrom"]["secretKeyRef"]["name"] == (
+            "provider"
+        )
 
 
 def test_the_validator_is_configured_exactly_like_what_it_validates() -> None:
@@ -412,31 +600,34 @@ def test_the_validator_is_configured_exactly_like_what_it_validates() -> None:
     passed a profile the workers could not execute, and failed one they could.
     """
 
-    workers = _WORKER_TEMPLATE.read_text(encoding="utf-8")
-    bootstrap = _DATABASE_BOOTSTRAP_TEMPLATE.read_text(encoding="utf-8")
-    helpers = (_CHART / "templates/_helpers.tpl").read_text(encoding="utf-8")
+    rendered = _render(_SERVING)
+    bootstrap = _first_declared(_bootstrap(rendered))
 
-    assert 'define "flakegraph.consumerEnv"' in helpers
-    for template in (workers, bootstrap):
-        assert 'include "flakegraph.consumerEnv"' in template
-        # Neither may hand-roll the variables the shared block owns.
-        assert "- name: KG_LLM_ENDPOINT" not in template
-        assert "- name: KG_MINERU_API_URL" not in template
+    for pool in _WORKER_POOLS:
+        worker = _first_declared(_worker(rendered, pool))
+        for name in _CONSUMER_ENV:
+            assert worker[name] == bootstrap[name], (pool, name)
     # The Job must not be left pointing at an engine the consumers no longer use.
-    assert 'include "flakegraph.modelServingEndpoint"' not in bootstrap
+    for entry in bootstrap.values():
+        assert _VLLM not in entry.get("value", "")
 
 
 def test_no_consumer_can_still_address_an_engine_directly() -> None:
     """Leave one endpoint key, so the placement layer stays replaceable."""
 
-    chart_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(_CHART.rglob("*")) if path.is_file()
-    )
-    example = _PUBLIC_EXAMPLE.read_text(encoding="utf-8")
+    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    rendered = _render(_SERVING[1:], values=(_PUBLIC_EXAMPLE,))
 
-    assert "localModelServing" not in chart_text
-    assert "localModelServing" not in example
-    assert "internalTrafficPolicy" not in chart_text
+    assert schema["additionalProperties"] is False
+    assert "localModelServing" not in schema["properties"]
+    assert "localModelServing" not in _load_yaml(_PUBLIC_EXAMPLE)
+    assert not any(
+        "internalTrafficPolicy" in doc["spec"] for doc in rendered if doc["kind"] == "Service"
+    )
+    consumers = [_worker(rendered, pool) for pool in _WORKER_POOLS] + [_bootstrap(rendered)]
+    for consumer in consumers:
+        for entry in consumer["env"]:
+            assert _VLLM not in entry.get("value", ""), (consumer["name"], entry["name"])
 
 
 def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
@@ -444,8 +635,7 @@ def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
 
     values = _load_yaml(_VALUES)
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-    workers = _WORKER_TEMPLATE.read_text(encoding="utf-8")
-    bootstrap = _DATABASE_BOOTSTRAP_TEMPLATE.read_text(encoding="utf-8")
+    rendered = _render(("providerSecret.name=provider",))
 
     assert values["providerSecret"]["env"] == [
         {"name": "KG_LLM_API_KEY", "key": "KG_LLM_API_KEY", "optional": True},
@@ -462,10 +652,17 @@ def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
         },
     ]
     assert "env" in schema["properties"]["providerSecret"]["required"]
-    assert "envFrom:" not in workers
-    assert "envFrom:" not in bootstrap
-    assert "range $mapping := $root.Values.providerSecret.env" in workers
-    assert "range $mapping := .Values.providerSecret.env" in bootstrap
+    allowlisted = {mapping["name"] for mapping in values["providerSecret"]["env"]}
+    consumers = [_worker(rendered, pool) for pool in _WORKER_POOLS] + [_bootstrap(rendered)]
+    for consumer in consumers:
+        assert "envFrom" not in consumer, consumer["name"]
+        imported = {
+            entry["name"]
+            for entry in consumer["env"]
+            if entry.get("valueFrom", {}).get("secretKeyRef", {}).get("name") == "provider"
+        }
+        assert imported, consumer["name"]
+        assert imported <= allowlisted, consumer["name"]
 
 
 def test_ontology_is_a_portable_chart_managed_deployment_input() -> None:
@@ -473,9 +670,8 @@ def test_ontology_is_a_portable_chart_managed_deployment_input() -> None:
 
     values = _load_yaml(_VALUES)
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-    configmap = (_CHART / "templates/configmap.yaml").read_text(encoding="utf-8")
-    workers = _WORKER_TEMPLATE.read_text(encoding="utf-8")
-    bootstrap = _DATABASE_BOOTSTRAP_TEMPLATE.read_text(encoding="utf-8")
+    inline = _render(("ontology.content=entities: []",))
+    external = _render(("ontology.existingConfigMap=site-ontology",))
 
     assert values["ontology"] == {
         "existingConfigMap": "",
@@ -483,10 +679,22 @@ def test_ontology_is_a_portable_chart_managed_deployment_input() -> None:
         "content": "",
     }
     assert "ontology" in schema["required"]
-    assert 'include "flakegraph.ontologyConfigMapName"' in configmap
-    assert "KG_ONTOLOGY_PROFILE" in workers
-    assert "KG_ONTOLOGY_PROFILE" in bootstrap
-    assert "checksum/ontology" in workers
+    assert _one(inline, "ConfigMap", f"{_FULLNAME}-ontology")["data"] == {
+        "ontology.yaml": "entities: []\n"
+    }
+    assert not [doc for doc in external if doc["metadata"]["name"] == f"{_FULLNAME}-ontology"]
+    for rendered, configmap in ((inline, f"{_FULLNAME}-ontology"), (external, "site-ontology")):
+        for consumer in [_worker(rendered, pool) for pool in _WORKER_POOLS] + [
+            _bootstrap(rendered)
+        ]:
+            assert _env(consumer)["KG_ONTOLOGY_PROFILE"]["value"] == (
+                "/etc/flakegraph-ontology/ontology.yaml"
+            )
+        for pool in _WORKER_POOLS:
+            deployment = _one(rendered, "Deployment", f"{_FULLNAME}-{pool}")
+            assert "checksum/ontology" in deployment["spec"]["template"]["metadata"]["annotations"]
+            volumes = {volume["name"]: volume for volume in _pod(deployment)["volumes"]}
+            assert volumes["ontology"]["configMap"]["name"] == configmap
 
 
 def test_worker_stage_names_follow_the_distributed_dag() -> None:
@@ -495,9 +703,7 @@ def test_worker_stage_names_follow_the_distributed_dag() -> None:
     values = _load_yaml(_VALUES)
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
     stage_enum = schema["$defs"]["worker"]["properties"]["stages"]["items"]["enum"]
-    chart_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(_CHART.rglob("*")) if path.is_file()
-    )
+    rendered = _render(())
 
     assert values["workers"]["prepare"]["stages"] == ["prepare_document"]
     assert values["workers"]["extract"]["stages"] == [
@@ -517,7 +723,10 @@ def test_worker_stage_names_follow_the_distributed_dag() -> None:
         "compact_document",
         "finalize_graph",
     ]
-    assert "extract_window" not in chart_text
+    # Every stage is served by exactly one pool, and no pool serves a stage the
+    # schema does not know.
+    served = [stage for pool in _WORKER_POOLS for stage in _stages(_worker(rendered, pool))]
+    assert sorted(served) == sorted(stage_enum)
 
 
 def test_mutable_worker_image_tags_are_refreshed_on_rollout() -> None:
@@ -534,52 +743,58 @@ def test_mutable_worker_image_tags_are_refreshed_on_rollout() -> None:
 def test_workers_seed_preloaded_models_into_their_writable_cache() -> None:
     """Prevent the read-only runtime cache mount from hiding baked checkpoints."""
 
-    template = _WORKER_TEMPLATE.read_text(encoding="utf-8")
+    rendered = _render(_SPARK)
 
-    assert "initContainers:" in template
-    assert "name: seed-provider-cache" in template
-    # The init container runs as an unprivileged image user. Recursive copy is
-    # sufficient; archive mode would also preserve timestamps/ownership and can
-    # fail against an EmptyDir prepared by Kubernetes securityContext settings.
-    assert "cp -R" in template
-    assert "cp -a" not in template
-    assert "/home/kgprocessor/.cache/." in template
-    assert "/home/spark/.cache/." in template
-    assert "mountPath: /home/kgprocessor/.cache" in template
-    assert "value: /cache/huggingface" in template
-    assert "value: /cache/sentence_transformers" in template
-    seed_resources = template.split("name: seed-provider-cache", maxsplit=1)[1].split(
-        "securityContext:", maxsplit=1
-    )[0]
-    assert "memory: 1Gi" in seed_resources
+    for pool in _WORKER_POOLS:
+        deployment = _one(rendered, "Deployment", f"{_FULLNAME}-{pool}")
+        seed = _container(_pod(deployment), "seed-provider-cache", "initContainers")
+        (script,) = seed["args"]
+        # The init container runs as an unprivileged image user. Recursive copy
+        # is sufficient; archive mode would also preserve timestamps/ownership
+        # and can fail against an EmptyDir prepared by Kubernetes securityContext
+        # settings.
+        assert "cp -R " in script
+        assert "cp -a " not in script
+        assert seed["resources"]["limits"]["memory"] == "1Gi"
+        assert seed["volumeMounts"] == [{"name": "cache", "mountPath": "/cache"}]
+        worker = _worker(rendered, pool)
+        mounts = {mount["name"]: mount["mountPath"] for mount in worker["volumeMounts"]}
+        if pool == "finalize":
+            # The Spark image's baked cache belongs to executor UID 185, so the
+            # driver reads its copy through a neutral mount, not another home.
+            assert "/home/spark/.cache/." in script
+            assert mounts["cache"] == "/cache"
+            assert _env(worker)["HF_HOME"]["value"] == "/cache/huggingface"
+            assert _env(worker)["SENTENCE_TRANSFORMERS_HOME"]["value"] == (
+                "/cache/sentence_transformers"
+            )
+        else:
+            assert "/home/kgprocessor/.cache/." in script
+            assert mounts["cache"] == "/home/kgprocessor/.cache"
 
 
 def test_spark_workers_reserve_memory_for_python_provider_processes() -> None:
     """Keep executor heap and non-heap memory explicit across Helm boundaries."""
 
     values = _load_yaml(_VALUES)
-    template = _WORKER_TEMPLATE.read_text(encoding="utf-8")
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    finalize = _env(_worker(_render(_SPARK), "finalize"))
 
     assert values["spark"]["executorMemory"] == "8g"
     assert values["spark"]["executorMemoryOverhead"] == "8g"
-    assert "KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY_OVERHEAD" in template
+    assert finalize["KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY"]["value"] == "8g"
+    assert finalize["KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY_OVERHEAD"]["value"] == "8g"
     assert "executorMemoryOverhead" in schema["properties"]["spark"]["required"]
 
 
 def test_the_public_fleet_example_renders_against_the_charts_own_schema() -> None:
     """The example is the documented path onto a fleet, so it has to install."""
 
-    rendered = _render(
-        ("modelServing.server.draftModelSeed.providedExternally=true",),
-        values=(_PUBLIC_EXAMPLE,),
-    )
+    rendered = _render(_SERVING[1:], values=(_PUBLIC_EXAMPLE,))
 
-    engines = _one(rendered, "StatefulSet", f"{_FULLNAME}-vllm")
+    engines = _one(rendered, "StatefulSet", _VLLM)
     assert engines["spec"]["replicas"] == 4
-    finalize = _one(rendered, "Deployment", f"{_FULLNAME}-finalize")
-    (worker,) = finalize["spec"]["template"]["spec"]["containers"]
-    env = {entry["name"]: entry for entry in worker["env"]}
+    env = _env(_worker(rendered, "finalize"))
     assert env["KG_DISTRIBUTED_FINALIZATION_ENGINE"]["value"] == "spark"
     assert env["KG_DISTRIBUTED_ARTIFACT_ACCESS_KEY_ID"]["valueFrom"]["secretKeyRef"] == {
         "name": "flakegraph-artifacts",
@@ -592,9 +807,13 @@ def test_worker_pools_autoscale_from_dependency_aware_postgres_demand() -> None:
 
     values = _load_yaml(_VALUES)
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-    autoscaling = _AUTOSCALING_TEMPLATE.read_text(encoding="utf-8")
-    workers = _WORKER_TEMPLATE.read_text(encoding="utf-8")
-    postgres = Path("src/kg_processor/adapters/distributed/postgres.py").read_text(encoding="utf-8")
+    external_database = _render(())
+    bundled_database = _render(("database.cloudNativePG.enabled=true",))
+    demand_view = next(
+        statement
+        for statement in _SCHEMA_STATEMENTS
+        if "VIEW flakegraph_worker_demand" in statement
+    )
 
     assert values["autoscaling"]["enabled"] is True
     assert values["autoscaling"]["pollingIntervalSeconds"] == 5
@@ -605,21 +824,37 @@ def test_worker_pools_autoscale_from_dependency_aware_postgres_demand() -> None:
     assert values["distributed"]["leaseSeconds"] == 300
     assert "autoscaling" in schema["required"]
     assert "autoscaling" in schema["$defs"]["worker"]["required"]
-    assert "kind: ScaledObject" in autoscaling
-    assert "type: postgresql" in autoscaling
-    assert "FROM flakegraph_worker_demand" in autoscaling
-    assert "SUM(LEAST(" in autoscaling
-    assert "connectionFromEnv: KG_DISTRIBUTED_DATABASE_URL" in autoscaling
-    assert "passwordFromEnv: KG_DISTRIBUTED_DATABASE_PASSWORD" in autoscaling
-    assert "restoreToOriginalReplicaCount: true" in autoscaling
-    assert 'lookup "apps/v1" "Deployment"' in workers
-    assert "replicas: {{ $pool.autoscaling.minReplicas }}" in workers
-    assert "if not $existingDeployment" in workers
-    assert "CREATE VIEW flakegraph_worker_demand" in postgres
-    assert "task.status = 'running'" in postgres
-    assert "remaining_dependencies" in postgres
-    assert "FROM flakegraph_publication AS publication" in postgres
-    assert "SELECT 'finalize_graph' AS stage" in postgres
+    for pool in _WORKER_POOLS:
+        scaler = _one(external_database, "ScaledObject", f"{_FULLNAME}-{pool}")
+        pool_values = values["workers"][pool]["autoscaling"]
+        assert scaler["spec"]["scaleTargetRef"]["name"] == f"{_FULLNAME}-{pool}"
+        assert scaler["spec"]["minReplicaCount"] == pool_values["minReplicas"]
+        assert scaler["spec"]["maxReplicaCount"] == pool_values["maxReplicas"]
+        assert scaler["spec"]["advanced"]["restoreToOriginalReplicaCount"] is True
+        for trigger in scaler["spec"]["triggers"]:
+            assert trigger["type"] == "postgresql"
+            assert trigger["metadata"]["connectionFromEnv"] == "KG_DISTRIBUTED_DATABASE_URL"
+            query = " ".join(trigger["metadata"]["query"].split())
+            assert "FROM flakegraph_worker_demand" in query
+            # Bounded per pool, so a million queued rows ask for maxReplicas, not
+            # a million workers.
+            assert "SUM(LEAST(" in query
+            assert str(pool_values["maxReplicas"] * pool_values["targetTasksPerReplica"]) in query
+            for stage in _stages(_worker(external_database, pool)):
+                assert f"'{stage}'" in query
+        # KEDA runs outside the namespace, so the bundled database is addressed
+        # by its fully qualified service and a password rather than the URI.
+        bundled = _one(bundled_database, "ScaledObject", f"{_FULLNAME}-{pool}")
+        for trigger in bundled["spec"]["triggers"]:
+            assert trigger["metadata"]["passwordFromEnv"] == "KG_DISTRIBUTED_DATABASE_PASSWORD"
+            assert "connectionFromEnv" not in trigger["metadata"]
+        # Offline there is no existing Deployment to look up, so a fresh install
+        # seeds each pool at its declared minimum rather than Kubernetes' one.
+        deployment = _one(external_database, "Deployment", f"{_FULLNAME}-{pool}")
+        assert deployment["spec"]["replicas"] == pool_values["minReplicas"]
+    # The view the scaler reads exposes exactly the columns the query names.
+    for column in ("stage", "desired_workers", "priority_band"):
+        assert column in demand_view
 
 
 def test_each_pool_scales_on_each_priority_band_independently() -> None:
@@ -629,15 +864,19 @@ def test_each_pool_scales_on_each_priority_band_independently() -> None:
     from demand from a queue of a hundred thousand bulk tasks.
     """
 
-    autoscaling = _AUTOSCALING_TEMPLATE.read_text(encoding="utf-8")
-    postgres = Path("src/kg_processor/adapters/distributed/postgres.py").read_text(encoding="utf-8")
+    rendered = _render(())
 
-    assert 'range $band := list "interactive" "bulk"' in autoscaling
-    assert "WHERE priority_band = '{{ $band }}'" in autoscaling
-    # The cap stays inside each band, so one band cannot spend the other's.
-    assert "SUM(LEAST(" in autoscaling
-    assert "AS priority_band" in postgres
-    assert "DROP VIEW IF EXISTS flakegraph_worker_demand" in postgres
+    for pool in _WORKER_POOLS:
+        triggers = _one(rendered, "ScaledObject", f"{_FULLNAME}-{pool}")["spec"]["triggers"]
+        assert [trigger["name"] for trigger in triggers] == [
+            f"{pool}-interactive",
+            f"{pool}-bulk",
+        ]
+        for band, trigger in zip(("interactive", "bulk"), triggers, strict=True):
+            query = " ".join(trigger["metadata"]["query"].split())
+            assert f"WHERE priority_band = '{band}'" in query
+            # The cap stays inside each band, so one band cannot spend the other's.
+            assert query.index("SUM(LEAST(") < query.index("WHERE priority_band")
 
 
 def test_database_schema_is_bootstrapped_before_a_helm_release_is_ready() -> None:
@@ -645,28 +884,41 @@ def test_database_schema_is_bootstrapped_before_a_helm_release_is_ready() -> Non
 
     values = _load_yaml(_VALUES)
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-    template = _DATABASE_BOOTSTRAP_TEMPLATE.read_text(encoding="utf-8")
+    rendered = _render(())
+    job = _one(rendered, "Job", f"{_FULLNAME}-database-bootstrap")
+    initialize = _bootstrap(rendered)
+    (script,) = initialize["args"]
 
     assert values["database"]["bootstrap"]["enabled"] is True
     assert values["database"]["bootstrap"]["activeDeadlineSeconds"] >= 600
     assert "bootstrap" in schema["properties"]["database"]["required"]
-    assert "kind: Job" in template
-    assert "helm.sh/hook: post-install,post-upgrade" in template
-    assert "helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded" in template
-    assert "distributed" in template
-    assert "init" in template
-    assert "preflight --deployment-worker" in template
-    assert "KG_DISTRIBUTED_DATABASE_URL" in template
+    assert job["metadata"]["annotations"]["helm.sh/hook"] == "post-install,post-upgrade"
+    assert job["metadata"]["annotations"]["helm.sh/hook-delete-policy"] == (
+        "before-hook-creation,hook-succeeded"
+    )
+    assert (
+        job["spec"]["activeDeadlineSeconds"]
+        == values["database"]["bootstrap"]["activeDeadlineSeconds"]
+    )
+    commands = [line.strip() for line in script.splitlines() if not line.strip().startswith("#")]
+    assert commands[0].startswith("flakegraph preflight --deployment-worker")
+    assert commands[1].startswith("exec flakegraph distributed init")
+    assert _env(initialize)["KG_DISTRIBUTED_DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {
+        "name": values["database"]["secretName"],
+        "key": values["database"]["secretKey"],
+    }
 
 
 def test_operator_notes_describe_the_selected_database_bootstrap_mode() -> None:
     """Helm output must not claim a disabled bootstrap hook completed."""
 
-    notes = _NOTES_TEMPLATE.read_text(encoding="utf-8")
+    with_hook = _notes(())
+    without_hook = _notes(("database.bootstrap.enabled=false",))
 
-    assert "if .Values.database.bootstrap.enabled" in notes
-    assert "The database bootstrap hook completed" in notes
-    assert "Database bootstrap was disabled" in notes
+    assert "The database bootstrap hook completed" in with_hook
+    assert "Database bootstrap was disabled" not in with_hook
+    assert "Database bootstrap was disabled" in without_hook
+    assert "The database bootstrap hook completed" not in without_hook
 
 
 def test_bundled_database_has_capacity_for_documented_fleet_workers() -> None:
@@ -674,15 +926,21 @@ def test_bundled_database_has_capacity_for_documented_fleet_workers() -> None:
 
     values = _load_yaml(_VALUES)
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-    template = _CLOUDNATIVEPG_TEMPLATE.read_text(encoding="utf-8")
     cloud_native_pg = values["database"]["cloudNativePG"]
+    cluster = _one(
+        _render(("database.cloudNativePG.enabled=true",)),
+        "Cluster",
+        cloud_native_pg["clusterName"],
+    )
 
     assert cloud_native_pg["maxConnections"] >= 300
     assert (
         "maxConnections"
         in schema["properties"]["database"]["properties"]["cloudNativePG"]["required"]
     )
-    assert "max_connections:" in template
+    assert cluster["spec"]["postgresql"]["parameters"]["max_connections"] == str(
+        cloud_native_pg["maxConnections"]
+    )
 
 
 def test_scheduling_priorities_preserve_models_and_release_workers_for_spark() -> None:
@@ -690,10 +948,8 @@ def test_scheduling_priorities_preserve_models_and_release_workers_for_spark() -
 
     values = _load_yaml(_VALUES)
     priorities = values["scheduling"]["priorityClasses"]
-    priority_template = _PRIORITY_TEMPLATE.read_text(encoding="utf-8")
-    worker_template = _WORKER_TEMPLATE.read_text(encoding="utf-8")
-    spark_template = _SPARK_RBAC_TEMPLATE.read_text(encoding="utf-8")
-    model_template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+    rendered = _render(_SPARK)
+    prefix = f"fleet-{_FULLNAME}"
 
     assert priorities["enabled"] is True
     # The serving plane outranks the workers deliberately: it is the path every
@@ -705,39 +961,62 @@ def test_scheduling_priorities_preserve_models_and_release_workers_for_spark() -
         < priorities["servingValue"]
         < priorities["modelValue"]
     )
-    assert priority_template.count("kind: PriorityClass") == 4
-    for template_path in (
-        _LITELLM_TEMPLATE,
-        _PLACEMENT_TEMPLATE,
-        _DOCUMENT_PARSING_TEMPLATE,
-    ):
-        assert 'include "flakegraph.servingPriorityClassName"' in template_path.read_text(
-            encoding="utf-8"
+    # Helm prints a value of a million as 1e+06, which the API server reads
+    # back as the integer; compare numerically rather than by spelling.
+    classes = {
+        doc["metadata"]["name"]: float(doc["value"])
+        for doc in rendered
+        if doc["kind"] == "PriorityClass"
+    }
+    assert classes == {
+        f"{prefix}-worker": priorities["workerValue"],
+        f"{prefix}-spark": priorities["sparkValue"],
+        f"{prefix}-serving": priorities["servingValue"],
+        f"{prefix}-model": priorities["modelValue"],
+    }
+    placed = {
+        name: _pod(_one(rendered, kind, name))["priorityClassName"]
+        for kind, name in (
+            ("Deployment", f"{_FULLNAME}-litellm"),
+            ("Deployment", _ROUTER),
+            ("Deployment", f"{_FULLNAME}-ocr"),
+            ("StatefulSet", f"{_FULLNAME}-mineru"),
+            ("Deployment", f"{_FULLNAME}-prepare"),
+            ("Deployment", f"{_FULLNAME}-extract"),
+            ("Deployment", f"{_FULLNAME}-finalize"),
+            ("StatefulSet", _VLLM),
         )
-    assert 'include "flakegraph.workerPriorityClassName"' in worker_template
-    assert 'include "flakegraph.sparkPriorityClassName"' in spark_template
-    assert 'include "flakegraph.modelPriorityClassName"' in model_template
+    }
+    assert placed == {
+        f"{_FULLNAME}-litellm": f"{prefix}-serving",
+        _ROUTER: f"{prefix}-serving",
+        f"{_FULLNAME}-ocr": f"{prefix}-serving",
+        f"{_FULLNAME}-mineru": f"{prefix}-serving",
+        f"{_FULLNAME}-prepare": f"{prefix}-worker",
+        f"{_FULLNAME}-extract": f"{prefix}-worker",
+        f"{_FULLNAME}-finalize": f"{prefix}-spark",
+        _VLLM: f"{prefix}-model",
+    }
+    assert _executor_template(rendered)["spec"]["priorityClassName"] == f"{prefix}-spark"
     assert values["terminationGracePeriodSeconds"] > 3600
 
 
 def test_spark_role_allows_native_executor_creation_and_cleanup() -> None:
     """Permit Spark to remove executor collections when a driver terminates."""
 
-    template = _SPARK_RBAC_TEMPLATE.read_text(encoding="utf-8")
+    (rule,) = _one(_render(_SPARK), "Role", f"{_FULLNAME}-spark")["rules"]
 
-    assert 'resources: ["pods", "services", "configmaps", "persistentvolumeclaims"]' in template
-    assert '"create"' in template
-    assert '"delete"' in template
-    assert '"deletecollection"' in template
+    assert {"pods", "services", "configmaps", "persistentvolumeclaims"} <= set(rule["resources"])
+    assert {"create", "delete", "deletecollection"} <= set(rule["verbs"])
 
 
 def test_object_storage_cannot_silently_select_an_unavailable_spark_runtime() -> None:
     """Reject a fleet configuration that would fail only after extraction ends."""
 
-    template = _WORKER_TEMPLATE.read_text(encoding="utf-8")
+    refusal = _fails(("artifactStorage.uri=s3://artifacts",))
 
-    assert "and .Values.artifactStorage.uri (not .Values.spark.enabled)" in template
-    assert "spark.enabled must be true when artifactStorage.uri is configured" in template
+    assert "spark.enabled must be true when artifactStorage.uri is configured" in refusal
+    _render(("artifactStorage.uri=s3://artifacts", "spark.enabled=true"))
 
 
 def test_model_serving_documentation_is_consolidated_into_the_fleet_guide() -> None:
@@ -759,21 +1038,12 @@ def test_model_serving_documentation_is_consolidated_into_the_fleet_guide() -> N
     ]
     assert not forbidden, f"model-serving documentation must stay in the fleet guide: {forbidden}"
     assert "## Serving Plane" in fleet_guide
-    assert "kind: ScaledObject" in _AUTOSCALING_TEMPLATE.read_text(encoding="utf-8")
     assert "autoscaling:" in fleet_guide
     assert "--set-file config.content=deploy/private/fleet-config.yaml" in fleet_guide
     # The guide has to state the trap, because both conventions live in one repo.
     prose = " ".join(fleet_guide.split())
     assert "lower is served first" in prose
     assert "priority DESC" in prose
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    """Load one repository-owned YAML mapping for contract assertions."""
-
-    value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert isinstance(value, dict)
-    return value
 
 
 def test_a_draft_model_path_must_have_somewhere_to_come_from() -> None:
@@ -793,12 +1063,28 @@ def test_a_draft_model_path_must_have_somewhere_to_come_from() -> None:
     assert seed["image"] == ""
     assert seed["providedExternally"] is False
 
-    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
     # Refuses to render a path nothing supplies...
-    assert '{{- fail (printf "modelServing.server.speculativeDraftModel is the path' in template
+    refusal = _fails(("modelServing.enabled=true",))
+    assert "modelServing.server.speculativeDraftModel is the path" in refusal
+    assert "draftModelSeed.image" in refusal
+    assert "draftModelSeed.providedExternally=true" in refusal
+
     # ...and seeds the volume when an image carries the model.
-    assert "name: seed-draft-model" in template
-    assert 'mv "$target.partial" "$target"' in template, "the copy must be atomic"
+    seeded = _render(
+        ("modelServing.enabled=true", "modelServing.server.draftModelSeed.image=example/dflash2:1")
+    )
+    pod = _pod(_one(seeded, "StatefulSet", _VLLM))
+    seeder = _container(pod, "seed-draft-model", "initContainers")
+    (script,) = seeder["args"]
+    commands = [line.strip() for line in script.splitlines() if not line.strip().startswith("#")]
+    assert seeder["image"] == "example/dflash2:1"
+    assert seeder["volumeMounts"] == [{"name": "models", "mountPath": "/models"}]
+    assert f'target="{values["speculativeDraftModel"]}"' in commands
+    # The copy lands beside the target and is renamed last, so an interrupted
+    # copy is never mistaken for a complete one.
+    assert 'cp -r "/dflash2" "$target.partial"' in commands
+    assert commands[-1] == 'mv "$target.partial" "$target"'
+    assert "initContainers" not in _pod(_one(_render(_SERVING), "StatefulSet", _VLLM))
 
 
 def test_the_draft_model_seed_is_constrained_by_the_schema() -> None:
@@ -827,12 +1113,15 @@ def test_cache_events_are_published_on_a_topic_the_picker_subscribes_to() -> Non
     publish continuously, and have every event dropped before it is read.
     """
 
-    template = _MODEL_TEMPLATE.read_text(encoding="utf-8")
+    values = _load_yaml(_VALUES)["modelServing"]
+    engine = _container(_pod(_one(_render(_SERVING), "StatefulSet", _VLLM)), "vllm")
+    events = json.loads(_args(engine)["--kv-events-config"])
 
-    assert '\\"topic\\":\\"kv@$(POD_IP):' in template
+    assert events["enable_kv_cache_events"] is True
+    assert events["topic"] == f"kv@$(POD_IP):{values['kvEvents']['port']}@{values['model']['name']}"
     # The topic interpolates POD_IP, which Kubernetes expands into args only when
     # the same container declares it.
-    assert "fieldPath: status.podIP" in template
+    assert _env(engine)["POD_IP"]["valueFrom"]["fieldRef"]["fieldPath"] == "status.podIP"
 
 
 def test_exact_prefix_routing_names_its_producer_and_matches_block_size() -> None:
@@ -844,14 +1133,108 @@ def test_exact_prefix_routing_names_its_producer_and_matches_block_size() -> Non
     sized blocks, which agree about nothing.
     """
 
-    placement = (_CHART / "templates/gateway-placement.yaml").read_text(encoding="utf-8")
     values = _load_yaml(_VALUES)["modelServing"]
+    router = _one(_render(_SERVING), "ConfigMap", _ROUTER)["data"]
+    config = yaml.safe_load(router["default-plugins.yaml"])
+    plugins = {plugin["type"]: plugin for plugin in config["plugins"]}
 
-    assert "prefixMatchInfoProducerName: precise-prefix-cache-producer" in placement
-    assert "type: token-producer" in placement
-    assert "type: endpoint-notification-source" in placement
+    assert plugins["prefix-cache-scorer"]["parameters"] == {
+        "prefixMatchInfoProducerName": "precise-prefix-cache-producer"
+    }
+    assert plugins["token-producer"]["parameters"]["modelName"] == values["model"]["name"]
+    assert "endpoint-notification-source" in plugins
     # Without this wiring the producer never opens a subscriber to any pod.
-    assert "pluginRef: endpoint-notification-source" in placement
-
+    assert {
+        "pluginRef": "endpoint-notification-source",
+        "extractors": [{"pluginRef": "precise-prefix-cache-producer"}],
+    } in config["dataLayer"]["sources"]
+    producer = plugins["precise-prefix-cache-producer"]["parameters"]
+    assert (
+        producer["tokenProcessorConfig"]["blockSizeTokens"] == values["kvEvents"]["blockSizeTokens"]
+    )
     # vLLM's default block size is 16; the picker must hash the same width.
     assert values["kvEvents"]["blockSizeTokens"] == 16
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    """Load one repository-owned YAML mapping for contract assertions."""
+
+    value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    return value
+
+
+def _pod(workload: dict[str, Any]) -> dict[str, Any]:
+    """Return the pod spec a Deployment, StatefulSet, or Job stamps out."""
+
+    pod: dict[str, Any] = workload["spec"]["template"]["spec"]
+    return pod
+
+
+def _container(pod: dict[str, Any], name: str, field: str = "containers") -> dict[str, Any]:
+    """Return one container of a pod spec by name."""
+
+    containers: list[dict[str, Any]] = pod[field]
+    return next(container for container in containers if container["name"] == name)
+
+
+def _env(container: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index a container's environment by variable name."""
+
+    return {entry["name"]: entry for entry in container["env"]}
+
+
+def _first_declared(container: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index a container's environment by the first declaration of each name.
+
+    The shared consumer block is emitted before any provider Secret mapping,
+    so the first declaration is the one that block owns.
+    """
+
+    declared: dict[str, dict[str, Any]] = {}
+    for entry in container["env"]:
+        declared.setdefault(entry["name"], entry)
+    return declared
+
+
+def _args(container: dict[str, Any]) -> dict[str, str]:
+    """Pair each ``--flag`` with the argument that follows it.
+
+    A flag followed by another flag is a switch and maps to itself, so a switch
+    is looked up through ``in container["args"]`` rather than through this.
+    """
+
+    args: list[str] = container["args"]
+    paired: dict[str, str] = {}
+    for index, arg in enumerate(args):
+        if arg.startswith("--"):
+            following = args[index + 1] if index + 1 < len(args) else arg
+            paired[arg] = arg if following.startswith("--") else following
+    return paired
+
+
+def _stages(worker: dict[str, Any]) -> list[str]:
+    """Return the stages a worker container is started for."""
+
+    args: list[str] = worker["args"]
+    return [args[index + 1] for index, arg in enumerate(args) if arg == "--stage"]
+
+
+def _worker(rendered: list[dict[str, Any]], pool: str) -> dict[str, Any]:
+    """Return one worker pool's worker container."""
+
+    return _container(_pod(_one(rendered, "Deployment", f"{_FULLNAME}-{pool}")), "worker")
+
+
+def _bootstrap(rendered: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the database bootstrap Job's only container."""
+
+    return _container(_pod(_one(rendered, "Job", f"{_FULLNAME}-database-bootstrap")), "initialize")
+
+
+def _executor_template(rendered: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the Pod template the Spark driver hands to its executors."""
+
+    configmap = _one(rendered, "ConfigMap", f"{_FULLNAME}-spark-executor-template")
+    template: dict[str, Any] = yaml.safe_load(configmap["data"]["executor-pod-template.yaml"])
+    return template

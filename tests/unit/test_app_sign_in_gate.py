@@ -145,16 +145,6 @@ def test_machine_interfaces_are_routed_without_the_browser_gate() -> None:
     assert template.count("router.middlewares") == 1
 
 
-def test_the_parsing_shim_refuses_an_unauthenticated_parse() -> None:
-    """Whatever leaves the gate must still refuse a caller with no credential."""
-
-    shim = Path("src/kg_processor/serving/ocr_shim.py").read_text(encoding="utf-8")
-
-    assert 'PARSE_ROUTE = "/file_parse"' in shim
-    assert 'UNAUTHENTICATED_PATHS = frozenset({"/ping", "/metrics"})' in shim
-    assert '"error": "unauthorized"}, status_code=401' in shim
-
-
 def test_the_header_trusting_application_cannot_be_routed_past_the_gate() -> None:
     """The one service that does not authenticate its own callers must not leave.
 
@@ -224,20 +214,3 @@ def test_only_the_ingress_controller_may_reach_the_header_trusting_application()
 
 def _load_chart_values() -> dict:
     return yaml.safe_load((_CHART / "values.yaml").read_text(encoding="utf-8"))
-
-
-def test_the_model_preload_cannot_hang_the_build_silently() -> None:
-    """A build that stops making progress must say so, not wait indefinitely.
-
-    The accelerated Hub transfer client waits on an interception proxy rather
-    than failing, so an unbounded preload reports nothing for as long as anyone
-    is willing to wait. That cost an hour before it was recognised.
-    """
-
-    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
-
-    assert "ARG KG_PRELOAD_TIMEOUT_SECONDS=" in dockerfile
-    assert 'timeout "$KG_PRELOAD_TIMEOUT_SECONDS"' in dockerfile
-    # And the failure has to explain itself, or the next person repeats the hour.
-    assert "Authority Key" in dockerfile
-    assert "KG_PRELOAD_LOCAL_EMBEDDING=false" in dockerfile

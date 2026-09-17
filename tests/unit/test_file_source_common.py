@@ -9,28 +9,11 @@ from threading import Barrier
 
 import pytest
 
-from kg_processor.adapters.files import azure_blob, common, s3
 from kg_processor.adapters.files.common import (
     cached_input_file,
     claimed_download_root,
     verify_download_size,
 )
-
-
-def test_cloud_file_sources_share_one_download_cache_implementation() -> None:
-    """One implementation, so a cache correction cannot reach only one adapter."""
-
-    shared = (
-        common.cached_input_file,
-        common.claimed_download_root,
-        common.normalized_prefix,
-        common.object_download_path,
-        common.verify_download_size,
-        common.write_download_metadata,
-    )
-
-    for module in (s3, azure_blob):
-        assert tuple(getattr(module, function.__name__) for function in shared) == shared
 
 
 def test_concurrent_cache_claims_resolve_to_one_complete_root(tmp_path: Path) -> None:

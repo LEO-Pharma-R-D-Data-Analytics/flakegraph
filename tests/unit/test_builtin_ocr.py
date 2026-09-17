@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import inspect
 from io import BytesIO
+from multiprocessing import Pipe
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
@@ -154,12 +154,25 @@ def test_builtin_text_ocr_uses_pdfium_when_primary_pdf_parser_fails(
     assert parsed.pages[0].raw_text == "Alice works at Acme."
 
 
-def test_pdfium_fallback_applies_resource_limits_before_opening_pdf() -> None:
-    worker_source = inspect.getsource(builtin_text._pdfium_fallback_worker)
+def test_pdfium_fallback_applies_resource_limits_before_opening_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caps have to be in place before an attacker-controlled stream is parsed."""
 
-    assert worker_source.index("_apply_pdfium_resource_limits()") < worker_source.index(
-        "pdfium.PdfDocument(path)"
-    )
+    order: list[str] = []
+
+    def open_document(path: str) -> None:
+        order.append(f"open {path}")
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(builtin_text, "_apply_pdfium_resource_limits", lambda: order.append("cap"))
+    monkeypatch.setattr("kg_processor.adapters.ocr.builtin_text.pdfium.PdfDocument", open_document)
+    parent, child = Pipe(duplex=False)
+
+    builtin_text._pdfium_fallback_worker("sample.pdf", child)
+
+    assert order == ["cap", "open sample.pdf"]
+    assert parent.recv() == ("error", "RuntimeError: stop here")
     assert builtin_text.MAX_PDFIUM_FALLBACK_MEMORY_BYTES > 0
     assert builtin_text.MAX_PDFIUM_FALLBACK_TEXT_BYTES > 0
     assert builtin_text.MAX_PDFIUM_FALLBACK_PAGES > 0
