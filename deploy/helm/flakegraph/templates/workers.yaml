@@ -10,6 +10,8 @@ has already completed OCR and extraction.
 {{- $root := . -}}
 {{- range $poolName, $pool := .Values.workers }}
 {{- if $pool.enabled }}
+{{- /* The finalize pool is the Spark driver when Spark is on: its image, home and RBAC differ. */ -}}
+{{- $sparkDriver := and (eq $poolName "finalize") $root.Values.spark.enabled }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -58,7 +60,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
+      {{- if $sparkDriver }}
       serviceAccountName: {{ include "flakegraph.sparkServiceAccountName" $root }}
       automountServiceAccountToken: true
       {{- else }}
@@ -102,7 +104,7 @@ spec:
       # pod before the worker starts so offline inference remains immediate.
       initContainers:
         - name: seed-provider-cache
-          {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
+          {{- if $sparkDriver }}
           image: {{ include "flakegraph.componentImage" $root.Values.spark.image }}
           imagePullPolicy: {{ $root.Values.spark.image.pullPolicy }}
           {{- else }}
@@ -113,7 +115,7 @@ spec:
           args:
             - >-
               if [ -z "$(find /cache -mindepth 1 -print -quit)" ]; then
-                cp -R {{ if and (eq $poolName "finalize") $root.Values.spark.enabled }}/home/spark/.cache/.{{ else }}/home/kgprocessor/.cache/.{{ end }} /cache/;
+                cp -R {{ if $sparkDriver }}/home/spark/.cache/.{{ else }}/home/kgprocessor/.cache/.{{ end }} /cache/;
               fi
           resources:
             requests:
@@ -125,7 +127,7 @@ spec:
             limits:
               memory: 1Gi
           securityContext:
-            {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
+            {{- if $sparkDriver }}
             runAsUser: 185
             runAsGroup: 185
             runAsNonRoot: true
@@ -141,7 +143,7 @@ spec:
               mountPath: /cache
       containers:
         - name: worker
-          {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
+          {{- if $sparkDriver }}
           image: {{ include "flakegraph.componentImage" $root.Values.spark.image }}
           imagePullPolicy: {{ $root.Values.spark.image.pullPolicy }}
           command: ["/opt/entrypoint.sh"]
@@ -150,7 +152,7 @@ spec:
           imagePullPolicy: {{ $root.Values.image.pullPolicy }}
           {{- end }}
           args:
-            {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
+            {{- if $sparkDriver }}
             - /opt/venv/bin/flakegraph
             {{- end }}
             - distributed
@@ -211,7 +213,7 @@ spec:
                   key: {{ $root.Values.artifactStorage.secretKeyKey }}
             {{- end }}
             {{- end }}
-            {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
+            {{- if $sparkDriver }}
             - name: KG_DISTRIBUTED_FINALIZATION_ENGINE
               value: spark
             - name: KG_DISTRIBUTED_SPARK_MASTER
@@ -295,12 +297,12 @@ spec:
             - name: tmp
               mountPath: /tmp
             - name: cache
-              {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
+              {{- if $sparkDriver }}
               mountPath: /cache
               {{- else }}
               mountPath: /home/kgprocessor/.cache
               {{- end }}
-            {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
+            {{- if $sparkDriver }}
             - name: spark-executor-template
               mountPath: /etc/flakegraph-spark
               readOnly: true
@@ -336,7 +338,7 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
-        {{- if and (eq $poolName "finalize") $root.Values.spark.enabled }}
+        {{- if $sparkDriver }}
         - name: spark-executor-template
           configMap:
             name: {{ include "flakegraph.fullname" $root }}-spark-executor-template
