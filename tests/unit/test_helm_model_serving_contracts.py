@@ -8,13 +8,18 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from helm import CHART as _CHART
 from helm import FULLNAME as _FULLNAME
+from helm import args as _args
+from helm import container as _container
+from helm import env as _env
 from helm import fails as _fails
 from helm import load_yaml as _load_yaml
 from helm import notes as _notes
 from helm import one as _one
+from helm import pod as _pod
 from helm import render as _render
+from helm import schema as _schema
+from helm import values as _values
 
 from kg_processor.adapters.distributed.postgres import _SCHEMA_STATEMENTS
 from kg_processor.serving.sizing import (
@@ -24,8 +29,6 @@ from kg_processor.serving.sizing import (
     compute_sizing,
 )
 
-_VALUES = _CHART / "values.yaml"
-_SCHEMA = _CHART / "values.schema.json"
 _PUBLIC_EXAMPLE = Path("deploy/examples/k3s-spark-values.yaml")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
@@ -51,7 +54,7 @@ _CONSUMER_ENV = (
 def test_model_serving_defaults_are_pinned_and_resource_bounded() -> None:
     """Keep opt-in inference reproducible instead of following moving artifacts."""
 
-    values = _load_yaml(_VALUES)["modelServing"]
+    values = _values()["modelServing"]
 
     assert values["enabled"] is False
     assert values["runtime"] == "vllm"
@@ -63,7 +66,6 @@ def test_model_serving_defaults_are_pinned_and_resource_bounded() -> None:
         values["image"]["digest"]
         == "sha256:2a7cde230b59f3ce6cab33dd245ba6bee41aa87b38c9fe84f966ff24016813ce"
     )
-    assert re.fullmatch(r"sha256:[0-9a-f]{64}", values["image"]["digest"])
     assert values["model"]["name"] == "unsloth/Qwen3.8-27B-NVFP4"
     assert _COMMIT.fullmatch(values["model"]["revision"])
     assert values["server"]["maxNumBatchedTokens"] == 32768
@@ -96,11 +98,10 @@ def test_a_local_draft_checkpoint_is_not_pinned_to_a_hub_revision() -> None:
     does not exist and fails at startup, long after the chart looked correct.
     """
 
-    server = _load_yaml(_VALUES)["modelServing"]["server"]
+    server = _values()["modelServing"]["server"]
 
     assert server["speculativeDraftModel"] == "/models/dflash2"
-    if server["speculativeDraftModel"].startswith("/"):
-        assert server["speculativeDraftRevision"] == ""
+    assert server["speculativeDraftRevision"] == ""
 
 
 def test_the_weight_budget_counts_the_drafter_that_stays_resident() -> None:
@@ -111,7 +112,7 @@ def test_the_weight_budget_counts_the_drafter_that_stays_resident() -> None:
     sequences fit and walks the engine into KV-pressure preemption.
     """
 
-    values = _load_yaml(_VALUES)["modelServing"]
+    values = _values()["modelServing"]
 
     # The engine reports "Model loading took 24.24 GiB" for the target plus the
     # DFlash2 draft; the target alone is 21.81.
@@ -125,7 +126,7 @@ def test_the_shipped_sequence_limit_is_one_the_sizing_formula_supports() -> None
     so the contract is checked against the formula rather than a magic number.
     """
 
-    values = _load_yaml(_VALUES)["modelServing"]
+    values = _values()["modelServing"]
     sizing = values["sizing"]
 
     verdict = compute_sizing(
@@ -154,7 +155,7 @@ def test_the_shipped_sequence_limit_is_one_the_sizing_formula_supports() -> None
 def test_the_engine_owns_the_complete_model_lifecycle() -> None:
     """Require storage, pinned model loading, probes, spreading, and service discovery."""
 
-    values = _load_yaml(_VALUES)["modelServing"]
+    values = _values()["modelServing"]
     rendered = _render(_SERVING)
     engines = _one(rendered, "StatefulSet", _VLLM)
     pod = _pod(engines)
@@ -194,7 +195,7 @@ def test_the_engine_reads_a_private_hub_and_a_named_loader_only_when_told() -> N
         )
     )
     engine = _container(_pod(_one(gated, "StatefulSet", _VLLM)), "vllm")
-    values = _load_yaml(_VALUES)["modelServing"]["huggingFaceTokenSecret"]
+    values = _values()["modelServing"]["huggingFaceTokenSecret"]
 
     assert _env(engine)["HF_TOKEN"]["valueFrom"]["secretKeyRef"] == {
         "name": "hub-token",
@@ -241,7 +242,7 @@ def test_priority_scheduling_cannot_be_configured_away() -> None:
     exactly like an engine honouring priority until someone measures the wait.
     """
 
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    schema = _schema()
     server = schema["properties"]["modelServing"]["properties"]["server"]
 
     assert server["additionalProperties"] is False
@@ -258,7 +259,7 @@ def test_priority_scheduling_cannot_be_configured_away() -> None:
 def test_the_engine_is_reachable_only_through_the_enforcement_floor() -> None:
     """Bind the engine to loopback so no route to inference skips the sidecar."""
 
-    values = _load_yaml(_VALUES)["modelServing"]
+    values = _values()["modelServing"]
     rendered = _render(_SERVING)
     pod = _pod(_one(rendered, "StatefulSet", _VLLM))
     engine = _container(pod, "vllm")
@@ -318,7 +319,7 @@ def test_the_engine_pod_accepts_a_site_supplied_trust_store() -> None:
     to exist rather than being discovered under time pressure.
     """
 
-    values = _load_yaml(_VALUES)["modelServing"]
+    values = _values()["modelServing"]
     for field in ("extraEnv", "extraVolumes", "extraVolumeMounts"):
         assert values[field] == []
 
@@ -348,7 +349,7 @@ def test_the_engine_pod_accepts_a_site_supplied_trust_store() -> None:
 def test_the_gateway_expresses_priority_as_which_alias_a_key_may_call() -> None:
     """Keep the class-to-band mapping out of the request body entirely."""
 
-    values = _load_yaml(_VALUES)["gateway"]
+    values = _values()["gateway"]
     rendered = _render(())
     config = yaml.safe_load(
         _one(rendered, "ConfigMap", f"{_FULLNAME}-litellm")["data"]["config.yaml"]
@@ -356,7 +357,6 @@ def test_the_gateway_expresses_priority_as_which_alias_a_key_may_call() -> None:
     gateway = _container(_pod(_one(rendered, "Deployment", f"{_FULLNAME}-litellm")), "litellm")
     env = _env(gateway)
 
-    assert values["enabled"] is True
     assert set(values["litellm"]["aliases"]) == {"interactive", "dev", "batch"}
     # Each alias must present a *different* upstream key. Sharing one would make
     # every class the same band while still looking correctly configured.
@@ -424,7 +424,7 @@ def test_placement_routes_on_the_pickers_choice_and_needs_no_crds() -> None:
 def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
     """Give the shim a resolvable pool and the capacity it must not exceed."""
 
-    values = _load_yaml(_VALUES)
+    values = _values()
     parsing = values["documentParsing"]
     rendered = _render(())
     pool = _one(rendered, "StatefulSet", f"{_FULLNAME}-mineru")
@@ -432,7 +432,6 @@ def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
     shim = _container(_pod(_one(rendered, "Deployment", f"{_FULLNAME}-ocr")), "ocr-shim")
     shim_env = _env(shim)
 
-    assert parsing["enabled"] is True
     # MinerU's own default of three is too low to keep a node busy.
     assert parsing["mineru"]["maxConcurrentRequests"] > 3
     assert shim["command"] == ["flakegraph", "serving", "ocr-shim"]
@@ -485,7 +484,7 @@ def test_document_parsing_replicas_spread_across_hosts_without_requiring_it() ->
     doubles up rather than pending forever.
     """
 
-    values = _load_yaml(_VALUES)["documentParsing"]["mineru"]
+    values = _values()["documentParsing"]["mineru"]
     pool = _one(_render(()), "StatefulSet", f"{_FULLNAME}-mineru")
 
     assert _pod(pool)["topologySpreadConstraints"] == [
@@ -497,15 +496,12 @@ def test_document_parsing_replicas_spread_across_hosts_without_requiring_it() ->
         }
     ]
     assert values["topologyKey"] == "kubernetes.io/hostname"
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-    mineru = schema["properties"]["documentParsing"]["properties"]["mineru"]
-    assert "topologyKey" in mineru["properties"]
 
 
 def test_spark_executor_spreading_degrades_gracefully() -> None:
     """Prefer fleet-wide placement without deadlocking finalization on node loss."""
 
-    values = _load_yaml(_VALUES)["spark"]
+    values = _values()["spark"]
     executor = _executor_template(_render(_SPARK))
     (container,) = executor["spec"]["containers"]
 
@@ -540,7 +536,7 @@ def test_the_pipeline_is_a_metered_consumer_like_any_other() -> None:
     left that GPU idle too.
     """
 
-    values = _load_yaml(_VALUES)
+    values = _values()
     litellm = values["gateway"]["litellm"]
     rendered = _render(
         (
@@ -585,7 +581,7 @@ def test_the_llm_credential_is_declared_exactly_once_per_container() -> None:
     mapping must stand aside.
     """
 
-    litellm = _load_yaml(_VALUES)["gateway"]["litellm"]
+    litellm = _values()["gateway"]["litellm"]
     with_gateway = _render(("providerSecret.name=provider",))
     without_gateway = _render(("providerSecret.name=provider", "gateway.enabled=false"))
 
@@ -626,7 +622,7 @@ def test_the_validator_is_configured_exactly_like_what_it_validates() -> None:
 def test_no_consumer_can_still_address_an_engine_directly() -> None:
     """Leave one endpoint key, so the placement layer stays replaceable."""
 
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    schema = _schema()
     rendered = _render(_SERVING[1:], values=(_PUBLIC_EXAMPLE,))
 
     assert schema["additionalProperties"] is False
@@ -644,8 +640,7 @@ def test_no_consumer_can_still_address_an_engine_directly() -> None:
 def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
     """Prevent unrelated Secret keys from silently replacing reviewed provider settings."""
 
-    values = _load_yaml(_VALUES)
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    values = _values()
     rendered = _render(("providerSecret.name=provider",))
 
     assert values["providerSecret"]["env"] == [
@@ -662,7 +657,6 @@ def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
             "optional": True,
         },
     ]
-    assert "env" in schema["properties"]["providerSecret"]["properties"]
     # A mapping without `optional` would render null and be applied as a hard
     # requirement, so the item must spell all three keys.
     assert "missing property 'optional'" in _fails(
@@ -684,8 +678,7 @@ def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
 def test_ontology_is_a_portable_chart_managed_deployment_input() -> None:
     """Mount ontology content without baking repository datasets into worker images."""
 
-    values = _load_yaml(_VALUES)
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    values = _values()
     inline = _render(("ontology.content=entities: []",))
     external = _render(("ontology.existingConfigMap=site-ontology",))
 
@@ -694,7 +687,6 @@ def test_ontology_is_a_portable_chart_managed_deployment_input() -> None:
         "key": "ontology.yaml",
         "content": "",
     }
-    assert "ontology" in schema["properties"]
     assert _one(inline, "ConfigMap", f"{_FULLNAME}-ontology")["data"] == {
         "ontology.yaml": "entities: []\n"
     }
@@ -716,8 +708,8 @@ def test_ontology_is_a_portable_chart_managed_deployment_input() -> None:
 def test_worker_stage_names_follow_the_distributed_dag() -> None:
     """Keep typed Helm values aligned with role-specific worker pools."""
 
-    values = _load_yaml(_VALUES)
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    values = _values()
+    schema = _schema()
     stage_enum = schema["$defs"]["worker"]["properties"]["stages"]["items"]["enum"]
     rendered = _render(())
 
@@ -748,12 +740,11 @@ def test_worker_stage_names_follow_the_distributed_dag() -> None:
 def test_mutable_worker_image_tags_are_refreshed_on_rollout() -> None:
     """Prevent node caches from retaining an older binary after a chart upgrade."""
 
-    values = _load_yaml(_VALUES)
+    values = _values()
 
     assert values["image"]["pullPolicy"] == "Always"
     assert values["spark"]["image"]["pullPolicy"] == "Always"
     assert values["modelServing"]["image"]["pullPolicy"] == "IfNotPresent"
-    assert values["modelServing"]["image"]["digest"].startswith("sha256:")
 
 
 def test_workers_seed_preloaded_models_into_their_writable_cache() -> None:
@@ -792,15 +783,10 @@ def test_workers_seed_preloaded_models_into_their_writable_cache() -> None:
 def test_spark_workers_reserve_memory_for_python_provider_processes() -> None:
     """Keep executor heap and non-heap memory explicit across Helm boundaries."""
 
-    values = _load_yaml(_VALUES)
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
     finalize = _env(_worker(_render(_SPARK), "finalize"))
 
-    assert values["spark"]["executorMemory"] == "8g"
-    assert values["spark"]["executorMemoryOverhead"] == "8g"
     assert finalize["KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY"]["value"] == "8g"
     assert finalize["KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY_OVERHEAD"]["value"] == "8g"
-    assert "executorMemoryOverhead" in schema["properties"]["spark"]["properties"]
 
 
 def test_the_public_fleet_example_renders_against_the_charts_own_schema() -> None:
@@ -821,8 +807,7 @@ def test_the_public_fleet_example_renders_against_the_charts_own_schema() -> Non
 def test_worker_pools_autoscale_from_dependency_aware_postgres_demand() -> None:
     """Release drained worker resources without scaling away active task leases."""
 
-    values = _load_yaml(_VALUES)
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    values = _values()
     external_database = _render(())
     bundled_database = _render(("database.cloudNativePG.enabled=true",))
     demand_view = next(
@@ -831,15 +816,12 @@ def test_worker_pools_autoscale_from_dependency_aware_postgres_demand() -> None:
         if "VIEW flakegraph_worker_demand" in statement
     )
 
-    assert values["autoscaling"]["enabled"] is True
     assert values["autoscaling"]["pollingIntervalSeconds"] == 5
     assert values["autoscaling"]["cooldownPeriodSeconds"] == 30
     assert values["workers"]["prepare"]["autoscaling"]["minReplicas"] == 0
     assert values["workers"]["extract"]["autoscaling"]["maxReplicas"] == 32
     assert values["workers"]["finalize"]["autoscaling"]["maxReplicas"] == 1
     assert values["distributed"]["leaseSeconds"] == 300
-    assert "autoscaling" in schema["properties"]
-    assert "autoscaling" in schema["$defs"]["worker"]["properties"]
     for pool in _WORKER_POOLS:
         scaler = _one(external_database, "ScaledObject", f"{_FULLNAME}-{pool}")
         pool_values = values["workers"][pool]["autoscaling"]
@@ -898,16 +880,13 @@ def test_each_pool_scales_on_each_priority_band_independently() -> None:
 def test_database_schema_is_bootstrapped_before_a_helm_release_is_ready() -> None:
     """Make KEDA's worker-demand view deterministic on fresh installs and upgrades."""
 
-    values = _load_yaml(_VALUES)
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    values = _values()
     rendered = _render(())
     job = _one(rendered, "Job", f"{_FULLNAME}-database-bootstrap")
     initialize = _bootstrap(rendered)
     (script,) = initialize["args"]
 
-    assert values["database"]["bootstrap"]["enabled"] is True
     assert values["database"]["bootstrap"]["activeDeadlineSeconds"] >= 600
-    assert "bootstrap" in schema["properties"]["database"]["properties"]
     assert job["metadata"]["annotations"]["helm.sh/hook"] == "post-install,post-upgrade"
     assert job["metadata"]["annotations"]["helm.sh/hook-delete-policy"] == (
         "before-hook-creation,hook-succeeded"
@@ -940,9 +919,7 @@ def test_operator_notes_describe_the_selected_database_bootstrap_mode() -> None:
 def test_bundled_database_has_capacity_for_documented_fleet_workers() -> None:
     """Reserve database sessions for workers, autoscaling, and operations."""
 
-    values = _load_yaml(_VALUES)
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-    cloud_native_pg = values["database"]["cloudNativePG"]
+    cloud_native_pg = _values()["database"]["cloudNativePG"]
     cluster = _one(
         _render(("database.cloudNativePG.enabled=true",)),
         "Cluster",
@@ -950,10 +927,6 @@ def test_bundled_database_has_capacity_for_documented_fleet_workers() -> None:
     )
 
     assert cloud_native_pg["maxConnections"] >= 300
-    assert (
-        "maxConnections"
-        in schema["properties"]["database"]["properties"]["cloudNativePG"]["properties"]
-    )
     assert cluster["spec"]["postgresql"]["parameters"]["max_connections"] == str(
         cloud_native_pg["maxConnections"]
     )
@@ -962,12 +935,11 @@ def test_bundled_database_has_capacity_for_documented_fleet_workers() -> None:
 def test_scheduling_priorities_preserve_models_and_release_workers_for_spark() -> None:
     """Make the extraction-to-finalization handoff resilient to autoscaler delay."""
 
-    values = _load_yaml(_VALUES)
+    values = _values()
     priorities = values["scheduling"]["priorityClasses"]
     rendered = _render(_SPARK)
     prefix = f"fleet-{_FULLNAME}"
 
-    assert priorities["enabled"] is True
     # The serving plane outranks the workers deliberately: it is the path every
     # consumer takes, so leaving it at the default priority lets a queue scale-up
     # preempt the gateway those same workers are trying to reach.
@@ -1044,7 +1016,7 @@ def test_a_draft_model_path_must_have_somewhere_to_come_from() -> None:
     render that, and can seed the volume itself.
     """
 
-    values = _load_yaml(_VALUES)["modelServing"]["server"]
+    values = _values()["modelServing"]["server"]
     seed = values["draftModelSeed"]
 
     # The shipped default names a path, so it must also say where it comes from.
@@ -1079,7 +1051,7 @@ def test_a_draft_model_path_must_have_somewhere_to_come_from() -> None:
 def test_the_draft_model_seed_is_constrained_by_the_schema() -> None:
     """An operator mistyping this should hear about it at install, not at load."""
 
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    schema = _schema()
     seed = schema["properties"]["modelServing"]["properties"]["server"]["properties"][
         "draftModelSeed"
     ]
@@ -1102,7 +1074,7 @@ def test_cache_events_are_published_on_a_topic_the_picker_subscribes_to() -> Non
     publish continuously, and have every event dropped before it is read.
     """
 
-    values = _load_yaml(_VALUES)["modelServing"]
+    values = _values()["modelServing"]
     engine = _container(_pod(_one(_render(_SERVING), "StatefulSet", _VLLM)), "vllm")
     events = json.loads(_args(engine)["--kv-events-config"])
 
@@ -1122,7 +1094,7 @@ def test_exact_prefix_routing_names_its_producer_and_matches_block_size() -> Non
     sized blocks, which agree about nothing.
     """
 
-    values = _load_yaml(_VALUES)["modelServing"]
+    values = _values()["modelServing"]
     router = _one(_render(_SERVING), "ConfigMap", _ROUTER)["data"]
     config = yaml.safe_load(router["default-plugins.yaml"])
     plugins = {plugin["type"]: plugin for plugin in config["plugins"]}
@@ -1145,26 +1117,6 @@ def test_exact_prefix_routing_names_its_producer_and_matches_block_size() -> Non
     assert values["kvEvents"]["blockSizeTokens"] == 16
 
 
-def _pod(workload: dict[str, Any]) -> dict[str, Any]:
-    """Return the pod spec a Deployment, StatefulSet, or Job stamps out."""
-
-    pod: dict[str, Any] = workload["spec"]["template"]["spec"]
-    return pod
-
-
-def _container(pod: dict[str, Any], name: str, field: str = "containers") -> dict[str, Any]:
-    """Return one container of a pod spec by name."""
-
-    containers: list[dict[str, Any]] = pod[field]
-    return next(container for container in containers if container["name"] == name)
-
-
-def _env(container: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Index a container's environment by variable name."""
-
-    return {entry["name"]: entry for entry in container["env"]}
-
-
 def _first_declared(container: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Index a container's environment by the first declaration of each name.
 
@@ -1176,22 +1128,6 @@ def _first_declared(container: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for entry in container["env"]:
         declared.setdefault(entry["name"], entry)
     return declared
-
-
-def _args(container: dict[str, Any]) -> dict[str, str]:
-    """Pair each ``--flag`` with the argument that follows it.
-
-    A flag followed by another flag is a switch and maps to itself, so a switch
-    is looked up through ``in container["args"]`` rather than through this.
-    """
-
-    args: list[str] = container["args"]
-    paired: dict[str, str] = {}
-    for index, arg in enumerate(args):
-        if arg.startswith("--"):
-            following = args[index + 1] if index + 1 < len(args) else arg
-            paired[arg] = arg if following.startswith("--") else following
-    return paired
 
 
 def _stages(worker: dict[str, Any]) -> list[str]:

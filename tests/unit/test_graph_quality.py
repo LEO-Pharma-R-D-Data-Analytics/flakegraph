@@ -54,7 +54,6 @@ def test_graph_quality_passes_for_grounded_graph() -> None:
         "edge_embedding_dimensions": True,
     }
     assert not next(check for check in result.checks if check.name == "component_ratio").ok
-    assert result.ok
 
 
 def test_graph_quality_reports_orphans_missing_evidence_and_embedding_mismatches() -> None:

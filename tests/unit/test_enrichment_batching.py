@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from kg_processor.adapters.llm.fake import FakeLlmProvider
+from llm_fakes import CountingLlm
+
 from kg_processor.application.enrichment_batching import (
     merge_description_requests,
     summarize_community_requests,
@@ -15,31 +16,7 @@ from kg_processor.ports.llm import (
 )
 
 
-class _CountingFakeLlm(FakeLlmProvider):
-    """Count batch and fallback calls while retaining deterministic fake behavior."""
-
-    def __init__(self) -> None:
-        self.structured_calls = 0
-        self.description_fallback_calls = 0
-        self.community_fallback_calls = 0
-
-    def complete_structured(
-        self,
-        request: StructuredCompletionRequest,
-    ) -> StructuredCompletionResult:
-        self.structured_calls += 1
-        return super().complete_structured(request)
-
-    def merge_entity_description(self, request: DescriptionMergeRequest):  # type: ignore[no-untyped-def]
-        self.description_fallback_calls += 1
-        return super().merge_entity_description(request)
-
-    def summarize_community(self, request: CommunitySummaryRequest):  # type: ignore[no-untyped-def]
-        self.community_fallback_calls += 1
-        return super().summarize_community(request)
-
-
-class _IncompleteBatchLlm(_CountingFakeLlm):
+class _IncompleteBatchLlm(CountingLlm):
     """Return schema-valid but incomplete first records to exercise recovery."""
 
     def complete_structured(
@@ -59,7 +36,7 @@ class _IncompleteBatchLlm(_CountingFakeLlm):
 def test_description_batch_uses_one_structured_call_and_preserves_order() -> None:
     """Reduce transport calls without changing input-to-output correspondence."""
 
-    provider = _CountingFakeLlm()
+    provider = CountingLlm()
     requests = [
         DescriptionMergeRequest(
             entity_name=f"Entity {index}",
@@ -79,7 +56,7 @@ def test_description_batch_uses_one_structured_call_and_preserves_order() -> Non
     )
 
     assert provider.structured_calls == 1
-    assert provider.description_fallback_calls == 0
+    assert provider.description_calls == 0
     assert [result.description for result in results] == [
         f"long description {index}" for index in range(16)
     ]
@@ -88,7 +65,7 @@ def test_description_batch_uses_one_structured_call_and_preserves_order() -> Non
 def test_community_batch_uses_one_structured_call_for_four_reports() -> None:
     """Batch four independently bounded community contexts in one request."""
 
-    provider = _CountingFakeLlm()
+    provider = CountingLlm()
     requests = [
         CommunitySummaryRequest(
             title_seed=title,
@@ -107,7 +84,7 @@ def test_community_batch_uses_one_structured_call_for_four_reports() -> None:
     )
 
     assert provider.structured_calls == 1
-    assert provider.community_fallback_calls == 0
+    assert provider.community_calls == 0
     assert [result.title for result in results] == ["First", "Second", "Third", "Fourth"]
 
 
@@ -153,7 +130,7 @@ def test_incomplete_batch_records_fall_back_without_replaying_siblings() -> None
     )
 
     assert provider.structured_calls == 2
-    assert provider.description_fallback_calls == 1
-    assert provider.community_fallback_calls == 1
+    assert provider.description_calls == 1
+    assert provider.community_calls == 1
     assert all(result.description for result in description_results)
     assert all(result.summary for result in community_results)

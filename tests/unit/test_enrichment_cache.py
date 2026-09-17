@@ -2,27 +2,16 @@
 
 from pathlib import Path
 
+from llm_fakes import CountingLlm
+
 from kg_processor.adapters.cache.local_json import LocalJsonCache
-from kg_processor.adapters.llm.fake import FakeLlmProvider
 from kg_processor.application.enrichment_cache import CachedEnrichmentLlmProvider
-from kg_processor.ports.llm import DescriptionMergeRequest, DescriptionMergeResult
-
-
-class _CountingLlm(FakeLlmProvider):
-    def __init__(self) -> None:
-        self.description_calls = 0
-
-    def merge_entity_description(
-        self,
-        request: DescriptionMergeRequest,
-    ) -> DescriptionMergeResult:
-        self.description_calls += 1
-        return super().merge_entity_description(request)
+from kg_processor.ports.llm import DescriptionMergeRequest
 
 
 def test_enrichment_wrapper_reuses_description_result_after_restart(tmp_path: Path) -> None:
     cache = LocalJsonCache(tmp_path)
-    delegate = _CountingLlm()
+    delegate = CountingLlm()
     request = DescriptionMergeRequest(
         entity_name="Alice",
         entity_type="PERSON",

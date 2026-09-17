@@ -140,3 +140,39 @@ def one(rendered: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
     matches = [doc for doc in rendered if doc["kind"] == kind and doc["metadata"]["name"] == name]
     assert len(matches) == 1, f"expected one {kind}/{name}, found {len(matches)}"
     return matches[0]
+
+
+def pod(workload: dict[str, Any]) -> dict[str, Any]:
+    """Return the pod spec a Deployment, StatefulSet, or Job stamps out."""
+
+    spec: dict[str, Any] = workload["spec"]["template"]["spec"]
+    return spec
+
+
+def container(pod_spec: dict[str, Any], name: str, field: str = "containers") -> dict[str, Any]:
+    """Return one container of a pod spec by name."""
+
+    containers: list[dict[str, Any]] = pod_spec[field]
+    return next(item for item in containers if item["name"] == name)
+
+
+def env(container_spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index a container's environment by variable name."""
+
+    return {entry["name"]: entry for entry in container_spec["env"]}
+
+
+def args(container_spec: dict[str, Any]) -> dict[str, str]:
+    """Pair each ``--flag`` with the argument that follows it.
+
+    A flag followed by another flag is a switch and maps to itself, so a switch
+    is looked up through ``in container["args"]`` rather than through this.
+    """
+
+    given: list[str] = container_spec["args"]
+    paired: dict[str, str] = {}
+    for index, arg in enumerate(given):
+        if arg.startswith("--"):
+            following = given[index + 1] if index + 1 < len(given) else arg
+            paired[arg] = arg if following.startswith("--") else following
+    return paired

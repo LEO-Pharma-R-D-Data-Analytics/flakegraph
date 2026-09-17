@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from documents import grounded
+
 from kg_processor.adapters.embeddings.hash import HashEmbeddingProvider
 from kg_processor.adapters.llm.fake import FakeLlmProvider
 from kg_processor.application.entity_resolution import UnionFind, resolve_entity_mentions
@@ -356,9 +358,7 @@ def test_entity_resolution_candidate_generation_is_bounded() -> None:
         seed=17,
     )
 
-    same_type_pairs = result.trace["same_type_pairs"]
-    assert isinstance(same_type_pairs, int)
-    assert same_type_pairs <= 1_000 * 12
+    assert result.trace["same_type_pairs"] == 11_922
 
 
 def test_entity_resolution_compacts_repeated_names_before_fuzzy_adjudication() -> None:
@@ -542,8 +542,6 @@ def _mention(mention_id: str, name: str, aliases: list[str]) -> EntityMention:
         type="MARTIAL_ART",
         description=name,
         source_chunk_id="chunk",
-        quote=name,
         aliases=aliases,
-        start_offset=0,
-        end_offset=len(name),
+        **grounded(name, name),
     )

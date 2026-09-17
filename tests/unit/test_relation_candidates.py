@@ -1,40 +1,23 @@
 from pathlib import Path
 
+from documents import chunk, window
+
 from kg_processor.application.ontology import load_ontology
 from kg_processor.application.relation_candidates import discover_cue_relation_candidates
-from kg_processor.domain.extraction import EntityMention, ExtractionWindow
-from kg_processor.domain.graph import Chunk
+from kg_processor.domain.extraction import EntityMention
 
 
 def test_cue_candidates_ground_shortened_numeric_event_names() -> None:
     """Recover chronology when official event names appear as stable year prefixes."""
 
-    content = "The Seoul 1988 event preceded the Sydney 2000 event."
-    chunk = Chunk(
-        id="chunk",
-        file_id="file",
-        document_id="document",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=12,
-        content_hash="hash",
-    )
-    window = ExtractionWindow(
-        id="window",
-        document_id="document",
-        chunks=[chunk],
-        token_count=chunk.token_count,
-    )
+    passage = chunk("The Seoul 1988 event preceded the Sydney 2000 event.")
     entities = [
-        _mention("seoul", "Seoul 1988 Olympic Games", chunk.id),
-        _mention("sydney", "Sydney 2000 Olympic Games", chunk.id),
+        _mention("seoul", "Seoul 1988 Olympic Games", passage.id),
+        _mention("sydney", "Sydney 2000 Olympic Games", passage.id),
     ]
     ontology = load_ontology(Path("data/martial_arts/ontology.yaml"), [], None)
 
-    candidates = discover_cue_relation_candidates(window, entities, ontology.profile)
+    candidates = discover_cue_relation_candidates(window(passage), entities, ontology.profile)
 
     preceded = [candidate for candidate in candidates if candidate.relation_type == "PRECEDED"]
     assert len(preceded) == 1
@@ -48,34 +31,21 @@ def test_cue_candidates_ground_shortened_numeric_event_names() -> None:
 def test_possessive_target_keeps_semantic_verification() -> None:
     """Do not treat a named possessor as the direct object of a cue."""
 
-    content = "The Seoul event preceded taekwondo's medal programme."
-    chunk = Chunk(
-        id="chunk",
-        file_id="file",
-        document_id="document",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=7,
-        content_hash="hash",
-    )
-    window = ExtractionWindow(id="window", document_id="document", chunks=[chunk], token_count=7)
+    passage = chunk("The Seoul event preceded taekwondo's medal programme.")
     entities = [
-        _mention("seoul", "Seoul", chunk.id),
+        _mention("seoul", "Seoul", passage.id),
         EntityMention(
             id="taekwondo",
             name="taekwondo",
             type="MARTIAL_ART",
             description="taekwondo",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             quote="taekwondo",
         ),
     ]
     ontology = load_ontology(Path("data/martial_arts/ontology.yaml"), [], None)
 
-    candidates = discover_cue_relation_candidates(window, entities, ontology.profile)
+    candidates = discover_cue_relation_candidates(window(passage), entities, ontology.profile)
 
     preceded = [candidate for candidate in candidates if candidate.relation_type == "PRECEDED"]
     assert len(preceded) == 1
@@ -85,27 +55,14 @@ def test_possessive_target_keeps_semantic_verification() -> None:
 def test_endpoint_types_disambiguate_shared_ontology_cues() -> None:
     """Treat a shared lexical cue as direct when only one predicate accepts the types."""
 
-    content = "Mixed Martial Arts uses wrestling in regulated competition."
-    chunk = Chunk(
-        id="chunk",
-        file_id="file",
-        document_id="document",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=8,
-        content_hash="hash",
-    )
-    window = ExtractionWindow(id="window", document_id="document", chunks=[chunk], token_count=8)
+    passage = chunk("Mixed Martial Arts uses wrestling in regulated competition.")
     entities = [
-        _typed_mention("mma", "Mixed Martial Arts", "MARTIAL_ART", chunk.id),
-        _typed_mention("wrestling", "wrestling", "TECHNIQUE", chunk.id),
+        _typed_mention("mma", "Mixed Martial Arts", "MARTIAL_ART", passage.id),
+        _typed_mention("wrestling", "wrestling", "TECHNIQUE", passage.id),
     ]
     ontology = load_ontology(Path("data/martial_arts/ontology.yaml"), [], None)
 
-    candidates = discover_cue_relation_candidates(window, entities, ontology.profile)
+    candidates = discover_cue_relation_candidates(window(passage), entities, ontology.profile)
 
     uses = [candidate for candidate in candidates if candidate.relation_type == "USES_TECHNIQUE"]
     assert len(uses) == 1
@@ -117,30 +74,17 @@ def test_endpoint_types_disambiguate_shared_ontology_cues() -> None:
 def test_cue_candidates_use_unique_document_context_surface_as_source() -> None:
     """Recover an explicit paper relation stated through a configured discourse phrase."""
 
-    content = "In this paper, we address the degradation problem."
-    chunk = Chunk(
-        id="chunk",
-        file_id="file",
-        document_id="document",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=9,
-        content_hash="hash",
-    )
-    window = ExtractionWindow(id="window", document_id="document", chunks=[chunk], token_count=9)
-    paper = _typed_mention("paper", "Example Paper", "PAPER", chunk.id).model_copy(
+    passage = chunk("In this paper, we address the degradation problem.")
+    paper = _typed_mention("paper", "Example Paper", "PAPER", passage.id).model_copy(
         update={
             "is_document_context": True,
             "contextual_surfaces": ["this paper", "we"],
         }
     )
-    task = _typed_mention("task", "degradation problem", "TASK", chunk.id)
+    task = _typed_mention("task", "degradation problem", "TASK", passage.id)
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None)
 
-    candidates = discover_cue_relation_candidates(window, [paper, task], ontology.profile)
+    candidates = discover_cue_relation_candidates(window(passage), [paper, task], ontology.profile)
 
     addresses = [candidate for candidate in candidates if candidate.relation_type == "ADDRESSES"]
     assert len(addresses) == 1
@@ -153,28 +97,15 @@ def test_cue_candidates_use_unique_document_context_surface_as_source() -> None:
 def test_cue_candidates_enumerate_coordinated_targets() -> None:
     """Recover every dataset in a coordinated training statement without auto-accepting all."""
 
-    content = "The model was trained on ImageNet and CIFAR-10."
-    chunk = Chunk(
-        id="chunk",
-        file_id="file",
-        document_id="document",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=9,
-        content_hash="hash",
-    )
-    window = ExtractionWindow(id="window", document_id="document", chunks=[chunk], token_count=9)
+    passage = chunk("The model was trained on ImageNet and CIFAR-10.")
     entities = [
-        _typed_mention("model", "model", "MODEL", chunk.id),
-        _typed_mention("imagenet", "ImageNet", "DATASET", chunk.id),
-        _typed_mention("cifar", "CIFAR-10", "DATASET", chunk.id),
+        _typed_mention("model", "model", "MODEL", passage.id),
+        _typed_mention("imagenet", "ImageNet", "DATASET", passage.id),
+        _typed_mention("cifar", "CIFAR-10", "DATASET", passage.id),
     ]
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None)
 
-    candidates = discover_cue_relation_candidates(window, entities, ontology.profile)
+    candidates = discover_cue_relation_candidates(window(passage), entities, ontology.profile)
 
     trained_on = [candidate for candidate in candidates if candidate.relation_type == "TRAINED_ON"]
     endpoint_pairs = [

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from documents import chunk, window
+
 from kg_processor.adapters.extraction.gliner import GlinerEntityExtractor
-from kg_processor.domain.extraction import ExtractionWindow
-from kg_processor.domain.graph import Chunk
 from kg_processor.domain.ontology import EntityTypeDefinition, OntologyProfile
+
+_PEOPLE = OntologyProfile(
+    name="people",
+    description="People",
+    entity_types=[EntityTypeDefinition(name="PERSON", description="A person")],
+)
 
 
 class _StubGliner:
@@ -52,29 +58,13 @@ def test_gliner_adapter_maps_exact_spans_to_entity_port() -> None:
     Exact offsets and provider provenance must survive translation.
     """
 
-    chunk = Chunk(
-        id="chunk",
-        file_id="file",
-        page_number=1,
-        chunk_index=0,
-        content="Jigoro Kano founded the Kodokan.",
-        start_offset=0,
-        end_offset=34,
-        token_count=5,
-        content_hash="hash",
-    )
-    window = ExtractionWindow(id="window", document_id="file", chunks=[chunk], token_count=5)
-    ontology = OntologyProfile(
-        name="people",
-        description="People",
-        entity_types=[EntityTypeDefinition(name="PERSON", description="A person")],
-    )
+    content = "Jigoro Kano founded the Kodokan."
     extractor = GlinerEntityExtractor("stub")
     extractor._model = _StubGliner()
 
     outcome = extractor.extract(
-        window,
-        ontology,
+        window(chunk(content)),
+        _PEOPLE,
         model="ignored",
         timeout_seconds=1,
         max_entities=10,
@@ -82,7 +72,7 @@ def test_gliner_adapter_maps_exact_spans_to_entity_port() -> None:
 
     assert len(outcome.entities) == 1
     assert outcome.entities[0].name == "Jigoro Kano"
-    assert outcome.entities[0].quote == chunk.content[:11]
+    assert outcome.entities[0].quote == content[:11]
     assert outcome.entities[0].start_offset == 0
     assert outcome.trace["provider"] == "gliner"
 
@@ -92,30 +82,13 @@ def test_gliner_adapter_windows_long_chunks_without_losing_source_offsets() -> N
 
     prefix = " ".join(f"word{index}" for index in range(700)) + " "
     content = prefix + "Late Entity appears here."
-    chunk = Chunk(
-        id="chunk",
-        file_id="file",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=704,
-        content_hash="hash",
-    )
-    window = ExtractionWindow(id="window", document_id="file", chunks=[chunk], token_count=704)
-    ontology = OntologyProfile(
-        name="people",
-        description="People",
-        entity_types=[EntityTypeDefinition(name="PERSON", description="A person")],
-    )
     model = _WindowRecordingGliner()
     extractor = GlinerEntityExtractor("stub")
     extractor._model = model
 
     outcome = extractor.extract(
-        window,
-        ontology,
+        window(chunk(content)),
+        _PEOPLE,
         model="ignored",
         timeout_seconds=1,
         max_entities=10,

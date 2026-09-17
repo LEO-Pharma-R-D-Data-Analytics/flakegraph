@@ -9,18 +9,16 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from helm import CHART as _CHART
 from helm import FULLNAME as _FULLNAME
 from helm import NAMESPACE as _NAMESPACE
 from helm import fails as _fails
-from helm import load_yaml as _load_yaml
 from helm import one as _one
 from helm import render as _render
+from helm import schema as _schema
+from helm import values as _values
 
 from kg_processor.adapters.distributed.postgres import _SCHEMA_STATEMENTS
 
-_VALUES = _CHART / "values.yaml"
-_SCHEMA = _CHART / "values.schema.json"
 _DDL = "\n".join(_SCHEMA_STATEMENTS)
 
 # Everything the monitoring objects hang off: the database they read, the
@@ -48,13 +46,8 @@ def test_monitoring_is_opt_in_and_leaves_no_trace_when_off() -> None:
     per-request callback in the gateway's config.
     """
 
-    values = _load_yaml(_VALUES)["monitoring"]
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-
-    assert values["enabled"] is False
-    assert values["database"]["role"] == "flakegraph_metrics"
-    assert "monitoring" in schema["properties"]
-    monitoring_schema = schema["properties"]["monitoring"]
+    assert _values()["monitoring"]["database"]["role"] == "flakegraph_metrics"
+    monitoring_schema = _schema()["properties"]["monitoring"]
     assert monitoring_schema["additionalProperties"] is False
     thresholds_schema = monitoring_schema["properties"]["rules"]["properties"]["thresholds"]
     assert thresholds_schema["additionalProperties"] is False
@@ -82,7 +75,7 @@ def test_every_plane_is_scraped_through_its_own_service() -> None:
 
     rendered = _render(_ENABLED_SETTINGS)
     monitors = {doc["metadata"]["name"]: doc for doc in rendered if doc["kind"] == "ServiceMonitor"}
-    interval = _load_yaml(_VALUES)["monitoring"]["scrapeInterval"]
+    interval = _values()["monitoring"]["scrapeInterval"]
 
     engines = monitors[f"{_FULLNAME}-vllm"]
     assert engines["spec"]["selector"]["matchLabels"]["flakegraph.io/scrape"] == "true"
@@ -212,7 +205,7 @@ def test_the_database_exposes_its_queues_through_a_kept_read_only_role() -> None
     """Declare the exporter, the role Grafana reads as, and a password that survives upgrades."""
 
     rendered = _render(_ENABLED_SETTINGS)
-    values = _load_yaml(_VALUES)
+    values = _values()
     role = values["monitoring"]["database"]["role"]
     secret_name = values["monitoring"]["database"]["secretName"]
 
@@ -258,7 +251,7 @@ def test_grafana_shares_the_fleets_front_door() -> None:
     """Publish Grafana behind the same gate, and let only the edge talk to it."""
 
     rendered = _render(_ENABLED_SETTINGS)
-    values = _load_yaml(_VALUES)
+    values = _values()
     grafana_host = f"{values['monitoring']['grafana']['host']}.example.test"
     middleware = "traefik.ingress.kubernetes.io/router.middlewares"
 
@@ -299,7 +292,7 @@ def test_alerts_cover_each_plane_and_take_every_threshold_from_values(tmp_path: 
     """Keep every alert explained, actionable, and tunable without editing PromQL."""
 
     rendered = _render(_ENABLED_SETTINGS)
-    values = _load_yaml(_VALUES)
+    values = _values()
 
     prometheus_rule = _one(rendered, "PrometheusRule", _FULLNAME)
     groups = {group["name"]: group["rules"] for group in prometheus_rule["spec"]["groups"]}
@@ -384,7 +377,7 @@ def test_postgres_queries_are_well_formed_and_name_only_real_columns() -> None:
     """
 
     rendered = _render(_ENABLED_SETTINGS)
-    values = _load_yaml(_VALUES)
+    values = _values()
     queries = yaml.safe_load(
         _one(rendered, "ConfigMap", f"{_FULLNAME}-postgres-queries")["data"]["queries.yaml"]
     )

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from llm_fakes import RecordingCommunityLlm
+
 from kg_processor.application import spark_finalization
 from kg_processor.application.community_reports import (
     CommunitySeed,
@@ -23,7 +25,6 @@ from kg_processor.application.graph_merge import (
 from kg_processor.config.settings import Settings
 from kg_processor.domain.graph import Evidence, GraphEdge, GraphNode
 from kg_processor.domain.ontology import normalize_ontology_label
-from kg_processor.ports.llm import CommunitySummaryRequest, CommunitySummaryResult
 
 _SSL_KEY = "spark.hadoop.fs.s3a.connection.ssl.enabled"
 # Inputs chosen so a rule reimplemented in another language diverges: decomposed
@@ -128,7 +129,7 @@ def test_community_rating_uses_the_relations_the_report_received() -> None:
         [CommunitySeed(member_ids={"node_a", "node_b", "node_c"})],
         nodes,
         edges,
-        _StubCommunityLlm(),
+        RecordingCommunityLlm(),
         max_relations_per_community=2,
         evidence=evidence,
     )
@@ -152,23 +153,6 @@ def test_http_artifact_endpoint_disables_transport_encryption() -> None:
     """A plaintext endpoint is the only configuration that turns encryption off."""
 
     assert _artifact_ssl_setting("http://minio.default.svc:9000") == "false"
-
-
-class _StubCommunityLlm:
-    """Return fixed narrative so ratings depend only on graph structure."""
-
-    def summarize_community(self, request: CommunitySummaryRequest) -> CommunitySummaryResult:
-        """Answer one community request with deterministic placeholder narrative."""
-
-        return CommunitySummaryResult(
-            title=f"{request.title_seed} network",
-            summary="Grounded summary.",
-            rating=0.0,
-            rating_explanation="Model rating is not persisted.",
-            findings=[],
-            suggested_questions=[],
-            provider_metadata={"provider": "stub"},
-        )
 
 
 def _node(node_id: str, name: str) -> GraphNode:

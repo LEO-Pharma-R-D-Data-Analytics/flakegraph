@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from documents import chunk, grounded
 
 from kg_processor.application.graph_filter import (
     filter_entities_with_decisions,
@@ -14,14 +15,7 @@ from kg_processor.application.graph_merge import (
     normalize_relation_type,
     prune_isolated_entities,
 )
-from kg_processor.domain.graph import Chunk, ExtractedEntity, ExtractedRelation
-
-
-def _grounded(content: str, quote: str) -> dict[str, str | int]:
-    """Ground a fixture on the real span of ``quote`` so assembly never has to search."""
-
-    start = content.index(quote)
-    return {"quote": quote, "start_offset": start, "end_offset": start + len(quote)}
+from kg_processor.domain.graph import ExtractedEntity, ExtractedRelation
 
 
 def test_normalization_helpers() -> None:
@@ -36,39 +30,29 @@ def test_normalization_helpers() -> None:
 
 
 def test_assemble_graph_deduplicates_entities_and_tracks_evidence() -> None:
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=0,
-        end_offset=32,
-        token_count=6,
-        content_hash="hash",
-    )
+    passage = chunk("Alice Smith works at Acme Corp.")
     entities = [
         ExtractedEntity(
             name="Alice Smith",
             type="PERSON",
             description="Alice Smith is a person.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Alice Smith"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Alice Smith"),
         ),
         ExtractedEntity(
             name="Alice Smith",
             type="PERSON",
             description="Alice Smith works at Acme Corp.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             aliases=["A. Smith"],
-            **_grounded(chunk.content, "Alice Smith"),
+            **grounded(passage.content, "Alice Smith"),
         ),
         ExtractedEntity(
             name="Acme Corp",
             type="ORGANIZATION",
             description="Acme Corp is an organization.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Acme Corp"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Acme Corp"),
         ),
     ]
     relations = [
@@ -79,61 +63,51 @@ def test_assemble_graph_deduplicates_entities_and_tracks_evidence() -> None:
             target_type="ORGANIZATION",
             relation_type="works at",
             description="Alice Smith works at Acme Corp.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             weight=12,
-            **_grounded(chunk.content, "works at"),
+            **grounded(passage.content, "works at"),
         )
     ]
 
-    filtered_entities = filter_entities_with_decisions(entities, {chunk.id: chunk}).kept
+    filtered_entities = filter_entities_with_decisions(entities, {passage.id: passage}).kept
     filtered_relations = filter_relations_with_decisions(relations, filtered_entities).kept
     nodes, edges, evidence, sources = assemble_graph(
-        "graph", [chunk], filtered_entities, filtered_relations, relation_weight_max=10
+        "graph", [passage], filtered_entities, filtered_relations, relation_weight_max=10
     )
 
     assert len(nodes) == 2
     assert next(node for node in nodes if node.name == "Alice Smith").aliases == ["A. Smith"]
     assert len(edges) == 1
     assert edges[0].weight == 10
-    assert len(evidence) >= 3
+    assert len(evidence) == 3
     assert len(sources) == 2
 
 
 def test_prune_isolated_entities_removes_dependent_provenance_but_keeps_edges() -> None:
     """Disconnected observations must not survive as expensive graph entities."""
 
-    chunk = Chunk(
-        id="chunk",
-        file_id="file",
-        page_number=1,
-        chunk_index=0,
-        content="Alice works at Acme. Incidental appears separately.",
-        start_offset=0,
-        end_offset=52,
-        token_count=7,
-        content_hash="hash",
-    )
+    passage = chunk("Alice works at Acme. Incidental appears separately.")
     entities = [
         ExtractedEntity(
             name="Alice",
             type="PERSON",
             description="A person.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Alice"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Alice"),
         ),
         ExtractedEntity(
             name="Acme",
             type="ORGANIZATION",
             description="An organization.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Acme"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Acme"),
         ),
         ExtractedEntity(
             name="Incidental",
             type="CONCEPT",
             description="An incidental concept.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Incidental"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Incidental"),
         ),
     ]
     relation = ExtractedRelation(
@@ -143,10 +117,10 @@ def test_prune_isolated_entities_removes_dependent_provenance_but_keeps_edges() 
         target_type="ORGANIZATION",
         relation_type="WORKS_AT",
         description="Alice works at Acme.",
-        source_chunk_id=chunk.id,
-        **_grounded(chunk.content, "Alice works at Acme."),
+        source_chunk_id=passage.id,
+        **grounded(passage.content, "Alice works at Acme."),
     )
-    assembly = assemble_graph_with_decisions("graph", [chunk], entities, [relation], 10)
+    assembly = assemble_graph_with_decisions("graph", [passage], entities, [relation], 10)
 
     pruned = prune_isolated_entities(assembly)
 
@@ -165,38 +139,28 @@ def test_prune_isolated_entities_removes_dependent_provenance_but_keeps_edges() 
 
 
 def test_assemble_graph_keeps_same_name_with_distinct_types_addressable() -> None:
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Jordan teaches grappling at North Hall.",
-        start_offset=0,
-        end_offset=39,
-        token_count=6,
-        content_hash="hash",
-    )
+    passage = chunk("Jordan teaches grappling at North Hall.")
     entities = [
         ExtractedEntity(
             name="Jordan",
             type="PERSON",
             description="Jordan is a person.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Jordan"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Jordan"),
         ),
         ExtractedEntity(
             name="Jordan",
             type="ORGANIZATION",
             description="Jordan is also mislabeled as an organization.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Jordan"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Jordan"),
         ),
         ExtractedEntity(
             name="North Hall",
             type="LOCATION",
             description="North Hall is a location.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "North Hall"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "North Hall"),
         ),
     ]
     relations = [
@@ -207,14 +171,14 @@ def test_assemble_graph_keeps_same_name_with_distinct_types_addressable() -> Non
             target_type="LOCATION",
             relation_type="teaches at",
             description="Jordan teaches at North Hall.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "teaches grappling at"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "teaches grappling at"),
         )
     ]
 
     nodes, edges, _evidence, _sources = assemble_graph(
         "graph",
-        [chunk],
+        [passage],
         entities,
         relations,
         relation_weight_max=10,
@@ -231,24 +195,14 @@ def test_assemble_graph_keeps_same_name_with_distinct_types_addressable() -> Non
 def test_assemble_graph_drops_loop_created_by_entity_normalization() -> None:
     """Do not let punctuation variants become an invalid canonical self-loop."""
 
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Wal-Mart renamed Walmart.",
-        start_offset=0,
-        end_offset=25,
-        token_count=3,
-        content_hash="hash",
-    )
+    passage = chunk("Wal-Mart renamed Walmart.")
     entities = [
         ExtractedEntity(
             name=name,
             type="ORGANIZATION",
             description=name,
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, name),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, name),
         )
         for name in ("Wal-Mart", "Walmart")
     ]
@@ -258,12 +212,12 @@ def test_assemble_graph_drops_loop_created_by_entity_normalization() -> None:
         source_type="ORGANIZATION",
         target_type="ORGANIZATION",
         relation_type="renamed to",
-        description=chunk.content,
-        source_chunk_id=chunk.id,
-        **_grounded(chunk.content, "renamed"),
+        description=passage.content,
+        source_chunk_id=passage.id,
+        **grounded(passage.content, "renamed"),
     )
 
-    result = assemble_graph_with_decisions("graph", [chunk], entities, [relation], 10)
+    result = assemble_graph_with_decisions("graph", [passage], entities, [relation], 10)
 
     assert len(result.nodes) == 1
     assert result.edges == []
@@ -276,38 +230,28 @@ def test_assemble_graph_records_merge_decisions() -> None:
     The trace should explain graph cardinality changes.
     """
 
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=0,
-        end_offset=32,
-        token_count=6,
-        content_hash="hash",
-    )
+    passage = chunk("Alice Smith works at Acme Corp.")
     entities = [
         ExtractedEntity(
             name="Alice Smith",
             type="PERSON",
             description="Alice Smith is present.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Alice Smith"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Alice Smith"),
         ),
         ExtractedEntity(
             name="Alice Smith",
             type="PERSON",
             description="Alice Smith works at Acme Corp.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Alice Smith"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Alice Smith"),
         ),
         ExtractedEntity(
             name="Acme Corp",
             type="ORGANIZATION",
             description="Acme is present.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Acme Corp"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Acme Corp"),
         ),
     ]
     relations = [
@@ -318,9 +262,9 @@ def test_assemble_graph_records_merge_decisions() -> None:
             target_type="ORGANIZATION",
             relation_type="works at",
             description="First observation.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             weight=7,
-            **_grounded(chunk.content, "works at"),
+            **grounded(passage.content, "works at"),
         ),
         ExtractedRelation(
             source_name="Alice Smith",
@@ -329,9 +273,9 @@ def test_assemble_graph_records_merge_decisions() -> None:
             target_type="ORGANIZATION",
             relation_type="works at",
             description="Longer duplicate relation observation.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             weight=7,
-            **_grounded(chunk.content, "works at"),
+            **grounded(passage.content, "works at"),
         ),
         ExtractedRelation(
             source_name="Ghost",
@@ -340,12 +284,12 @@ def test_assemble_graph_records_merge_decisions() -> None:
             target_type="ORGANIZATION",
             relation_type="mentions",
             description="Source node is missing.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "Acme Corp"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Acme Corp"),
         ),
     ]
 
-    result = assemble_graph_with_decisions("graph", [chunk], entities, relations, 10)
+    result = assemble_graph_with_decisions("graph", [passage], entities, relations, 10)
 
     assert len(result.nodes) == 2
     assert len(result.edges) == 1
@@ -382,35 +326,21 @@ def test_assemble_graph_records_merge_decisions() -> None:
 
 
 def test_assemble_graph_uses_extracted_quote_spans_for_evidence() -> None:
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=100,
-        end_offset=132,
-        token_count=6,
-        content_hash="hash",
-    )
+    passage = chunk("Alice Smith works at Acme Corp.", start=100)
     entities = [
         ExtractedEntity(
             name="Alice Smith",
             type="PERSON",
             description="Alice Smith is present.",
-            source_chunk_id=chunk.id,
-            quote="Alice Smith",
-            start_offset=0,
-            end_offset=11,
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Alice Smith"),
         ),
         ExtractedEntity(
             name="Acme Corp",
             type="ORGANIZATION",
             description="Acme is present.",
-            source_chunk_id=chunk.id,
-            quote="Acme Corp",
-            start_offset=21,
-            end_offset=30,
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "Acme Corp"),
         ),
     ]
     relations = [
@@ -421,16 +351,14 @@ def test_assemble_graph_uses_extracted_quote_spans_for_evidence() -> None:
             target_type="ORGANIZATION",
             relation_type="works at",
             description="Alice works at Acme.",
-            source_chunk_id=chunk.id,
-            quote="works at",
-            start_offset=12,
-            end_offset=20,
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "works at"),
         )
     ]
 
     nodes, edges, evidence, _sources = assemble_graph(
         "graph",
-        [chunk],
+        [passage],
         entities,
         relations,
         relation_weight_max=10,
@@ -452,71 +380,51 @@ def test_assemble_graph_uses_extracted_quote_spans_for_evidence() -> None:
 def test_assemble_graph_refuses_an_entity_without_grounded_offsets() -> None:
     """Every extractor grounds its observations, so assembly treats a missing span as a bug."""
 
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=0,
-        end_offset=32,
-        token_count=6,
-        content_hash="hash",
-    )
+    passage = chunk("Alice Smith works at Acme Corp.")
     entity = ExtractedEntity(
-        name="Alice Smith", type="PERSON", description="Ungrounded.", source_chunk_id=chunk.id
+        name="Alice Smith", type="PERSON", description="Ungrounded.", source_chunk_id=passage.id
     )
 
     with pytest.raises(ValueError, match="no grounded offsets"):
-        assemble_graph("graph", [chunk], [entity], [], relation_weight_max=10)
+        assemble_graph("graph", [passage], [entity], [], relation_weight_max=10)
 
 
 def test_filter_entities_applies_confidence_name_quality_and_blocklist() -> None:
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=0,
-        end_offset=32,
-        token_count=6,
-        content_hash="hash",
-    )
+    passage = chunk("Alice Smith works at Acme Corp.")
     entities = [
         ExtractedEntity(
             name="Alice Smith",
             type="PERSON",
             description="Alice is present.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             confidence=0.95,
         ),
         ExtractedEntity(
             name="Acme Corp",
             type="ORGANIZATION",
             description="Acme is present.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             confidence=0.2,
         ),
         ExtractedEntity(
             name="Q",
             type="CONCEPT",
             description="Too short.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             confidence=0.99,
         ),
         ExtractedEntity(
             name="Document",
             type="CONCEPT",
             description="Blocked document furniture.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             confidence=0.99,
         ),
     ]
 
     result = filter_entities_with_decisions(
         entities,
-        {chunk.id: chunk},
+        {passage.id: passage},
         min_confidence=0.8,
         min_name_length=2,
         blocklist=["document"],
@@ -536,58 +444,38 @@ def test_filter_entities_applies_confidence_name_quality_and_blocklist() -> None
 
 
 def test_filter_entities_accepts_a_grounded_alias_after_canonical_resolution() -> None:
-    """Keep a mention when its canonical spelling comes from another source chunk."""
+    """Keep a mention when its canonical spelling comes from another source passage."""
 
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="The paper studies image recognition.",
-        start_offset=0,
-        end_offset=36,
-        token_count=6,
-        content_hash="hash",
-    )
+    passage = chunk("The paper studies image recognition.")
     entity = ExtractedEntity(
         name="Image classification",
         type="TASK",
         description="A visual recognition task.",
-        source_chunk_id=chunk.id,
+        source_chunk_id=passage.id,
         aliases=["image recognition"],
         confidence=0.99,
     )
 
-    result = filter_entities_with_decisions([entity], {chunk.id: chunk})
+    result = filter_entities_with_decisions([entity], {passage.id: passage})
 
     assert result.kept == [entity]
     assert result.decisions[0].reason == "grounded_alias"
 
 
 def test_filter_relations_applies_confidence_and_endpoint_grounding() -> None:
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=0,
-        end_offset=32,
-        token_count=6,
-        content_hash="hash",
-    )
+    passage = chunk("Alice Smith works at Acme Corp.")
     entities = [
         ExtractedEntity(
             name="Alice Smith",
             type="PERSON",
             description="Alice is present.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
         ),
         ExtractedEntity(
             name="Acme Corp",
             type="ORGANIZATION",
             description="Acme is present.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
         ),
     ]
     relations = [
@@ -598,7 +486,7 @@ def test_filter_relations_applies_confidence_and_endpoint_grounding() -> None:
             target_type="ORGANIZATION",
             relation_type="works_at",
             description="Alice works at Acme.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             confidence=0.9,
         ),
         ExtractedRelation(
@@ -608,7 +496,7 @@ def test_filter_relations_applies_confidence_and_endpoint_grounding() -> None:
             target_type="ORGANIZATION",
             relation_type="works_at",
             description="Ungrounded endpoint.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             confidence=0.9,
         ),
         ExtractedRelation(
@@ -618,7 +506,7 @@ def test_filter_relations_applies_confidence_and_endpoint_grounding() -> None:
             target_type="ORGANIZATION",
             relation_type="mentions",
             description="Low confidence.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             confidence=0.2,
         ),
     ]
@@ -626,7 +514,7 @@ def test_filter_relations_applies_confidence_and_endpoint_grounding() -> None:
     result = filter_relations_with_decisions(
         relations,
         entities,
-        {chunk.id: chunk},
+        {passage.id: passage},
         min_confidence=0.8,
         require_endpoint_grounding=True,
     )
@@ -639,29 +527,19 @@ def test_filter_relations_applies_confidence_and_endpoint_grounding() -> None:
 
 
 def test_filter_relations_records_endpoint_grounding_reasons() -> None:
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=0,
-        end_offset=32,
-        token_count=6,
-        content_hash="hash",
-    )
+    passage = chunk("Alice Smith works at Acme Corp.")
     entities = [
         ExtractedEntity(
             name="Alice Smith",
             type="PERSON",
             description="Alice is present.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
         ),
         ExtractedEntity(
             name="Copenhagen",
             type="LOCATION",
             description="Known from another accepted observation.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
         ),
     ]
     relations = [
@@ -671,15 +549,15 @@ def test_filter_relations_records_endpoint_grounding_reasons() -> None:
             source_type="PERSON",
             target_type="LOCATION",
             relation_type="located_in",
-            description="Endpoint is known but not grounded in this chunk.",
-            source_chunk_id=chunk.id,
+            description="Endpoint is known but not grounded in this passage.",
+            source_chunk_id=passage.id,
         )
     ]
 
     result = filter_relations_with_decisions(
         relations,
         entities,
-        {chunk.id: chunk},
+        {passage.id: passage},
         require_endpoint_grounding=True,
     )
 
@@ -690,29 +568,19 @@ def test_filter_relations_records_endpoint_grounding_reasons() -> None:
 def test_filter_relations_grounds_verified_local_endpoint_surfaces() -> None:
     """Preserve alias and document-context evidence after canonical resolution."""
 
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="We evaluate LSTM on the benchmark.",
-        start_offset=0,
-        end_offset=34,
-        token_count=7,
-        content_hash="hash",
-    )
+    passage = chunk("We evaluate LSTM on the benchmark.")
     entities = [
         ExtractedEntity(
             name="Sequence Learning Paper",
             type="PAPER",
             description="The source paper.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
         ),
         ExtractedEntity(
             name="Long Short-Term Memory",
             type="MODEL",
             description="A recurrent architecture.",
-            source_chunk_id=chunk.id,
+            source_chunk_id=passage.id,
             aliases=["LSTM"],
         ),
     ]
@@ -725,13 +593,13 @@ def test_filter_relations_grounds_verified_local_endpoint_surfaces() -> None:
         target_type="MODEL",
         relation_type="USES_METHOD",
         description="The paper evaluates LSTM.",
-        source_chunk_id=chunk.id,
+        source_chunk_id=passage.id,
     )
 
     result = filter_relations_with_decisions(
         [relation],
         entities,
-        {chunk.id: chunk},
+        {passage.id: passage},
         require_endpoint_grounding=True,
     )
 
@@ -742,32 +610,22 @@ def test_filter_relations_grounds_verified_local_endpoint_surfaces() -> None:
 def test_resolved_alias_remains_a_relation_endpoint_through_assembly() -> None:
     """Keep local relation surfaces after entity resolution canonicalizes a name."""
 
-    chunk = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="LSTM uses an input gate.",
-        start_offset=0,
-        end_offset=24,
-        token_count=5,
-        content_hash="hash",
-    )
+    passage = chunk("LSTM uses an input gate.")
     entities = [
         ExtractedEntity(
             name="Long Short-Term Memory",
             type="MODEL",
             aliases=["LSTM"],
             description="A recurrent architecture.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "LSTM"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "LSTM"),
         ),
         ExtractedEntity(
             name="input gate",
             type="METHOD",
             description="A multiplicative gate.",
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "input gate"),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "input gate"),
         ),
     ]
     relation = ExtractedRelation(
@@ -777,14 +635,14 @@ def test_resolved_alias_remains_a_relation_endpoint_through_assembly() -> None:
         target_type="METHOD",
         relation_type="USES_METHOD",
         description="LSTM uses an input gate.",
-        source_chunk_id=chunk.id,
-        **_grounded(chunk.content, "uses"),
+        source_chunk_id=passage.id,
+        **grounded(passage.content, "uses"),
     )
 
     filtered = filter_relations_with_decisions([relation], entities)
     assembly = assemble_graph_with_decisions(
         "graph",
-        [chunk],
+        [passage],
         entities,
         filtered.kept,
         relation_weight_max=10,
@@ -839,27 +697,17 @@ def test_assemble_graph_aggregates_cross_file_assertions_into_one_edge() -> None
     Each assertion must remain independently removable during reindexing.
     """
 
-    first = Chunk(
-        id="chunk_1",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice works at Acme.",
-        start_offset=0,
-        end_offset=20,
-        token_count=4,
-        content_hash="one",
-    )
-    second = first.model_copy(update={"id": "chunk_2", "file_id": "file_2", "content_hash": "two"})
+    first = chunk("Alice works at Acme.", content_hash="one")
+    second = chunk("Alice works at Acme.", chunk_id="chunk_2", file_id="file_2", content_hash="two")
     entities = [
         ExtractedEntity(
             name=name,
             type=entity_type,
             description=name,
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, name),
+            source_chunk_id=passage.id,
+            **grounded(passage.content, name),
         )
-        for chunk in (first, second)
+        for passage in (first, second)
         for name, entity_type in (("Alice", "PERSON"), ("Acme", "ORGANIZATION"))
     ]
     relations = [
@@ -869,11 +717,11 @@ def test_assemble_graph_aggregates_cross_file_assertions_into_one_edge() -> None
             source_type="PERSON",
             target_type="ORGANIZATION",
             relation_type="works_at",
-            description=chunk.content,
-            source_chunk_id=chunk.id,
-            **_grounded(chunk.content, "works at"),
+            description=passage.content,
+            source_chunk_id=passage.id,
+            **grounded(passage.content, "works at"),
         )
-        for chunk in (first, second)
+        for passage in (first, second)
     ]
 
     result = assemble_graph_with_decisions(

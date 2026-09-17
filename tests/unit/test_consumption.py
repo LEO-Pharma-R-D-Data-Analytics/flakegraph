@@ -228,18 +228,10 @@ def test_a_window_that_exhausts_its_repair_budget_reports_what_it_burned() -> No
     """
 
     collector = ConsumptionCollector(graph_id="graph-1")
-
-    class _ExhaustedProvider:
-        def capabilities(self) -> object:
-            raise NotImplementedError
-
-        def complete_structured(self, request: object) -> object:
-            error = ValueError("could not parse the reply after every attempt")
-            error.usage = TokenUsage(prompt_tokens=4_000, completion_tokens=800)  # type: ignore[attr-defined]
-            raise error
-
+    error = ValueError("could not parse the reply after every attempt")
+    error.usage = TokenUsage(prompt_tokens=4_000, completion_tokens=800)  # type: ignore[attr-defined]
     provider = MeteredLlmProvider(
-        cast(Any, _ExhaustedProvider()),
+        cast(Any, _RaisingProvider(error)),
         collector,
         provider="openai_compatible",
         model="test-model",
@@ -260,16 +252,8 @@ def test_a_failure_that_was_never_billed_records_nothing() -> None:
     """A transport error before any tokens were consumed is not a cost."""
 
     collector = ConsumptionCollector(graph_id="graph-1")
-
-    class _UnreachableProvider:
-        def capabilities(self) -> object:
-            raise NotImplementedError
-
-        def complete_structured(self, request: object) -> object:
-            raise OSError("connection refused")
-
     provider = MeteredLlmProvider(
-        cast(Any, _UnreachableProvider()),
+        cast(Any, _RaisingProvider(OSError("connection refused"))),
         collector,
         provider="openai_compatible",
         model="test-model",
@@ -279,6 +263,19 @@ def test_a_failure_that_was_never_billed_records_nothing() -> None:
         provider.complete_structured(cast(Any, SimpleNamespace(task_name="ocr", model=None)))
 
     assert list(collector.events) == []
+
+
+class _RaisingProvider:
+    """Fail every structured call with one prepared error."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def capabilities(self) -> object:
+        raise NotImplementedError
+
+    def complete_structured(self, request: object) -> object:
+        raise self.error
 
 
 def _shipped_card() -> RateCard:
@@ -322,23 +319,21 @@ def test_document_parsing_is_priced_per_mode() -> None:
     assert layout.credits_per_page > ocr.credits_per_page * 5
 
 
-def test_a_fallback_parse_is_billed_to_the_provider_that_ran(tmp_path: Path) -> None:
+def test_a_fallback_parse_is_billed_to_the_provider_that_ran() -> None:
     """The routing policy is not a provider; booking it as one hid hosted pages as local."""
 
     settings = Settings.load(
         overrides={
-            "files": {"input_path": tmp_path},
             "ocr": {
                 "provider": "fallback",
                 "fallback_primary_provider": "builtin_text",
                 "fallback_secondary_provider": "mineru_api",
             },
-            "writer": {"output_path": tmp_path / "out"},
         }
     )
     file = InputFile(
         id="f",
-        path=tmp_path / "a.pdf",
+        path=Path("a.pdf"),
         source_uri="a.pdf",
         checksum="c",
         mime_type="application/pdf",
@@ -350,7 +345,7 @@ def test_a_fallback_parse_is_billed_to_the_provider_that_ran(tmp_path: Path) -> 
         source_uri="a.pdf",
         mime_type="application/pdf",
         pages=[ParsedPage(page_number=1, markdown="x", raw_text="x")],
-        provider_metadata={"provider": "mineru_api", "fallback_ocr": {"selected": "secondary"}},
+        provider_metadata={"provider": "mineru_api"},
     )
     ocr = SimpleNamespace(parse=lambda _file, _options: parsed)
     stub = cast(Any, SimpleNamespace())

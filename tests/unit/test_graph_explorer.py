@@ -28,10 +28,7 @@ def test_graph_explorer_dataset_preserves_review_data_and_omits_vectors(tmp_path
     Every generated layout must cover the same nodes.
     """
 
-    output_path = tmp_path / "artifacts"
-    LocalArtifactsWriter(output_path).write(_explorer_batch())
-
-    dataset = build_graph_explorer_dataset(output_path)
+    dataset = build_graph_explorer_dataset(_write_explorer_batch(tmp_path))
 
     assert dataset.graph_id == "graph"
     assert dataset.counts == {
@@ -58,9 +55,7 @@ def test_static_graph_explorer_writes_safe_atomic_self_contained_html(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    output_path = tmp_path / "artifacts"
-    LocalArtifactsWriter(output_path).write(_explorer_batch())
-    dataset = build_graph_explorer_dataset(output_path)
+    dataset = build_graph_explorer_dataset(_write_explorer_batch(tmp_path))
     html_path = tmp_path / "explorer.html"
     monkeypatch.setattr(
         "kg_processor.adapters.explorer.static_html.get_plotlyjs",

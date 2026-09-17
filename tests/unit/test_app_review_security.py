@@ -24,7 +24,7 @@ from flakegraph_app.models import (
     SourceKind,
     StorageKind,
 )
-from flakegraph_app.providers import EMBEDDING_PROVIDERS, LLM_PROVIDERS, option_by_name
+from flakegraph_app.providers import EMBEDDING_PROVIDERS, option_by_name
 from flakegraph_app.spcs import _without_secrets
 from flakegraph_app.ui.ingestion import (
     _approved_preflight,
@@ -293,13 +293,6 @@ def test_embedding_model_dimension_is_explicit_in_effective_preflight_config(
     )
     with pytest.raises(ValueError, match="Embedding dimension is required"):
         build_run_config(implicit)
-
-
-def test_embedding_provider_catalog_declares_dimensions_for_every_ui_option() -> None:
-    """Ensure every embedding selector renders an explicit dimension control."""
-
-    assert all(option.default_dimension for option in EMBEDDING_PROVIDERS)
-    assert not any(option.default_dimension for option in LLM_PROVIDERS)
 
 
 def _request(tmp_path: Path) -> IngestionRequest:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from documents import chunk, grounded
+
 from kg_processor.application.graph_filter import EntityFilterResult, RelationFilterResult
 from kg_processor.application.graph_merge import assemble_graph_with_decisions
 from kg_processor.application.graph_quality import evaluate_graph_quality
@@ -10,7 +12,6 @@ from kg_processor.application.run_report import (
 )
 from kg_processor.config.settings import GraphSettings
 from kg_processor.domain.graph import (
-    Chunk,
     Community,
     ExtractedEntity,
     ExtractedRelation,
@@ -19,37 +20,20 @@ from kg_processor.domain.graph import (
 
 
 def test_build_run_report_artifacts_counts_providers_cache_and_quality() -> None:
-    chunk = Chunk(
-        id="chunk_1",
-        graph_id="graph",
-        file_id="file_1",
-        document_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice works at Acme.",
-        start_offset=0,
-        end_offset=20,
-        token_count=4,
-        content_hash="hash",
-        embedding=[0.1, 0.2],
-    )
+    passage = chunk("Alice works at Acme.", graph_id="graph", embedding=[0.1, 0.2])
     alice = ExtractedEntity(
         name="Alice",
         type="PERSON",
         description="Person",
-        source_chunk_id=chunk.id,
-        quote="Alice",
-        start_offset=0,
-        end_offset=5,
+        source_chunk_id=passage.id,
+        **grounded(passage.content, "Alice"),
     )
     acme = ExtractedEntity(
         name="Acme",
         type="ORGANIZATION",
         description="Company",
-        source_chunk_id=chunk.id,
-        quote="Acme",
-        start_offset=15,
-        end_offset=19,
+        source_chunk_id=passage.id,
+        **grounded(passage.content, "Acme"),
     )
     relation = ExtractedRelation(
         source_name="Alice",
@@ -58,10 +42,8 @@ def test_build_run_report_artifacts_counts_providers_cache_and_quality() -> None
         target_type="ORGANIZATION",
         relation_type="works at",
         description="Alice works at Acme.",
-        source_chunk_id=chunk.id,
-        quote="Alice works at Acme.",
-        start_offset=0,
-        end_offset=20,
+        source_chunk_id=passage.id,
+        **grounded(passage.content, "Alice works at Acme."),
     )
     extraction = ExtractionResult(
         entities=[alice, acme],
@@ -82,7 +64,7 @@ def test_build_run_report_artifacts_counts_providers_cache_and_quality() -> None
     )
     assembly = assemble_graph_with_decisions(
         "graph",
-        [chunk],
+        [passage],
         extraction.entities,
         extraction.relations,
         relation_weight_max=10.0,
@@ -118,7 +100,7 @@ def test_build_run_report_artifacts_counts_providers_cache_and_quality() -> None
             documents_processed=1,
             block_rows=[{"id": "block_1"}],
             asset_rows=[{"id": "asset_1"}],
-            chunks=[chunk],
+            chunks=[passage],
             extraction=extraction,
             entities=extraction.entities,
             relations=extraction.relations,

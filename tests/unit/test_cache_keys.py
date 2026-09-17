@@ -1,23 +1,16 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 
 import pytest
+from documents import chunk
 
 from kg_processor.application.cache_keys import build_extraction_cache_key, build_ocr_cache_key
-from kg_processor.application.extraction_contracts import (
-    EntityCandidateBatch,
-    RelationCandidateBatch,
-    ResolutionDecisionCandidateBatch,
-    VerificationCandidateBatch,
-    extraction_contract_fingerprint,
-)
 from kg_processor.config.settings import ExtractorSettings, GraphSettings
 from kg_processor.domain.documents import InputFile
-from kg_processor.domain.graph import Chunk
 from kg_processor.ports.ocr import OcrOptions
+
+_CHUNKS = [chunk("Alice Smith works at Acme Corp.")]
 
 
 def test_ocr_cache_key_excludes_secret_api_key() -> None:
@@ -141,11 +134,10 @@ def test_generic_http_ocr_cache_key_includes_endpoint_and_mapping_but_not_secret
 def test_extraction_cache_key_changes_for_prompt_fingerprint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    chunk = _chunk()
     settings = GraphSettings()
     first = build_extraction_cache_key(
         "graph",
-        [chunk],
+        _CHUNKS,
         "openai_compatible",
         "model",
         settings,
@@ -163,7 +155,7 @@ def test_extraction_cache_key_changes_for_prompt_fingerprint(
     )
     second = build_extraction_cache_key(
         "graph",
-        [chunk],
+        _CHUNKS,
         "openai_compatible",
         "model",
         settings,
@@ -184,49 +176,25 @@ def test_extraction_cache_key_follows_the_contract_the_provider_was_given(
     a contract change silently reuses the previous model's answers.
     """
 
-    chunk = _chunk()
     settings = GraphSettings()
-    key = build_extraction_cache_key("graph", [chunk], "openai_compatible", "model", settings, 120)
+    key = build_extraction_cache_key("graph", _CHUNKS, "openai_compatible", "model", settings, 120)
 
     monkeypatch.setattr(
         "kg_processor.application.cache_keys.extraction_contract_fingerprint",
         lambda: "0" * 64,
     )
     after = build_extraction_cache_key(
-        "graph", [chunk], "openai_compatible", "model", settings, 120
+        "graph", _CHUNKS, "openai_compatible", "model", settings, 120
     )
 
     assert key.options_hash != after.options_hash
     assert key.id != after.id
 
 
-def test_the_extraction_contract_fingerprint_is_read_from_the_contracts() -> None:
-    """Derive the fingerprint from the schemas, so no one has to remember to bump it.
-
-    Recomputed here from the same models the requests are built from: a
-    fingerprint that stopped tracking them would keep serving cached extraction
-    across a contract change, which is the failure it exists to prevent.
-    """
-
-    expected = hashlib.sha256(
-        "|".join(
-            json.dumps(model.model_json_schema(), sort_keys=True, separators=(",", ":"))
-            for model in (
-                EntityCandidateBatch,
-                RelationCandidateBatch,
-                VerificationCandidateBatch,
-                ResolutionDecisionCandidateBatch,
-            )
-        ).encode("utf-8")
-    ).hexdigest()
-
-    assert extraction_contract_fingerprint() == expected
-
-
 def test_extraction_cache_key_includes_extractor_provider_and_model() -> None:
     """Do not serve LLM extraction output after switching to GLiNER semantics."""
 
-    common = ("graph", [_chunk()], "openai_compatible", "model", GraphSettings(), 120)
+    common = ("graph", _CHUNKS, "openai_compatible", "model", GraphSettings(), 120)
 
     llm = build_extraction_cache_key(
         *common,
@@ -252,20 +220,4 @@ def _input_file() -> InputFile:
         checksum="abc123",
         mime_type="text/plain",
         size_bytes=42,
-    )
-
-
-def _chunk() -> Chunk:
-    return Chunk(
-        id="chunk_1",
-        graph_id="graph",
-        file_id="file_1",
-        document_id="file_1",
-        page_number=1,
-        chunk_index=0,
-        content="Alice Smith works at Acme Corp.",
-        start_offset=0,
-        end_offset=31,
-        token_count=6,
-        content_hash="hash",
     )

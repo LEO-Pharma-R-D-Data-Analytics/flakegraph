@@ -12,6 +12,12 @@ from helm import CHART, FULLNAME, fails, one, render, schema, values
 
 _AUTH_PROXY_TEMPLATE = CHART / "templates/auth-proxy.yaml"
 _CONTROL_PLANE_TEMPLATE = CHART / "templates/control-plane.yaml"
+# The gate needs an Ingress to sit in, and the policy that keeps it honest.
+_GATED = (
+    "ingress.enabled=true",
+    "ingress.authProxy.enabled=true",
+    "controlPlane.networkPolicy.enabled=true",
+)
 
 
 def test_the_gate_claims_only_its_own_path_segment() -> None:
@@ -22,10 +28,11 @@ def test_the_gate_claims_only_its_own_path_segment() -> None:
     gate answers the end of a sign-in with the start of one, for ever.
     """
 
-    template = _AUTH_PROXY_TEMPLATE.read_text(encoding="utf-8")
+    auth = one(render(_GATED), "Ingress", f"{FULLNAME}-auth")
 
-    assert "- path: /oauth2/\n" in template
-    assert "- path: /oauth2\n" not in template
+    _sign_in, *gated = auth["spec"]["rules"]
+    assert gated, "the application hosts are what the gate claims a path on"
+    assert {path["path"] for rule in gated for path in rule["http"]["paths"]} == {"/oauth2/"}
 
 
 def test_the_application_reads_the_gate_rather_than_signing_in_again() -> None:
@@ -224,11 +231,4 @@ def test_the_gate_is_refused_without_the_policy_that_makes_it_sound() -> None:
     without_ingress = render(("ingress.enabled=false", "ingress.authProxy.enabled=true"))
     assert not [doc for doc in without_ingress if "auth-proxy" in doc["metadata"]["name"]]
 
-    rendered = render(
-        (
-            "ingress.enabled=true",
-            "ingress.authProxy.enabled=true",
-            "controlPlane.networkPolicy.enabled=true",
-        )
-    )
-    assert one(rendered, "NetworkPolicy", f"{FULLNAME}-app")
+    assert one(render(_GATED), "NetworkPolicy", f"{FULLNAME}-app")

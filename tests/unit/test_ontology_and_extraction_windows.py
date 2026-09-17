@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+from documents import chunk
 
 from kg_processor.application.extraction_windows import (
     build_document_context_windows,
@@ -207,22 +208,14 @@ def test_document_context_windows_take_one_bounded_prefix_per_document() -> None
 
 
 def _chunk(chunk_id: str, document_id: str, index: int, tokens: int) -> Chunk:
-    """Create a deterministic chunk for document-boundary and token-window scenarios.
+    """Create a chunk whose identity, order and token count the window tests control."""
 
-    Identity and ordering fields are controlled explicitly.
-    """
-
-    return Chunk(
-        id=chunk_id,
+    return chunk(
+        f"Content for {chunk_id}",
+        chunk_id=chunk_id,
         file_id=document_id,
-        document_id=document_id,
-        page_number=1,
         chunk_index=index,
-        content=f"Content for {chunk_id}",
-        start_offset=0,
-        end_offset=14,
         token_count=tokens,
-        content_hash=chunk_id,
     )
 
 

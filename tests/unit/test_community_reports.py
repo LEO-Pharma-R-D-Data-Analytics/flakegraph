@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 import time
 
+from llm_fakes import RecordingCommunityLlm
+
 from kg_processor.application.community_reports import CommunitySeed, generate_community_reports
 from kg_processor.domain.graph import GraphEdge, GraphNode
 from kg_processor.ports.llm import (
@@ -40,7 +42,7 @@ def test_generate_community_reports_uses_grounded_member_and_relation_context() 
             weight=9.0,
         ),
     ]
-    provider = _RecordingLlm()
+    provider = RecordingCommunityLlm()
 
     result = generate_community_reports(
         "graph",
@@ -137,27 +139,7 @@ def test_generate_community_reports_parallel_preserves_input_order() -> None:
     assert progress == [(0, 2), (1, 2), (2, 2)]
 
 
-class _RecordingLlm:
-    def __init__(self) -> None:
-        self.requests: list[CommunitySummaryRequest] = []
-
-    def summarize_community(self, request: CommunitySummaryRequest) -> CommunitySummaryResult:
-        self.requests.append(request)
-        return CommunitySummaryResult(
-            title=f"{request.title_seed} network",
-            summary="Grounded summary.",
-            rating=8.0,
-            rating_explanation="High-weight employment relation.",
-            findings=[("Strong connection", request.relations[0])],
-            suggested_questions=["Where does Alice Smith work?"],
-            provider_metadata={
-                "provider": "recording_llm",
-                "prompt_name": "community_report",
-            },
-        )
-
-
-class _DelayedCommunityLlm(_RecordingLlm):
+class _DelayedCommunityLlm(RecordingCommunityLlm):
     def __init__(self, delay_by_title_seed: dict[str, float]) -> None:
         super().__init__()
         self.delay_by_title_seed = delay_by_title_seed

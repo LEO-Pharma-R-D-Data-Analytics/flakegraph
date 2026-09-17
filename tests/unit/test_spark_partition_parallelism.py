@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from llm_fakes import CountingLlm
 
-from kg_processor.adapters.llm.fake import FakeLlmProvider
 from kg_processor.application.spark_finalization import (
     SparkFinalizationRequest,
     _adaptive_provider_partitions,
@@ -18,7 +18,7 @@ from kg_processor.application.spark_finalization import (
     _spark_application_name,
 )
 from kg_processor.config.settings import Settings
-from kg_processor.ports.llm import DescriptionMergeRequest, DescriptionMergeResult
+from kg_processor.ports.llm import DescriptionMergeRequest
 
 
 def test_spark_application_identity_fences_every_durable_attempt() -> None:
@@ -151,17 +151,6 @@ def test_spark_enrichment_provider_reuses_durable_cache_across_worker_restart(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    class CountingLlm(FakeLlmProvider):
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def merge_entity_description(
-            self,
-            request: DescriptionMergeRequest,
-        ) -> DescriptionMergeResult:
-            self.calls += 1
-            return super().merge_entity_description(request)
-
     settings = Settings.load(
         env={},
         overrides={
@@ -195,4 +184,4 @@ def test_spark_enrichment_provider_reuses_durable_cache_across_worker_restart(
         _clear_executor_provider_caches()
 
     assert len(built) == 2
-    assert sum(provider.calls for provider in built) == 1
+    assert sum(provider.description_calls for provider in built) == 1

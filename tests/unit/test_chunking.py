@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from documents import chunk
 
 from kg_processor.application import chunking
 from kg_processor.application.chunking import chunk_document, compute_ordered_chunk_hash
 from kg_processor.domain.documents import LayoutBlock, ParsedAsset, ParsedDocument, ParsedPage
-from kg_processor.domain.graph import Chunk
 
 
 def test_chunk_document_is_stable_and_token_bounded() -> None:
@@ -110,30 +110,10 @@ def test_chunk_document_indexes_each_block_text_once(
 
 
 def test_ordered_chunk_hash_is_not_ambiguous_when_content_contains_separators() -> None:
-    first = [
-        _chunk(0, "a"),
-        _chunk(1, "b"),
-    ]
-    second = [
-        _chunk(0, "a\x1e1\x1fb"),
-    ]
+    first = [chunk("a"), chunk("b", chunk_id="chunk_2", chunk_index=1)]
+    second = [chunk("a\x1e1\x1fb")]
 
     assert compute_ordered_chunk_hash(first) != compute_ordered_chunk_hash(second)
-
-
-def _chunk(index: int, content: str) -> Chunk:
-    return Chunk(
-        id=f"chunk_{index}",
-        graph_id="graph",
-        file_id="file_1",
-        page_number=1,
-        chunk_index=index,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=max(1, len(content.split())),
-        content_hash=f"hash_{index}",
-    )
 
 
 def test_chunk_hash_separates_identical_text_under_different_identity() -> None:
@@ -145,21 +125,8 @@ def test_chunk_hash_separates_identical_text_under_different_identity() -> None:
     reports an empty graph instead of a cache fault.
     """
 
-    def _chunk(chunk_id: str) -> Chunk:
-        return Chunk(
-            id=chunk_id,
-            graph_id="g",
-            document_id="d",
-            file_id="f",
-            page_number=1,
-            chunk_index=0,
-            content="Judo was founded by Jigoro Kano.",
-            start_offset=0,
-            end_offset=32,
-            token_count=8,
-            content_hash="abc123",
-        )
+    text = "Judo was founded by Jigoro Kano."
 
-    assert compute_ordered_chunk_hash([_chunk("chunk_a")]) != compute_ordered_chunk_hash(
-        [_chunk("chunk_b")]
+    assert compute_ordered_chunk_hash([chunk(text, chunk_id="chunk_a")]) != (
+        compute_ordered_chunk_hash([chunk(text, chunk_id="chunk_b")])
     )

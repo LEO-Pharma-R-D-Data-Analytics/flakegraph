@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from documents import chunk, window
+
 from kg_processor.adapters.llm.fake import FakeLlmProvider
 from kg_processor.application.entity_names import (
     identity_surface_match,
@@ -11,7 +13,6 @@ from kg_processor.application.entity_names import (
 from kg_processor.application.llm_extractors import LlmEntityExtractor
 from kg_processor.application.ontology import load_ontology
 from kg_processor.domain.extraction import ExtractionWindow
-from kg_processor.domain.graph import Chunk
 from kg_processor.domain.ontology import OntologyProfile
 from kg_processor.ports.llm import StructuredCompletionRequest, StructuredCompletionResult
 
@@ -111,7 +112,6 @@ def test_llm_entity_extractor_cannot_ground_entity_through_untrusted_alias() -> 
     Both rejection reasons must remain auditable.
     """
 
-    chunk = _chunk("karate moved from Okinawa into mainland Japan")
     extractor = LlmEntityExtractor(
         _EntityPayloadLlm(
             _entity_payload(
@@ -123,7 +123,7 @@ def test_llm_entity_extractor_cannot_ground_entity_through_untrusted_alias() -> 
     )
 
     outcome = extractor.extract(
-        _window(chunk),
+        _window("karate moved from Okinawa into mainland Japan"),
         _ontology(),
         model="fake",
         timeout_seconds=30,
@@ -152,7 +152,6 @@ def test_a_category_definition_is_not_recorded_as_an_entity_description() -> Non
     definition = next(
         item.description for item in ontology.entity_types if item.name == "MARTIAL_ART"
     )
-    chunk = _chunk("karate moved from Okinawa into mainland Japan")
     payload = _entity_payload(
         name="karate",
         quote="karate moved from Okinawa into mainland Japan",
@@ -161,7 +160,7 @@ def test_a_category_definition_is_not_recorded_as_an_entity_description() -> Non
     extractor = LlmEntityExtractor(_EntityPayloadLlm({**payload, "description": definition}))
 
     outcome = extractor.extract(
-        _window(chunk),
+        _window("karate moved from Okinawa into mainland Japan"),
         ontology,
         model="fake",
         timeout_seconds=30,
@@ -185,10 +184,7 @@ def test_any_category_definition_is_rejected_not_only_this_entitys_own() -> None
     """
 
     ontology = _ontology()
-    other = next(
-        item.description for item in ontology.entity_types if item.name != "MARTIAL_ART"
-    )
-    chunk = _chunk("karate moved from Okinawa into mainland Japan")
+    other = next(item.description for item in ontology.entity_types if item.name != "MARTIAL_ART")
     payload = _entity_payload(
         name="karate",
         quote="karate moved from Okinawa into mainland Japan",
@@ -199,7 +195,7 @@ def test_any_category_definition_is_rejected_not_only_this_entitys_own() -> None
     extractor = LlmEntityExtractor(_EntityPayloadLlm({**payload, "description": other.rstrip(".")}))
 
     outcome = extractor.extract(
-        _window(chunk),
+        _window("karate moved from Okinawa into mainland Japan"),
         ontology,
         model="fake",
         timeout_seconds=30,
@@ -213,7 +209,6 @@ def test_any_category_definition_is_rejected_not_only_this_entitys_own() -> None
 def test_an_entitys_own_description_survives_extraction() -> None:
     """Keep a description that says something about this entity and not its type."""
 
-    chunk = _chunk("karate moved from Okinawa into mainland Japan")
     extractor = LlmEntityExtractor(
         _EntityPayloadLlm(
             _entity_payload(
@@ -225,7 +220,7 @@ def test_an_entitys_own_description_survives_extraction() -> None:
     )
 
     outcome = extractor.extract(
-        _window(chunk),
+        _window("karate moved from Okinawa into mainland Japan"),
         _ontology(),
         model="fake",
         timeout_seconds=30,
@@ -242,7 +237,6 @@ def test_llm_entity_extractor_keeps_source_grounded_initialism() -> None:
     The canonical long-form name should remain unchanged.
     """
 
-    chunk = _chunk("BJJ developed by adapting judo in Brazil.")
     extractor = LlmEntityExtractor(
         _EntityPayloadLlm(
             _entity_payload(
@@ -254,7 +248,7 @@ def test_llm_entity_extractor_keeps_source_grounded_initialism() -> None:
     )
 
     outcome = extractor.extract(
-        _window(chunk),
+        _window("BJJ developed by adapting judo in Brazil."),
         _ontology(),
         model="fake",
         timeout_seconds=30,
@@ -275,7 +269,6 @@ def test_ordinary_entity_extraction_rejects_document_context_surface() -> None:
     canonical PAPER node is prohibited here.
     """
 
-    chunk = _chunk("This paper introduces Adam for stochastic optimization.")
     extractor = LlmEntityExtractor(
         _EntityPayloadLlm(
             _entity_payload(
@@ -289,7 +282,7 @@ def test_ordinary_entity_extraction_rejects_document_context_surface() -> None:
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = extractor.extract(
-        _window(chunk),
+        _window("This paper introduces Adam for stochastic optimization."),
         ontology,
         model="fake",
         timeout_seconds=30,
@@ -303,7 +296,6 @@ def test_ordinary_entity_extraction_rejects_document_context_surface() -> None:
 def test_contextual_surface_filter_is_scoped_to_its_entity_type() -> None:
     """Avoid globally blocking a phrase declared only for another ontology type."""
 
-    chunk = _chunk("Our method is the title of the archived paper.")
     extractor = LlmEntityExtractor(
         _EntityPayloadLlm(
             _entity_payload(
@@ -317,7 +309,7 @@ def test_contextual_surface_filter_is_scoped_to_its_entity_type() -> None:
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = extractor.extract(
-        _window(chunk),
+        _window("Our method is the title of the archived paper."),
         ontology,
         model="fake",
         timeout_seconds=30,
@@ -332,7 +324,6 @@ def test_document_context_extraction_marks_grounded_context_without_identity_ali
 
     title = "Adam: A Method for Stochastic Optimization"
     ocr_title = "ADAM: A M ETHOD FOR STOCHASTIC OPTIMIZATION"
-    chunk = _chunk(f"{ocr_title}\nDiederik P. Kingma and Jimmy Lei Ba")
     extractor = LlmEntityExtractor(
         _EntityPayloadLlm(
             {
@@ -349,7 +340,7 @@ def test_document_context_extraction_marks_grounded_context_without_identity_ali
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = extractor.extract_document_context_entities(
-        _window(chunk),
+        _window(f"{ocr_title}\nDiederik P. Kingma and Jimmy Lei Ba"),
         ontology,
         model="fake",
         timeout_seconds=30,
@@ -370,7 +361,6 @@ def test_document_context_accepts_name_inside_grounded_front_matter_phrase() -> 
     """Allow a focal method's exact name inside a longer source-grounded phrase."""
 
     quote = "introducing a deep residual learning framework"
-    chunk = _chunk(f"We present a framework, {quote}, for image recognition.")
     extractor = LlmEntityExtractor(
         _EntityPayloadLlm(
             _entity_payload(
@@ -384,7 +374,7 @@ def test_document_context_accepts_name_inside_grounded_front_matter_phrase() -> 
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = extractor.extract_document_context_entities(
-        _window(chunk),
+        _window(f"We present a framework, {quote}, for image recognition."),
         ontology,
         model="fake",
         timeout_seconds=30,
@@ -399,7 +389,6 @@ def test_document_context_accepts_name_inside_grounded_front_matter_phrase() -> 
 def test_document_context_rejects_related_phrase_without_identity_surface() -> None:
     """Keep topical similarity from promoting a model into document-wide context."""
 
-    chunk = _chunk("Deep Residual Learning for Image Recognition")
     extractor = LlmEntityExtractor(
         _EntityPayloadLlm(
             _entity_payload(
@@ -413,7 +402,7 @@ def test_document_context_rejects_related_phrase_without_identity_surface() -> N
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = extractor.extract_document_context_entities(
-        _window(chunk),
+        _window("Deep Residual Learning for Image Recognition"),
         ontology,
         model="fake",
         timeout_seconds=30,
@@ -433,35 +422,10 @@ def _ontology() -> OntologyProfile:
     return load_ontology(Path("data/martial_arts/ontology.yaml"), [], None).profile
 
 
-def _window(chunk: Chunk) -> ExtractionWindow:
-    """Wrap one controlled chunk in a deterministic document-scoped extraction window.
+def _window(content: str) -> ExtractionWindow:
+    """Wrap one controlled chunk in the window whose id the payload helpers cite."""
 
-    Window identity remains stable across assertions.
-    """
-
-    return ExtractionWindow(
-        id="window-1",
-        document_id="document-1",
-        chunks=[chunk],
-        token_count=chunk.token_count,
-    )
-
-
-def _chunk(content: str) -> Chunk:
-    """Create one source chunk whose offsets and token count match controlled content."""
-
-    return Chunk(
-        id="chunk-1",
-        file_id="file-1",
-        document_id="document-1",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=len(content.split()),
-        content_hash="hash",
-    )
+    return window(chunk(content, chunk_id="chunk-1"))
 
 
 def _entity_payload(

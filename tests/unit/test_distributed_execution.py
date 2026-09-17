@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 import yaml
+from documents import chunk
 
 from kg_processor.adapters.files.local import LocalFileSource
 from kg_processor.application.distributed_planner import (
@@ -44,7 +45,7 @@ from kg_processor.domain.distributed import (
 )
 from kg_processor.domain.documents import InputFile
 from kg_processor.domain.extraction import EntityMention, ExtractionObservations
-from kg_processor.domain.graph import Chunk, GraphWriteBatch
+from kg_processor.domain.graph import GraphWriteBatch
 from kg_processor.domain.ids import sha256_hex, stable_id
 from kg_processor.domain.stages import (
     DocumentContextShard,
@@ -312,19 +313,7 @@ class RecordingPipeline:
     def prepare_documents(self, files: list[Any]) -> PreparedDocumentShard:
         self.prepared_files.extend(str(file.path) for file in files)
         chunks = [
-            Chunk(
-                id=f"chunk-{file.id}",
-                file_id=file.id,
-                document_id=file.id,
-                page_number=1,
-                chunk_index=0,
-                content="public source",
-                start_offset=0,
-                end_offset=13,
-                token_count=2,
-                content_hash=sha256_hex("public source"),
-            )
-            for file in files
+            chunk("public source", chunk_id=f"chunk-{file.id}", file_id=file.id) for file in files
         ]
         return PreparedDocumentShard(
             file_ids=[file.id for file in files],
@@ -605,7 +594,7 @@ def test_context_stage_reuses_prepared_shard_and_fans_out_windows(tmp_path: Path
         file_ids=["file-1"],
         files_seen=1,
         documents_processed=1,
-        chunks=[_chunk("chunk-1", "file-1")],
+        chunks=[chunk("public source", chunk_id="chunk-1", file_id="file-1")],
     )
     prepared_ref = store.put(
         "run-test",
@@ -665,8 +654,12 @@ def test_context_stage_limits_task_packs_to_provider_parallelism(tmp_path: Path)
         }
     )
     chunks = [
-        _chunk(f"chunk-{index}", "file-1").model_copy(
-            update={"chunk_index": index, "content_hash": sha256_hex(f"chunk-{index}")}
+        chunk(
+            "public source",
+            chunk_id=f"chunk-{index}",
+            file_id="file-1",
+            chunk_index=index,
+            content_hash=sha256_hex(f"chunk-{index}"),
         )
         for index in range(5)
     ]
@@ -720,7 +713,7 @@ def test_context_stage_skips_reference_window_without_dropping_later_content(
             )
         }
     )
-    body = _chunk("body", "file-1")
+    body = chunk("public source", chunk_id="body", file_id="file-1")
     references = body.model_copy(
         update={
             "id": "references",
@@ -822,7 +815,7 @@ def test_worker_extracts_prepared_dependency_into_portable_artifact(tmp_path: Pa
     )
     window = ExtractionWindowShard(
         file_ids=["file-1"],
-        chunks=[_chunk("chunk-1", "file-1")],
+        chunks=[chunk("public source", chunk_id="chunk-1", file_id="file-1")],
     )
     window_ref = store.put(
         "run-test",
@@ -894,7 +887,7 @@ def test_entity_inventory_barrier_fans_out_relation_windows(tmp_path: Path) -> N
     )
     window = ExtractionWindowShard(
         file_ids=["file-1"],
-        chunks=[_chunk("chunk-1", "file-1")],
+        chunks=[chunk("public source", chunk_id="chunk-1", file_id="file-1")],
     )
     window_ref = store.put(
         "run-test",
@@ -940,7 +933,7 @@ def test_worker_compacts_window_results_into_one_complete_document(tmp_path: Pat
 
     settings = _settings(tmp_path)
     store = _worker_store(settings)
-    body = _chunk("body", "file-1")
+    body = chunk("public source", chunk_id="body", file_id="file-1")
     references = body.model_copy(
         update={"id": "references", "chunk_index": 1, "content": "References"}
     )
@@ -1038,27 +1031,21 @@ def test_combined_observations_include_compacted_document_context() -> None:
 def test_spark_extracted_artifact_does_not_duplicate_prepared_corpus_rows() -> None:
     """Keep Spark observations compact while preserving local self-contained shards."""
 
-    chunk = Chunk(
-        id="chunk-1",
+    passage = chunk(
+        "A substantial prepared source passage.",
+        chunk_id="chunk-1",
         file_id="file-1",
         document_id="document-1",
-        page_number=1,
-        chunk_index=0,
-        content="A substantial prepared source passage.",
-        start_offset=0,
-        end_offset=38,
-        token_count=5,
-        content_hash="hash",
     )
     prepared = PreparedDocumentShard(
         file_ids=["file-1"],
         files_seen=1,
         documents_processed=1,
         document_rows=[{"id": "document-1"}],
-        page_rows=[{"id": "page-1", "text": chunk.content}],
-        block_rows=[{"id": "block-1", "text": chunk.content}],
+        page_rows=[{"id": "page-1", "text": passage.content}],
+        block_rows=[{"id": "block-1", "text": passage.content}],
         asset_rows=[{"id": "asset-1", "uri": "memory://asset"}],
-        chunks=[chunk],
+        chunks=[passage],
         trace=[{"stage": "ocr"}],
     )
 
@@ -1614,23 +1601,6 @@ def _empty_batch(graph_id: str) -> GraphWriteBatch:
         communities=[],
         community_findings=[],
         run_report={},
-    )
-
-
-def _chunk(chunk_id: str, file_id: str) -> Chunk:
-    """Build one valid extraction chunk for window-worker tests."""
-
-    return Chunk(
-        id=chunk_id,
-        file_id=file_id,
-        document_id=file_id,
-        page_number=1,
-        chunk_index=0,
-        content="public source",
-        start_offset=0,
-        end_offset=13,
-        token_count=2,
-        content_hash=sha256_hex("public source"),
     )
 
 

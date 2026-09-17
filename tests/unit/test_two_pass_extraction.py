@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from documents import chunk, window
 
 from kg_processor.adapters.embeddings.hash import HashEmbeddingProvider
 from kg_processor.adapters.llm.fake import FakeLlmProvider
@@ -23,7 +24,6 @@ from kg_processor.application.two_pass_extraction import (
 from kg_processor.application.window_errors import is_systemic_provider_error
 from kg_processor.config.settings import GraphSettings
 from kg_processor.domain.extraction import EntityMention, ExtractionWindow
-from kg_processor.domain.graph import Chunk
 from kg_processor.ports.embeddings import EmbedOptions
 from kg_processor.ports.llm import StructuredCompletionRequest, StructuredCompletionResult
 
@@ -548,18 +548,7 @@ def test_two_pass_keeps_valid_records_when_siblings_are_invalid() -> None:
     Rejection reasons and direction repairs must remain auditable.
     """
 
-    chunk = Chunk(
-        id="chunk-1",
-        file_id="file-1",
-        document_id="document-1",
-        page_number=1,
-        chunk_index=0,
-        content="Jigoro Kano founded the Kodokan in Tokyo.",
-        start_offset=0,
-        end_offset=43,
-        token_count=7,
-        content_hash="hash",
-    )
+    passage = chunk("Jigoro Kano founded the Kodokan in Tokyo.", chunk_id="chunk-1")
     ontology = load_ontology(Path("data/martial_arts/ontology.yaml"), [], None)
     settings = GraphSettings(
         gleaning_max_passes=0,
@@ -568,7 +557,7 @@ def test_two_pass_keeps_valid_records_when_siblings_are_invalid() -> None:
     )
 
     result = extract_graph_two_pass(
-        [chunk],
+        [passage],
         _MixedRecordLlm(),
         HashEmbeddingProvider(),
         EmbedOptions(model="hash", dimension=8, batch_size=8),
@@ -587,7 +576,7 @@ def test_two_pass_keeps_valid_records_when_siblings_are_invalid() -> None:
         ("Kodokan", "FOUNDED_BY", "Jigoro Kano"),
         ("Kodokan", "LOCATED_IN", "Tokyo"),
     ]
-    assert result.relations[0].quote == chunk.content
+    assert result.relations[0].quote == passage.content
     relation_trace = next(
         item for item in result.provider_metadata["trace"] if item["stage"] == "relation_extraction"
     )
@@ -613,18 +602,8 @@ def test_two_pass_keeps_valid_records_when_siblings_are_invalid() -> None:
 def test_gleaning_audits_partially_covered_chunks_for_missed_facts() -> None:
     """Revisit chunks containing some results because presence is not completeness."""
 
-    content = "Capoeira includes the roda. The roda was recognized by UNESCO."
-    chunk = Chunk(
-        id="chunk-1",
-        file_id="file-1",
-        document_id="document-1",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=10,
-        content_hash="hash",
+    passage = chunk(
+        "Capoeira includes the roda. The roda was recognized by UNESCO.", chunk_id="chunk-1"
     )
     ontology = load_ontology(Path("data/martial_arts/ontology.yaml"), [], None)
     settings = GraphSettings(
@@ -634,7 +613,7 @@ def test_gleaning_audits_partially_covered_chunks_for_missed_facts() -> None:
     )
 
     result = extract_graph_two_pass(
-        [chunk],
+        [passage],
         _CoverageAuditLlm(),
         HashEmbeddingProvider(),
         EmbedOptions(model="hash", dimension=8, batch_size=8),
@@ -662,31 +641,14 @@ def test_relation_grounding_accepts_verified_local_endpoint_surfaces() -> None:
     """Ground shortened contextual mentions without weakening canonical inventory IDs."""
 
     content = "The Capoeira roda is recognized by UNESCO. Capoeira includes the roda."
-    chunk = Chunk(
-        id="chunk-1",
-        file_id="file-1",
-        document_id="document-1",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=11,
-        content_hash="hash",
-    )
-    window = ExtractionWindow(
-        id="window-1",
-        document_id="document-1",
-        chunks=[chunk],
-        token_count=chunk.token_count,
-    )
+    extraction_window = _window(content, chunk_id="chunk-1")
     entities = [
         EntityMention(
             id="capoeira",
             name="Capoeira",
             type="MARTIAL_ART",
             description="A martial art.",
-            source_chunk_id=chunk.id,
+            source_chunk_id="chunk-1",
             quote="Capoeira",
         ),
         EntityMention(
@@ -694,14 +656,14 @@ def test_relation_grounding_accepts_verified_local_endpoint_surfaces() -> None:
             name="Capoeira roda",
             type="PRACTICE",
             description="The capoeira circle practice.",
-            source_chunk_id=chunk.id,
+            source_chunk_id="chunk-1",
             quote="Capoeira roda",
         ),
     ]
     ontology = load_ontology(Path("data/martial_arts/ontology.yaml"), [], None)
 
     outcome = LlmRelationExtractor(_LocalSurfaceLlm()).extract(
-        window,
+        extraction_window,
         entities,
         ontology.profile,
         model="test-model",
@@ -718,23 +680,11 @@ def test_relation_grounding_accepts_verified_local_endpoint_surfaces() -> None:
 def test_ontology_cues_recover_relations_missed_by_generation() -> None:
     """Retain unambiguous typed cue evidence without a stochastic verifier veto."""
 
-    content = "UFC 1 was part of the Ultimate Fighting Championship."
-    chunk = Chunk(
-        id="chunk-1",
-        file_id="file-1",
-        document_id="document-1",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=9,
-        content_hash="hash",
-    )
+    passage = chunk("UFC 1 was part of the Ultimate Fighting Championship.", chunk_id="chunk-1")
     ontology = load_ontology(Path("data/martial_arts/ontology.yaml"), [], None)
 
     result = extract_graph_two_pass(
-        [chunk],
+        [passage],
         _CueRecoveryLlm(),
         HashEmbeddingProvider(),
         EmbedOptions(model="hash", dimension=8, batch_size=8),
@@ -754,33 +704,22 @@ def test_ontology_cues_recover_relations_missed_by_generation() -> None:
         for item in result.provider_metadata["trace"]
         if item["stage"] == "cue_candidate_generation"
     )
-    assert cue_trace["additional_records"] >= 1
-    assert cue_trace["direct_evidence_records"] >= 1
+    assert cue_trace["additional_records"] == 1
+    assert cue_trace["direct_evidence_records"] == 1
 
 
 def test_cue_entity_audit_recovers_compound_relation_subject() -> None:
     """Recover a named compound instead of attaching its relation to a substring."""
 
-    content = (
+    passage = chunk(
         "A capoeira roda is a recurring community practice. "
-        "The capoeira roda was recognized by UNESCO in 2014."
-    )
-    chunk = Chunk(
-        id="chunk-1",
-        file_id="file-1",
-        document_id="document-1",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=17,
-        content_hash="hash",
+        "The capoeira roda was recognized by UNESCO in 2014.",
+        chunk_id="chunk-1",
     )
     ontology = load_ontology(Path("data/martial_arts/ontology.yaml"), [], None)
 
     result = extract_graph_two_pass(
-        [chunk],
+        [passage],
         _CompoundSubjectAuditLlm(),
         HashEmbeddingProvider(),
         EmbedOptions(model="hash", dimension=8, batch_size=8),
@@ -801,23 +740,11 @@ def test_cue_entity_audit_recovers_compound_relation_subject() -> None:
 def test_cue_entity_audit_recovers_a_completely_missing_endpoint() -> None:
     """Revisit cue sentences whose first entity pass cannot form any relation."""
 
-    content = "Method Alpha was evaluated on HiddenSet."
-    chunk = Chunk(
-        id="chunk-1",
-        file_id="file-1",
-        document_id="document-1",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=7,
-        content_hash="hash",
-    )
+    passage = chunk("Method Alpha was evaluated on HiddenSet.", chunk_id="chunk-1")
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None)
 
     result = extract_graph_two_pass(
-        [chunk],
+        [passage],
         _IncompleteEndpointAuditLlm(),
         HashEmbeddingProvider(),
         EmbedOptions(model="hash", dimension=8, batch_size=8),
@@ -877,7 +804,7 @@ def test_relation_extraction_grounds_document_context_through_explicit_pronoun()
     """Let independent windows attach an authored claim to their source document."""
 
     content = "We introduce Adam, an algorithm for stochastic optimization."
-    window = _window(content)
+    extraction_window = _window(content)
     paper = EntityMention(
         id="paper",
         name="Adam: A Method for Stochastic Optimization",
@@ -899,7 +826,7 @@ def test_relation_extraction_grounds_document_context_through_explicit_pronoun()
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = LlmRelationExtractor(_DocumentSubjectRelationLlm()).extract(
-        window,
+        extraction_window,
         [paper, method],
         ontology,
         model="fake",
@@ -919,7 +846,7 @@ def test_relation_extraction_uses_implicit_source_paper_provenance() -> None:
     """Ground an authorial paper relation without requiring its title in every sentence."""
 
     content = "To minimize E by gradient descent, it is necessary to compute the derivative of E."
-    window = _window(content)
+    extraction_window = _window(content)
     paper = EntityMention(
         id="paper",
         name="Learning representations by back-propagating errors",
@@ -941,7 +868,7 @@ def test_relation_extraction_uses_implicit_source_paper_provenance() -> None:
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = LlmRelationExtractor(_ImplicitDocumentSubjectRelationLlm()).extract(
-        window,
+        extraction_window,
         [paper, method],
         ontology,
         model="fake",
@@ -961,7 +888,7 @@ def test_relation_extraction_uses_provenance_for_target_nested_in_paper_title() 
     """Allow a title claim when the nested task cannot be a second text span."""
 
     title = "Understanding the Difficulty of Training Deep Feedforward Neural Networks"
-    window = _window(title)
+    extraction_window = _window(title)
     paper = EntityMention(
         id="paper",
         name=title,
@@ -983,7 +910,7 @@ def test_relation_extraction_uses_provenance_for_target_nested_in_paper_title() 
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = LlmRelationExtractor(_NestedTitleRelationLlm()).extract(
-        window,
+        extraction_window,
         [paper, task],
         ontology,
         model="fake",
@@ -1001,7 +928,7 @@ def test_relation_extraction_does_not_infer_implicit_non_paper_source() -> None:
     """Keep method and model endpoints subject to exact local surface grounding."""
 
     content = "To minimize E by gradient descent, derivatives are computed efficiently."
-    window = _window(content)
+    extraction_window = _window(content)
     source = EntityMention(
         id="back-propagation",
         name="Back-propagation",
@@ -1023,7 +950,7 @@ def test_relation_extraction_does_not_infer_implicit_non_paper_source() -> None:
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = LlmRelationExtractor(_ImplicitMethodSubjectRelationLlm()).extract(
-        window,
+        extraction_window,
         [source, target],
         ontology,
         model="fake",
@@ -1041,7 +968,7 @@ def test_relation_grounding_recovers_normalized_surface_from_inventory() -> None
     content = (
         "The Stochastic Gradient Variational Bayes estimator uses the reparameterization trick."
     )
-    window = _window(content)
+    extraction_window = _window(content)
     source = EntityMention(
         id="sgvb",
         name="Stochastic Gradient Variational Bayes estimator",
@@ -1061,7 +988,7 @@ def test_relation_grounding_recovers_normalized_surface_from_inventory() -> None
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     outcome = LlmRelationExtractor(_NormalizedEndpointSurfaceLlm()).extract(
-        window,
+        extraction_window,
         [source, target],
         ontology,
         model="fake",
@@ -1084,7 +1011,7 @@ def test_single_document_window_inherits_context_grounded_in_another_chunk() -> 
     it and finalization cannot silently drop the focal source entity.
     """
 
-    window = _window("The body describes a generally useful optimization method.")
+    extraction_window = _window("The body describes a generally useful optimization method.")
     paper = EntityMention(
         id="paper",
         name="A General Optimization Method",
@@ -1098,7 +1025,7 @@ def test_single_document_window_inherits_context_grounded_in_another_chunk() -> 
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     observations = extract_graph_observations(
-        window.chunks,
+        extraction_window.chunks,
         FakeLlmProvider(),
         graph_settings=GraphSettings(
             extraction_parallelism=1, gleaning_max_passes=0, max_chunks_per_llm_call=2
@@ -1172,16 +1099,8 @@ class _CrossWindowRelationLlm(FakeLlmProvider):
 def test_relation_phase_uses_entities_discovered_in_other_document_windows() -> None:
     """Connect endpoints across windows without serializing either provider phase."""
 
-    first = (
-        _window("Introduces Method Alpha.")
-        .chunks[0]
-        .model_copy(update={"id": "chunk-alpha", "chunk_index": 0})
-    )
-    second = (
-        _window("Method Beta builds on Method Alpha.")
-        .chunks[0]
-        .model_copy(update={"id": "chunk-beta", "chunk_index": 1})
-    )
+    first = chunk("Introduces Method Alpha.", chunk_id="chunk-alpha")
+    second = chunk("Method Beta builds on Method Alpha.", chunk_id="chunk-beta", chunk_index=1)
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
     observations = extract_graph_observations(
@@ -1207,7 +1126,7 @@ def test_relation_phase_uses_entities_discovered_in_other_document_windows() -> 
 def test_relation_inventory_compacts_duplicates_and_omits_ungrounded_entities() -> None:
     """Keep cross-window aliases while excluding identities unusable in this window."""
 
-    window = _window("Local Method uses its LM abbreviation.")
+    extraction_window = _window("Local Method uses its LM abbreviation.")
     duplicate_first = EntityMention(
         id="local-first",
         name="Local Method",
@@ -1235,7 +1154,7 @@ def test_relation_inventory_compacts_duplicates_and_omits_ungrounded_entities() 
 
     inventory = _relation_inventory_for_window(
         [remote, duplicate_first, duplicate_second],
-        window,
+        extraction_window,
     )
 
     assert [entity.id for entity in inventory] == ["local-first"]
@@ -1245,7 +1164,7 @@ def test_relation_inventory_compacts_duplicates_and_omits_ungrounded_entities() 
 def test_relation_completion_inventory_keeps_only_uncovered_cue_typed_endpoints() -> None:
     """Focus the second pass without allowing a cue to invent incompatible pairs."""
 
-    window = _window("Residual Network is trained on ImageNet. Alice Smith observes.")
+    extraction_window = _window("Residual Network is trained on ImageNet. Alice Smith observes.")
     entities = [
         EntityMention(
             id="model",
@@ -1274,7 +1193,7 @@ def test_relation_completion_inventory_keeps_only_uncovered_cue_typed_endpoints(
     ]
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
-    completion = _relation_completion_inventory(window, entities, ontology, [])
+    completion = _relation_completion_inventory(extraction_window, entities, ontology, [])
 
     assert [entity.id for entity in completion] == ["model", "dataset"]
 
@@ -1282,7 +1201,9 @@ def test_relation_completion_inventory_keeps_only_uncovered_cue_typed_endpoints(
 def test_relation_completion_inventory_keeps_endpoints_for_cueless_relations() -> None:
     """Do not let an unrelated lexical cue suppress layout-defined authorship."""
 
-    window = _window("Research Paper. Alice Smith. Residual Network is trained on ImageNet.")
+    extraction_window = _window(
+        "Research Paper. Alice Smith. Residual Network is trained on ImageNet."
+    )
     entities = [
         EntityMention(
             id="paper",
@@ -1320,32 +1241,15 @@ def test_relation_completion_inventory_keeps_endpoints_for_cueless_relations() -
     ]
     ontology = load_ontology(Path("data/deep_learning_papers/ontology.yaml"), [], None).profile
 
-    completion = _relation_completion_inventory(window, entities, ontology, [])
+    completion = _relation_completion_inventory(extraction_window, entities, ontology, [])
 
     assert [entity.id for entity in completion] == ["paper", "author", "model", "dataset"]
 
 
-def _window(content: str) -> ExtractionWindow:
+def _window(content: str, chunk_id: str = "reference-chunk") -> ExtractionWindow:
     """Build one deterministic extraction window for reference-filter tests."""
 
-    chunk = Chunk(
-        id="reference-chunk",
-        file_id="reference-file",
-        document_id="reference-document",
-        page_number=1,
-        chunk_index=0,
-        content=content,
-        start_offset=0,
-        end_offset=len(content),
-        token_count=max(1, len(content.split())),
-        content_hash="reference-hash",
-    )
-    return ExtractionWindow(
-        id="reference-window",
-        document_id=chunk.document_id,
-        chunks=[chunk],
-        token_count=chunk.token_count,
-    )
+    return window(chunk(content, chunk_id=chunk_id))
 
 
 def _entity(name: str, entity_type: str) -> dict[str, object]:
@@ -1388,24 +1292,6 @@ def _relation(
     }
 
 
-def _failure_window(identifier: str) -> ExtractionWindow:
-    """Build the minimal window the failure-message helper needs to count."""
-
-    chunk = Chunk(
-        id=f"chunk-{identifier}",
-        file_id="file-1",
-        document_id="doc-1",
-        page_number=1,
-        chunk_index=0,
-        content="text",
-        start_offset=0,
-        end_offset=4,
-        token_count=1,
-        content_hash="hash",
-    )
-    return ExtractionWindow(id=identifier, document_id="doc-1", chunks=[chunk], token_count=1)
-
-
 def test_every_window_failing_reports_the_first_cause_not_only_a_count() -> None:
     """Carry the reason in the message, because the chain does not survive.
 
@@ -1416,7 +1302,7 @@ def test_every_window_failing_reports_the_first_cause_not_only_a_count() -> None
     """
 
     message = _all_windows_failed_message(
-        [_failure_window("a"), _failure_window("b")],
+        [window(chunk("a")), window(chunk("b"))],
         [ValueError("no records survived grounding")],
     )
 
@@ -1428,7 +1314,7 @@ def test_every_window_failing_reports_the_first_cause_not_only_a_count() -> None
 def test_a_window_failure_detail_cannot_carry_a_document_into_the_task_record() -> None:
     """Bound the detail so a provider echoing its prompt cannot leak the corpus."""
 
-    message = _all_windows_failed_message([_failure_window("a")], [ValueError("x" * 5000)])
+    message = _all_windows_failed_message([window(chunk("a"))], [ValueError("x" * 5000)])
 
     assert len(message) < _WINDOW_FAILURE_DETAIL_LIMIT + 200
     assert message.endswith("...")
@@ -1444,7 +1330,7 @@ def test_a_transport_failure_names_the_endpoint_that_refused() -> None:
     request = httpx.Request("POST", "http://gateway:4000/v1/chat/completions")
     failure = httpx.ConnectError("[Errno 111] Connection refused", request=request)
 
-    message = _all_windows_failed_message([_failure_window("a")], [failure])
+    message = _all_windows_failed_message([window(chunk("a"))], [failure])
 
     assert "while calling http://gateway:4000/v1/chat/completions" in message
     assert "ConnectError" in message
