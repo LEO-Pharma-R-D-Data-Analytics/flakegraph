@@ -1542,19 +1542,6 @@ def _variant_mapping(value: object) -> Mapping[str, object]:
     return {}
 
 
-def active_snowflake_session() -> Any | None:
-    """Return Snowflake's active Streamlit session, or ``None`` outside Snowflake."""
-
-    try:
-        # The local app extra does not need Snowpark. Delay this import so local
-        # and Kubernetes users do not inherit a Snowflake runtime dependency.
-        from snowflake.snowpark.context import get_active_session  # noqa: PLC0415
-
-        return get_active_session()
-    except Exception:
-        return None
-
-
 def _source_object(row: object) -> SourceObject | None:
     """Normalize one LIST row and discard unsupported stage objects."""
 
