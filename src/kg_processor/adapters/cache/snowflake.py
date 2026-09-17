@@ -10,6 +10,9 @@ from kg_processor.adapters.snowflake import (
     ReusableSnowflakeConnections,
     SnowflakeConnectionConfig,
 )
+from kg_processor.adapters.snowflake import (
+    compact_json as _json,
+)
 from kg_processor.domain.documents import ParsedDocument
 from kg_processor.domain.graph import ExtractionResult
 from kg_processor.ports.cache import EnrichmentCacheKey, ExtractionCacheKey, OcrCacheKey
@@ -175,7 +178,3 @@ def _variant_value(value: object) -> object:
     if isinstance(value, str):
         return json.loads(value)
     return value
-
-
-def _json(value: object) -> str:
-    return json.dumps(value, separators=(",", ":"), sort_keys=True)

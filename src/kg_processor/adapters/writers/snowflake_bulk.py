@@ -40,6 +40,7 @@ from kg_processor.adapters.writers.snowflake_direct import (
     build_node_reconciliation_statements,
     build_reindex_delete_statements,
     build_snowflake_rows,
+    preserved_columns,
 )
 from kg_processor.application.snowflake_schema import (
     render_snowflake_schema_sql,
@@ -166,21 +167,7 @@ class SnowflakeBulkWriter:
                                 load_table_name,
                                 columns,
                                 self.embedding_dimension,
-                                preserve_on_match=(
-                                    {
-                                        "ALIASES",
-                                        "DESCRIPTION",
-                                        "EMBEDDING",
-                                        "NAME",
-                                        "PRIMARY_TYPE",
-                                        "SOURCE_CHUNK_IDS",
-                                        "TYPES",
-                                        "DEGREE",
-                                        "RANK",
-                                    }
-                                    if batch.write_scope == "file_batch" and table_name == "KG_NODE"
-                                    else None
-                                ),
+                                preserve_on_match=preserved_columns(batch, table_name),
                             )
                         )
                     for sql, params in build_edge_reconciliation_statements(batch):

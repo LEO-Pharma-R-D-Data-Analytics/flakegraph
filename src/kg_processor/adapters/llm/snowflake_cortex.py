@@ -9,6 +9,7 @@ from typing import Any, cast
 from kg_processor.adapters.llm.openai_common import (
     ChatCompletion,
     coerce_rating,
+    coerce_string_list,
     complete_json_object_with_retry,
     complete_structured_with_retry,
 )
@@ -214,7 +215,7 @@ class SnowflakeCortexLlmProvider:
         return CommunitySummaryResult(
             title=_optional_string(payload.get("title")) or request.title_seed,
             summary=_optional_string(payload.get("summary")),
-            rating=_coerce_rating(payload.get("rating", 0.0)),
+            rating=coerce_rating(payload.get("rating", 0.0)),
             rating_explanation=_optional_string(payload.get("rating_explanation")),
             findings=[
                 (
@@ -224,7 +225,7 @@ class SnowflakeCortexLlmProvider:
                 for item in findings
                 if isinstance(item, dict)
             ],
-            suggested_questions=_coerce_string_list(payload.get("suggested_questions", [])),
+            suggested_questions=coerce_string_list(payload.get("suggested_questions", [])),
             usage=_metadata_usage(metadata),
             provider_metadata={
                 "provider": "snowflake_cortex",
@@ -457,18 +458,6 @@ def _object_payload(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return {str(key): item for key, item in value.items()}
     raise ValueError("Snowflake AI_COMPLETE structured output must be a JSON object")
-
-
-def _coerce_rating(value: object) -> float:
-    """Normalize Cortex ratings through the shared inclusive 0-10 policy."""
-
-    return coerce_rating(value)
-
-
-def _coerce_string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [text for item in value if isinstance(item, str) and (text := item.strip())]
 
 
 def _optional_string(value: object) -> str:

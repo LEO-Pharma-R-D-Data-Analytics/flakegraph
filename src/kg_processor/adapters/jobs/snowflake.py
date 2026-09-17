@@ -17,6 +17,9 @@ from kg_processor.adapters.snowflake import (
     SnowflakeConnectionConfig,
     SnowflakeCursor,
 )
+from kg_processor.adapters.snowflake import (
+    compact_json as _json,
+)
 from kg_processor.application.progress import ProgressEvent
 from kg_processor.application.redaction import redact_sensitive_data
 from kg_processor.domain.documents import InputFile
@@ -914,10 +917,6 @@ def _job_file_submission_row(
         file.path.as_posix(),
         file.checksum,
     )
-
-
-def _json(value: object) -> str:
-    return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
 def _claim_token(worker_id: str) -> str:

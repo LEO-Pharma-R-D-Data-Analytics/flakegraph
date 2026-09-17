@@ -35,6 +35,7 @@ __all__ = [
     "SnowflakeConnectionConfig",
     "SnowflakeDirectWriter",
     "build_merge_statement",
+    "preserved_columns",
     "build_node_reconciliation_statements",
     "build_reindex_delete_statements",
     "build_snowflake_rows",
@@ -297,21 +298,7 @@ class SnowflakeDirectWriter:
                             row,
                             TABLE_COLUMNS[table_name],
                             self.embedding_dimension,
-                            preserve_on_match=(
-                                {
-                                    "ALIASES",
-                                    "DESCRIPTION",
-                                    "EMBEDDING",
-                                    "NAME",
-                                    "PRIMARY_TYPE",
-                                    "SOURCE_CHUNK_IDS",
-                                    "TYPES",
-                                    "DEGREE",
-                                    "RANK",
-                                }
-                                if batch.write_scope == "file_batch" and table_name == "KG_NODE"
-                                else None
-                            ),
+                            preserve_on_match=preserved_columns(batch, table_name),
                         )
                         cursor.execute(sql, params)
                 for sql, params in build_edge_reconciliation_statements(batch):
@@ -553,6 +540,31 @@ def _file_batch_delete_statements(batch: GraphWriteBatch) -> list[tuple[str, lis
     return statements
 
 
+# Node aggregates a file batch cannot know: they are rebuilt once every
+# per-file observation has been merged, so a merge must not overwrite them.
+_FILE_BATCH_PRESERVED_NODE_COLUMNS = frozenset(
+    {
+        "ALIASES",
+        "DESCRIPTION",
+        "EMBEDDING",
+        "NAME",
+        "PRIMARY_TYPE",
+        "SOURCE_CHUNK_IDS",
+        "TYPES",
+        "DEGREE",
+        "RANK",
+    }
+)
+
+
+def preserved_columns(batch: GraphWriteBatch, table_name: str) -> set[str] | None:
+    """Return the columns a merge of this batch into ``table_name`` must leave alone."""
+
+    if batch.write_scope == "file_batch" and table_name == "KG_NODE":
+        return set(_FILE_BATCH_PRESERVED_NODE_COLUMNS)
+    return None
+
+
 def build_merge_statement(
     table_name: str,
     row: Mapping[str, object],
@@ -672,19 +684,11 @@ def _block_row(graph_id: str, row: Mapping[str, object]) -> dict[str, object]:
 
 
 def _upper_model(row: Mapping[str, object], graph_id: str | None = None) -> dict[str, object]:
-    converted = {_camel_to_screaming(key): value for key, value in row.items()}
+    # Domain fields are snake_case already, so the column name is the upper case.
+    converted = {key.upper(): value for key, value in row.items()}
     if graph_id is not None:
         converted["GRAPH_ID"] = graph_id
     return converted
-
-
-def _camel_to_screaming(value: str) -> str:
-    chars: list[str] = []
-    for char in value:
-        if char.isupper() and chars:
-            chars.append("_")
-        chars.append(char.upper())
-    return "".join(chars)
 
 
 def _run_id(batch: GraphWriteBatch) -> str:
