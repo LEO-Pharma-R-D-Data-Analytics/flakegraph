@@ -20,7 +20,7 @@ class FakeClient:
     response_content: bytes | None = None
     response_headers: dict[str, str] = {}
 
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, timeout: float | None = None) -> None:
         self.timeout = timeout
 
     def __enter__(self) -> FakeClient:
@@ -37,6 +37,7 @@ class FakeClient:
         headers: dict[str, str],
         data: dict[str, str],
         files: dict[str, object],
+        timeout: float | None = None,
     ) -> Iterator[httpx.Response]:
         assert method == "POST"
         FakeClient.requests.append(

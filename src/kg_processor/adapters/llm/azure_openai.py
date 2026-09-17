@@ -95,10 +95,11 @@ class AzureOpenAILlmProvider(OpenAICompatibleLlmProvider):
             response = send_with_http_retry(
                 partial(
                     _post_chat,
-                    self._http_clients.client(timeout_seconds),
+                    self._client,
                     url,
                     str(self.api_key),
                     request_payload,
+                    timeout_seconds,
                 )
             )
             if response.is_success:
@@ -125,10 +126,13 @@ def _post_chat(
     url: str,
     api_key: str,
     request_payload: dict[str, object],
+    timeout_seconds: float,
 ) -> httpx.Response:
     """Submit one Azure request attempt through a retained connection pool."""
 
-    return client.post(url, headers={"api-key": api_key}, json=request_payload)
+    return client.post(
+        url, headers={"api-key": api_key}, json=request_payload, timeout=timeout_seconds
+    )
 
 
 def _unsupported_parameter(response: httpx.Response) -> str | None:

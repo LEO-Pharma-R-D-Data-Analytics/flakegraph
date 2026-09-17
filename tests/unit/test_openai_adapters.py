@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import httpx
 import pytest
 
@@ -24,7 +26,7 @@ def test_openai_string_lists_drop_null_and_non_string_values() -> None:
 class _MockClient:
     instances = 0
 
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, timeout: float | None = None) -> None:
         self.__class__.instances += 1
         self.timeout = timeout
 
@@ -34,7 +36,13 @@ class _MockClient:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def post(self, url: str, headers: dict[str, str], json: dict[str, object]) -> httpx.Response:
+    def post(
+        self,
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, object],
+        timeout: float | None = None,
+    ) -> httpx.Response:
         request = httpx.Request("POST", url, headers=headers)
         if url.endswith("/chat/completions"):
             assert json["max_tokens"] == 8192
@@ -91,7 +99,7 @@ class _StructuredRetryMockClient:
 
     call_count = 0
 
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, timeout: float | None = None) -> None:
         """Record the adapter timeout for compatibility with the HTTP client API.
 
         No real network resources are allocated.
@@ -115,7 +123,13 @@ class _StructuredRetryMockClient:
 
         return None
 
-    def post(self, url: str, headers: dict[str, str], json: dict[str, object]) -> httpx.Response:
+    def post(
+        self,
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, object],
+        timeout: float | None = None,
+    ) -> httpx.Response:
         """Validate strict transport and alternate malformed then valid response content.
 
         Both responses retain an ordinary HTTP response shape.
@@ -135,7 +149,7 @@ class _StructuredRetryMockClient:
 
 
 class _VllmMockClient:
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, timeout: float | None = None) -> None:
         self.timeout = timeout
 
     def __enter__(self) -> _VllmMockClient:
@@ -144,7 +158,13 @@ class _VllmMockClient:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def post(self, url: str, headers: dict[str, str], json: dict[str, object]) -> httpx.Response:
+    def post(
+        self,
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, object],
+        timeout: float | None = None,
+    ) -> httpx.Response:
         request = httpx.Request("POST", url, headers=headers)
         assert url == "http://localhost:8000/v1/chat/completions"
         assert "Authorization" not in headers
@@ -172,7 +192,7 @@ class _VllmMockClient:
 
 
 class _AzureMockClient:
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, timeout: float | None = None) -> None:
         self.timeout = timeout
 
     def __enter__(self) -> _AzureMockClient:
@@ -181,7 +201,13 @@ class _AzureMockClient:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def post(self, url: str, headers: dict[str, str], json: dict[str, object]) -> httpx.Response:
+    def post(
+        self,
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, object],
+        timeout: float | None = None,
+    ) -> httpx.Response:
         request = httpx.Request("POST", url, headers=headers)
         assert "api-version=2025-01-01-preview" in url
         assert headers["api-key"] == "secret"
@@ -238,7 +264,7 @@ class _AzureCapabilityNegotiationMockClient:
 
     payloads: list[dict[str, object]] = []
 
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, timeout: float | None = None) -> None:
         self.timeout = timeout
 
     def __enter__(self) -> _AzureCapabilityNegotiationMockClient:
@@ -247,7 +273,13 @@ class _AzureCapabilityNegotiationMockClient:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def post(self, url: str, headers: dict[str, str], json: dict[str, object]) -> httpx.Response:
+    def post(
+        self,
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, object],
+        timeout: float | None = None,
+    ) -> httpx.Response:
         """Return the same structured capability errors emitted by newer models."""
 
         self.__class__.payloads.append(dict(json))
@@ -541,34 +573,40 @@ def test_azure_openai_embeddings_use_deployment_url(monkeypatch) -> None:  # typ
 
 
 @pytest.mark.parametrize(
-    ("provider", "model"),
+    ("build", "model"),
     [
         (
-            OpenAICompatibleEmbeddingProvider("https://example.test/v1", "secret"),
+            lambda: OpenAICompatibleEmbeddingProvider("https://example.test/v1", "secret"),
             "text-embedding-3-small",
         ),
         (
-            AzureOpenAIEmbeddingProvider("https://example.test", "secret", "2025-01-01-preview"),
+            lambda: AzureOpenAIEmbeddingProvider(
+                "https://example.test", "secret", "2025-01-01-preview"
+            ),
             "ada-deployment",
         ),
     ],
 )
 def test_embedding_adapters_retry_without_unsupported_dimensions(
     monkeypatch: pytest.MonkeyPatch,
-    provider: OpenAICompatibleEmbeddingProvider,
+    build: Callable[[], OpenAICompatibleEmbeddingProvider],
     model: str,
 ) -> None:
     class _DimensionsFallbackClient:
         payloads: list[dict[str, object]] = []
 
-        def __init__(self, timeout: int) -> None:
+        def __init__(self, timeout: float | None = None) -> None:
             self.timeout = timeout
+
+        def close(self) -> None:
+            return None
 
         def post(
             self,
             url: str,
             headers: dict[str, str],
             json: dict[str, object],
+            timeout: float | None = None,
         ) -> httpx.Response:
             del headers
             self.__class__.payloads.append(dict(json))
@@ -585,6 +623,7 @@ def test_embedding_adapters_retry_without_unsupported_dimensions(
 
     _DimensionsFallbackClient.payloads = []
     monkeypatch.setattr(httpx, "Client", _DimensionsFallbackClient)
+    provider = build()
 
     vectors = provider.embed(["Alice"], EmbedOptions(model=model, dimension=3))
 
@@ -602,14 +641,18 @@ def test_embedding_adapters_keep_the_requested_width_after_an_unrelated_rejectio
     class _OversizedBatchClient:
         payloads: list[dict[str, object]] = []
 
-        def __init__(self, timeout: int) -> None:
+        def __init__(self, timeout: float | None = None) -> None:
             self.timeout = timeout
+
+        def close(self) -> None:
+            return None
 
         def post(
             self,
             url: str,
             headers: dict[str, str],
             json: dict[str, object],
+            timeout: float | None = None,
         ) -> httpx.Response:
             del headers
             self.__class__.payloads.append(dict(json))
@@ -653,14 +696,18 @@ def test_generic_embedding_omits_dimensions_for_unknown_model(
     class _StrictCompatibleClient:
         payloads: list[dict[str, object]] = []
 
-        def __init__(self, timeout: int) -> None:
+        def __init__(self, timeout: float | None = None) -> None:
             self.timeout = timeout
+
+        def close(self) -> None:
+            return None
 
         def post(
             self,
             url: str,
             headers: dict[str, str],
             json: dict[str, object],
+            timeout: float | None = None,
         ) -> httpx.Response:
             del headers
             self.__class__.payloads.append(dict(json))

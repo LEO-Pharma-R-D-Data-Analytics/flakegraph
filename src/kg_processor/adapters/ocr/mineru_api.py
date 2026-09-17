@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from kg_processor.adapters.http import HttpClientPool
+import httpx
+
 from kg_processor.adapters.ocr.generic_http import _json_payload
 from kg_processor.adapters.ocr.mineru_common import (
     first_int,
@@ -39,24 +40,24 @@ class MineruApiOcrProvider:
         if max_response_bytes < 0:
             raise ValueError("MinerU API response limit must be non-negative")
         self.max_response_bytes = max_response_bytes
-        self._http = HttpClientPool()
+        self._client = httpx.Client()
 
     def parse(self, file: InputFile, options: OcrOptions) -> ParsedDocument:
         """Upload a document to MinerU and normalize markdown, blocks, and assets."""
 
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        client = self._http.client(options.timeout_seconds)
         form_data = _form_data(options)
         # Stream the response so the configured bound is enforced while bytes
         # arrive rather than after httpx has already buffered an oversized body.
         with (
             file.path.open("rb") as handle,
-            client.stream(
+            self._client.stream(
                 "POST",
                 f"{self.base_url}/file_parse",
                 files={"files": (file.path.name, handle, file.mime_type)},
                 headers=headers,
                 data=form_data,
+                timeout=options.timeout_seconds,
             ) as response,
         ):
             response.raise_for_status()
@@ -82,7 +83,7 @@ class MineruApiOcrProvider:
     def close(self) -> None:
         """Release retained keep-alive connections for embedded or test callers."""
 
-        self._http.close()
+        self._client.close()
 
 
 def _form_data(options: OcrOptions) -> dict[str, str]:

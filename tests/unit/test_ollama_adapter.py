@@ -16,7 +16,7 @@ class _OllamaMockClient:
     request_payload: dict[str, Any] = {}
     request_url = ""
 
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, timeout: float | None = None) -> None:
         self.timeout = timeout
 
     def __enter__(self) -> _OllamaMockClient:
@@ -30,6 +30,7 @@ class _OllamaMockClient:
         url: str,
         headers: dict[str, str],
         json: dict[str, Any],
+        timeout: float | None = None,
     ) -> httpx.Response:
         """Record transport fields and return native Ollama message content."""
 
@@ -49,7 +50,7 @@ def test_ollama_uses_native_schema_and_disables_thinking(
 ) -> None:
     """Reserve output tokens for structured content rather than reasoning traces."""
 
-    monkeypatch.setattr("kg_processor.adapters.http.httpx.Client", _OllamaMockClient)
+    monkeypatch.setattr("httpx.Client", _OllamaMockClient)
     provider = OllamaLlmProvider(
         endpoint="http://localhost:11434/v1",
         model="qwen3.8:27b-q4_K_M",

@@ -86,12 +86,12 @@ class OllamaLlmProvider(OpenAICompatibleLlmProvider):
             "options": options,
         }
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        client = self._http_clients.client(timeout_seconds)
         response = send_with_http_retry(
-            lambda: client.post(
+            lambda: self._client.post(
                 f"{self.endpoint}/api/chat",
                 headers=headers,
                 json=request_payload,
+                timeout=timeout_seconds,
             )
         )
         response.raise_for_status()

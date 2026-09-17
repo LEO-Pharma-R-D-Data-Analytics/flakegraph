@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import httpx
 
-from kg_processor.adapters.http import HttpClientPool
 from kg_processor.adapters.llm.openai_common import (
     ChatCompletion,
     chat_completion_from_payload,
@@ -72,12 +71,14 @@ class OpenAICompatibleLlmProvider:
         # fleet it is the primary control over how long interactive work waits,
         # because a queue-jumping request is served once a running one finishes.
         self._max_output_tokens = max_output_tokens
-        self._http_clients = HttpClientPool()
+        # One client per adapter: httpx clients are thread-safe and keep their
+        # connections alive across the thousands of calls an extraction makes.
+        self._client = httpx.Client()
 
     def close(self) -> None:
         """Release retained keep-alive connections owned by this adapter."""
 
-        self._http_clients.close()
+        self._client.close()
 
     def capabilities(self) -> LlmCapabilities:
         """Describe only features reliably shared by compatible implementations.
@@ -245,15 +246,14 @@ class OpenAICompatibleLlmProvider:
         # copying request construction, retries, schemas, or response parsing.
         request_payload.update(self._chat_request_overrides())
 
-        client = self._http_clients.client(timeout_seconds)
-
         def send() -> httpx.Response:
             """Submit one retryable attempt through the retained connection pool."""
 
-            return client.post(
+            return self._client.post(
                 f"{self.endpoint}/chat/completions",
                 headers=headers,
                 json=request_payload,
+                timeout=timeout_seconds,
             )
 
         response = send_with_http_retry(send)

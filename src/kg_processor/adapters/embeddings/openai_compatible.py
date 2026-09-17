@@ -5,11 +5,12 @@ from __future__ import annotations
 import httpx
 
 from kg_processor.adapters.embeddings.openai_common import parse_embedding_vectors
-from kg_processor.adapters.http import HttpClientPool
 from kg_processor.adapters.llm.openai_common import send_with_http_retry
 from kg_processor.ports.embeddings import EmbedOptions
 
 _DIMENSIONS_PARAMETER = "dimensions"
+# Embedding batches carry no timeout of their own on the port.
+_EMBEDDING_TIMEOUT_SECONDS = 120
 _REJECTED_REQUEST_STATUSES = {400, 422}
 
 
@@ -19,13 +20,13 @@ class OpenAICompatibleEmbeddingProvider:
     def __init__(self, endpoint: str, api_key: str) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
-        self._http_clients = HttpClientPool()
+        self._client = httpx.Client()
         self._dimensions_unsupported = False
 
     def close(self) -> None:
         """Release retained keep-alive connections owned by this adapter."""
 
-        self._http_clients.close()
+        self._client.close()
 
     def embed(self, texts: list[str], options: EmbedOptions) -> list[list[float]]:
         """Batch texts through the endpoint and validate returned dimensions."""
@@ -33,7 +34,6 @@ class OpenAICompatibleEmbeddingProvider:
         if not texts:
             return []
         vectors: list[list[float]] = []
-        client = self._http_clients.client(120)
         for start in range(0, len(texts), options.batch_size):
             batch = texts[start : start + options.batch_size]
 
@@ -43,12 +43,7 @@ class OpenAICompatibleEmbeddingProvider:
                 batch: list[str] = batch,
                 include_dimensions: bool = include_dimensions,
             ) -> httpx.Response:
-                return self._post_embeddings(
-                    client,
-                    batch,
-                    options,
-                    include_dimensions=include_dimensions,
-                )
+                return self._post_embeddings(batch, options, include_dimensions=include_dimensions)
 
             response = send_with_http_retry(send)
             requested_dimensions = self._uses_dimensions_parameter(options, include_dimensions)
@@ -56,12 +51,7 @@ class OpenAICompatibleEmbeddingProvider:
                 self._dimensions_unsupported = True
 
                 def send_without_dimensions(batch: list[str] = batch) -> httpx.Response:
-                    return self._post_embeddings(
-                        client,
-                        batch,
-                        options,
-                        include_dimensions=False,
-                    )
+                    return self._post_embeddings(batch, options, include_dimensions=False)
 
                 response = send_with_http_retry(send_without_dimensions)
             response.raise_for_status()
@@ -86,7 +76,6 @@ class OpenAICompatibleEmbeddingProvider:
 
     def _post_embeddings(
         self,
-        client: httpx.Client,
         batch: list[str],
         options: EmbedOptions,
         *,
@@ -97,10 +86,11 @@ class OpenAICompatibleEmbeddingProvider:
         payload: dict[str, object] = {"model": options.model, "input": batch}
         if include_dimensions and options.model.startswith("text-embedding-3-"):
             payload[_DIMENSIONS_PARAMETER] = options.dimension
-        return client.post(
+        return self._client.post(
             f"{self.endpoint}/embeddings",
             headers={"Authorization": f"Bearer {self.api_key}"},
             json=payload,
+            timeout=_EMBEDDING_TIMEOUT_SECONDS,
         )
 
 

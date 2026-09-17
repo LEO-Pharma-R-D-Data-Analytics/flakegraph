@@ -22,7 +22,7 @@ class FakeClient:
     status_code: int = 200
     declared_content_length: int | None = None
 
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, timeout: float | None = None) -> None:
         self.timeout = timeout
 
     def __enter__(self) -> FakeClient:
@@ -39,6 +39,7 @@ class FakeClient:
         headers: dict[str, str],
         data: dict[str, str],
         files: dict[str, object],
+        timeout: float | None = None,
     ) -> Iterator[httpx.Response]:
         """Yield one streamed response and record how it was requested."""
 
@@ -363,9 +364,7 @@ def test_mineru_api_ocr_raises_for_a_rejected_upload(
     monkeypatch.setattr(httpx, "Client", FakeClient)
 
     with pytest.raises(httpx.HTTPStatusError):
-        MineruApiOcrProvider("https://mineru.example").parse(
-            _input_file(input_path), OcrOptions()
-        )
+        MineruApiOcrProvider("https://mineru.example").parse(_input_file(input_path), OcrOptions())
 
 
 def test_mineru_api_ocr_rejects_a_declared_response_above_the_bound(

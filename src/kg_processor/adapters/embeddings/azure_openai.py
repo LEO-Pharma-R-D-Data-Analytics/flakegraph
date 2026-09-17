@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 
 from kg_processor.adapters.embeddings.openai_compatible import (
+    _EMBEDDING_TIMEOUT_SECONDS,
     OpenAICompatibleEmbeddingProvider,
 )
 from kg_processor.ports.embeddings import EmbedOptions
@@ -19,7 +20,6 @@ class AzureOpenAIEmbeddingProvider(OpenAICompatibleEmbeddingProvider):
 
     def _post_embeddings(
         self,
-        client: httpx.Client,
         batch: list[str],
         options: EmbedOptions,
         *,
@@ -30,13 +30,14 @@ class AzureOpenAIEmbeddingProvider(OpenAICompatibleEmbeddingProvider):
         payload: dict[str, object] = {"input": batch}
         if include_dimensions:
             payload["dimensions"] = options.dimension
-        return client.post(
+        return self._client.post(
             (
                 f"{self.endpoint}/openai/deployments/{options.model}/embeddings"
                 f"?api-version={self.api_version}"
             ),
             headers={"api-key": self.api_key},
             json=payload,
+            timeout=_EMBEDDING_TIMEOUT_SECONDS,
         )
 
     def _uses_dimensions_parameter(

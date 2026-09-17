@@ -8,7 +8,6 @@ from typing import Any
 
 import httpx
 
-from kg_processor.adapters.http import HttpClientPool
 from kg_processor.config.settings import GenericHttpOcrSettings
 from kg_processor.domain.documents import (
     InputFile,
@@ -33,23 +32,23 @@ class GenericHttpOcrProvider:
             raise ValueError("generic_http OCR requires generic_http_ocr.endpoint")
         self.settings = settings
         self.endpoint = settings.endpoint
-        self._http = HttpClientPool()
+        self._client = httpx.Client()
 
     def parse(self, file: InputFile, options: OcrOptions) -> ParsedDocument:
         """Upload a file to the OCR endpoint and normalize the returned payload."""
 
         headers = _headers(self.settings)
-        client = self._http.client(options.timeout_seconds)
         # Stream the response so the configured bound is enforced while bytes
         # arrive rather than after httpx has already buffered an oversized body.
         with (
             file.path.open("rb") as handle,
-            client.stream(
+            self._client.stream(
                 "POST",
                 self.endpoint,
                 headers=headers,
                 data=_request_data(file, options),
                 files={self.settings.file_field: (file.path.name, handle, file.mime_type)},
+                timeout=options.timeout_seconds,
             ) as response,
         ):
             response.raise_for_status()
@@ -77,7 +76,7 @@ class GenericHttpOcrProvider:
     def close(self) -> None:
         """Release retained keep-alive connections for embedded or test callers."""
 
-        self._http.close()
+        self._client.close()
 
 
 def _headers(settings: GenericHttpOcrSettings) -> dict[str, str]:
