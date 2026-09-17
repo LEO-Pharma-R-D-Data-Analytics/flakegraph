@@ -579,16 +579,20 @@ class UnionFind:
         self._members = {value: {value} for value in values}
 
     def find(self, value: str) -> str:
-        """Return a cluster's stable root while applying recursive path compression.
+        """Return a cluster's stable root while applying path compression.
 
         Compression changes only internal lookup cost; deterministic root selection
-        remains governed by ``union``.
+        remains governed by ``union``. The walk is iterative because lexical-min
+        roots carry no rank, so an adversarial edge order builds a chain as long
+        as the bounded component, deeper than the interpreter's recursion limit.
         """
 
-        parent = self.parent[value]
-        if parent != value:
-            self.parent[value] = self.find(parent)
-        return self.parent[value]
+        root = self.parent[value]
+        while root != self.parent[root]:
+            root = self.parent[root]
+        while value != root:
+            self.parent[value], value = root, self.parent[value]
+        return root
 
     def union(self, left: str, right: str) -> None:
         """Merge two roots with lexical tie-breaking independent of input order.

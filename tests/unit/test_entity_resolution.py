@@ -4,7 +4,7 @@ import json
 
 from kg_processor.adapters.embeddings.hash import HashEmbeddingProvider
 from kg_processor.adapters.llm.fake import FakeLlmProvider
-from kg_processor.application.entity_resolution import resolve_entity_mentions
+from kg_processor.application.entity_resolution import UnionFind, resolve_entity_mentions
 from kg_processor.application.extraction_contracts import entity_resolution_request
 from kg_processor.domain.extraction import EntityMention, ResolutionCandidate
 from kg_processor.ports.embeddings import EmbedOptions
@@ -138,6 +138,23 @@ class _OrthogonalEmbeddingProvider:
             vector[index] = 1.0
             vectors.append(vector)
         return vectors
+
+
+def test_union_find_walks_a_chain_deeper_than_the_recursion_limit() -> None:
+    """Edges arriving in descending-id order chain every vertex under the next.
+
+    The Spark bounded-components path hands over components of up to 100,000
+    vertices, far past the interpreter's recursion limit, so the root walk
+    must not recurse.
+    """
+
+    ids = [f"mention_{index:05d}" for index in range(10_000)]
+    union_find = UnionFind(ids)
+    for index in range(len(ids) - 1, 0, -1):
+        union_find.union(ids[index], ids[index - 1])
+
+    assert union_find.find(ids[-1]) == ids[0]
+    assert len(union_find.members(ids[-1])) == len(ids)
 
 
 def test_entity_resolution_merges_exact_declared_aliases_without_llm_adjudication() -> None:
