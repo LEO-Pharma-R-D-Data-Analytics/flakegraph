@@ -188,7 +188,7 @@ def _input_file_from_list_row(stage: str, row: object) -> InputFile:
         id=stable_id("stage_file", source_uri, checksum),
         path=document_path,
         source_uri=source_uri,
-        checksum=checksum or stable_id("stage_file_checksum", source_uri),
+        checksum=checksum,
         mime_type=mimetypes.guess_type(document_path.name)[0] or "application/octet-stream",
         size_bytes=size_bytes,
     )

@@ -73,12 +73,6 @@ def manifest_candidate_paths(manifest_path: Path, include_globs: list[str]) -> l
     return sorted(candidates)
 
 
-def _read_manifest_rows(path: Path) -> list[Mapping[str, Any]]:
-    """Materialize rows for callers that explicitly require a list."""
-
-    return list(_iter_manifest_rows(path))
-
-
 def _iter_manifest_rows(path: Path) -> Iterator[Mapping[str, Any]]:
     """Stream row-oriented manifests and validate the selected file format."""
 
