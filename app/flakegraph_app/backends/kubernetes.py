@@ -1702,31 +1702,9 @@ def _fleet_database_environment(
         yield environment
         return
 
-    service_name, service_namespace, remote_port = service
-    forward_target = _service_port_forward_target(service_name, service_namespace, target)
-    local_port = _available_local_port()
-    process = subprocess.Popen(
-        [
-            "kubectl",
-            *target.arguments(),
-            "port-forward",
-            "--namespace",
-            service_namespace,
-            "--address",
-            "127.0.0.1",
-            forward_target,
-            f"{local_port}:{remote_port}",
-        ],
-        env=target.environment(os.environ),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    try:
-        _wait_for_port_forward(process, local_port)
+    with _forwarded_service(service, target) as local_port:
         environment[_DATABASE_ENVIRONMENT_NAME] = _replace_url_host(database_url, local_port)
         yield environment
-    finally:
-        _terminate_forward(process)
 
 
 def _fleet_database_url(namespace: str, target: ClusterTarget) -> str:
@@ -1811,6 +1789,39 @@ def _database_cluster_service(
     return None
 
 
+@contextmanager
+def _forwarded_service(service: tuple[str, str, int], target: ClusterTarget) -> Iterator[int]:
+    """Forward one in-cluster Service port to loopback for the duration of the block."""
+
+    service_name, service_namespace, remote_port = service
+    forward_target = _service_port_forward_target(service_name, service_namespace, target)
+    local_port = _available_local_port()
+    process = subprocess.Popen(
+        [
+            "kubectl",
+            *target.arguments(),
+            "port-forward",
+            "--namespace",
+            service_namespace,
+            "--address",
+            "127.0.0.1",
+            forward_target,
+            f"{local_port}:{remote_port}",
+        ],
+        env=target.environment(os.environ),
+        # kubectl logs one line per forwarded connection on stdout, which would
+        # fill a pipe nobody drains; stderr is kept so a startup failure can be
+        # reported.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        _wait_for_port_forward(process, local_port)
+        yield local_port
+    finally:
+        _terminate_forward(process)
+
+
 def _replace_url_host(database_url: str, local_port: int) -> str:
     """Point a credential-bearing URI at loopback without decoding user info."""
 
@@ -1886,34 +1897,11 @@ def _artifact_export_environment(namespace: str, target: ClusterTarget) -> Itera
         yield environment
         return
 
-    service_name, service_namespace, remote_port = service
-    forward_target = _service_port_forward_target(service_name, service_namespace, target)
-    local_port = _available_local_port()
-    process = subprocess.Popen(
-        [
-            "kubectl",
-            *target.arguments(),
-            "port-forward",
-            "--namespace",
-            service_namespace,
-            "--address",
-            "127.0.0.1",
-            forward_target,
-            f"{local_port}:{remote_port}",
-        ],
-        env=target.environment(os.environ),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    try:
-        _wait_for_port_forward(process, local_port)
-        parsed = urlparse(endpoint)
-        environment["KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL"] = urlunparse(
-            parsed._replace(netloc=f"127.0.0.1:{local_port}")
+    with _forwarded_service(service, target) as local_port:
+        environment["KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL"] = _replace_url_host(
+            endpoint, local_port
         )
         yield environment
-    finally:
-        _terminate_forward(process)
 
 
 def _fleet_artifact_environment(namespace: str, target: ClusterTarget) -> dict[str, str]:
