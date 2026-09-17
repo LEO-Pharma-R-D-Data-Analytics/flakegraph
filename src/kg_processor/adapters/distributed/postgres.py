@@ -257,7 +257,12 @@ class PostgresDistributedStore:
         self._remember_run_id(run.id)
 
     def add_tasks(self, run_id: str, tasks: list[TaskDefinition]) -> None:
-        """Insert a complete dependency graph after validating run ownership."""
+        """Insert an arbitrary dependency graph after validating run ownership.
+
+        The planner submits through ``add_initial_tasks``, whose streamed plan
+        needs no graph validation; this general entry takes any acyclic plan
+        and is what the store's contract tests build their shapes with.
+        """
 
         if not tasks:
             raise ValueError("a distributed run requires at least one task")
@@ -266,15 +271,9 @@ class PostgresDistributedStore:
             raise ValueError("distributed task ids must be unique")
         if any(task.run_id != run_id for task in tasks):
             raise ValueError("all tasks must belong to the selected run")
-        # Production submission has a known bounded shape: independent preparation
-        # tasks plus one run-wide final barrier. Recognizing that shape avoids
-        # allocating two additional O(V + E) adjacency mappings for a
-        # 250,000-document plan.
-        # Arbitrary plans retain the full cycle check.
-        if not _is_initial_document_plan(tasks, task_ids=task_ids):
-            if any(set(task.dependency_ids) - task_ids for task in tasks):
-                raise ValueError("task dependencies must reference tasks in the same plan")
-            _validate_acyclic(tasks)
+        if any(set(task.dependency_ids) - task_ids for task in tasks):
+            raise ValueError("task dependencies must reference tasks in the same plan")
+        _validate_acyclic(tasks)
         with self._connection() as connection:
             status_row = connection.execute(
                 "SELECT status FROM flakegraph_run WHERE id = %s FOR UPDATE",
@@ -1053,52 +1052,6 @@ class PostgresDistributedStore:
                 self._publish_graph_version(connection, run_id, output_rows)
                 self._enqueue_graph_publication(connection, task, output_rows)
                 self._complete_run_after_final_barrier(connection, run_id)
-            else:
-                self._complete_run_without_final_barrier(connection, run_id)
-
-    def _complete_run_without_final_barrier(
-        self,
-        connection: psycopg.Connection[dict[str, Any]],
-        run_id: str,
-    ) -> None:
-        """Complete custom task graphs that deliberately omit a finalization barrier."""
-
-        finalizer = connection.execute(
-            """
-            SELECT 1 FROM flakegraph_task
-            WHERE run_id = %s AND stage = %s
-            LIMIT 1
-            """,
-            (run_id, TaskStage.FINALIZE_GRAPH.value),
-        ).fetchone()
-        if finalizer is not None:
-            return
-        connection.execute(
-            "SELECT id FROM flakegraph_run WHERE id = %s FOR UPDATE",
-            (run_id,),
-        )
-        connection.execute(
-            """
-            UPDATE flakegraph_run AS run
-            SET status = %s, updated_at = CURRENT_TIMESTAMP
-            WHERE run.id = %s AND run.status = %s
-              AND NOT EXISTS (
-                  SELECT 1 FROM flakegraph_task AS finalizer
-                  WHERE finalizer.run_id = run.id AND finalizer.stage = %s
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM flakegraph_task AS unfinished
-                  WHERE unfinished.run_id = run.id AND unfinished.status <> %s
-              )
-            """,
-            (
-                RunStatus.SUCCEEDED.value,
-                run_id,
-                RunStatus.RUNNING.value,
-                TaskStage.FINALIZE_GRAPH.value,
-                TaskStatus.SUCCEEDED.value,
-            ),
-        )
 
     def _enqueue_graph_publication(
         self,
@@ -2194,13 +2147,7 @@ def _validate_duration(value: timedelta, label: str) -> None:
 
 
 def _validate_acyclic(tasks: list[TaskDefinition]) -> None:
-    """Reject cyclic plans in linear time using Kahn's topological algorithm.
-
-    A corpus starts with one preparation task per document and one final barrier,
-    so production plans can contain hundreds of thousands of vertices and edges.
-    Maintaining reverse adjacency avoids scanning the complete plan after every
-    visited task; memory and runtime are both proportional to ``V + E``.
-    """
+    """Reject cyclic plans in linear time using Kahn's topological algorithm."""
 
     remaining_dependencies = {task.id: len(task.dependency_ids) for task in tasks}
     dependents: dict[str, list[str]] = {task.id: [] for task in tasks}
@@ -2222,35 +2169,6 @@ def _validate_acyclic(tasks: list[TaskDefinition]) -> None:
                 ready.append(dependent_id)
     if visited != len(tasks):
         raise ValueError("distributed task graph must be acyclic")
-
-
-def _is_initial_document_plan(
-    tasks: list[TaskDefinition],
-    *,
-    task_ids: set[str] | None = None,
-) -> bool:
-    """Recognize the planner's trivially acyclic initial document plan.
-
-    This is deliberately strict: every non-final task must be an independent
-    document preparation and the sole final task must have no explicit dependencies.
-    Its run-wide readiness predicate supplies the barrier without a 250,000-edge
-    star. Any extension or malformed shape falls back to the general linear-time
-    validator rather than receiving a special-case exemption.
-    """
-
-    known_task_ids = task_ids if task_ids is not None else {task.id for task in tasks}
-    final_task: TaskDefinition | None = None
-    preparation_count = 0
-    for task in tasks:
-        if task.stage == TaskStage.PREPARE_DOCUMENT and not task.dependency_ids:
-            preparation_count += 1
-        elif task.stage == TaskStage.FINALIZE_GRAPH and final_task is None:
-            final_task = task
-        else:
-            return False
-    if final_task is None or preparation_count + 1 != len(tasks):
-        return False
-    return not final_task.dependency_ids and final_task.id in known_task_ids
 
 
 def _installed_schema_version(connection: psycopg.Connection[dict[str, Any]]) -> int | None:

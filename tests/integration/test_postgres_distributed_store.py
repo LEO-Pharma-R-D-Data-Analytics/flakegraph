@@ -334,31 +334,6 @@ def test_postgres_summary_reports_latest_task_activity_without_hot_run_writes(
     assert recent.updated_at == summary.updated_at
 
 
-def test_postgres_completes_a_custom_plan_without_finalizer(
-    isolated_postgres_dsn: str,
-) -> None:
-    store = _store(isolated_postgres_dsn)
-    run_id = f"run_{uuid4().hex}"
-    store.create_run(_run(run_id))
-    store.add_tasks(
-        run_id,
-        [_task(run_id, "prepare", TaskStage.PREPARE_DOCUMENT, "file")],
-    )
-    store.activate_run(run_id)
-    claim = store.claim_task(
-        "prepare-worker",
-        {TaskStage.PREPARE_DOCUMENT},
-        timedelta(minutes=1),
-    )
-    assert claim is not None
-
-    store.complete_task(claim.task.id, "prepare-worker", [])
-
-    snapshot = store.get_run(run_id)
-    assert snapshot.run.status == RunStatus.SUCCEEDED
-    assert snapshot.tasks[0].status == TaskStatus.SUCCEEDED
-
-
 def test_postgres_claims_are_exclusive_and_dependencies_form_a_barrier(
     isolated_postgres_dsn: str,
 ) -> None:
