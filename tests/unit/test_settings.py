@@ -2,10 +2,263 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import NoneType, UnionType
+from typing import Literal, Union, get_args, get_origin
 
 import pytest
 
 from kg_processor.config.settings import Settings
+
+# Every environment variable a deployment may already set, paired with the
+# settings key it fills. Charts, service specs, and operator shells rely on
+# these names, so a row leaves only when its consumers have moved off it.
+ENVIRONMENT_NAMES: tuple[tuple[str, str], ...] = (
+    ("KG_STAGE", "snowflake.stage"),
+    ("KG_BULK_STAGE", "snowflake.bulk_stage"),
+    ("KG_BLOB_ACCOUNT_URL", "azure_blob.account_url"),
+    ("KG_BLOB_CONNECTION_STRING", "azure_blob.connection_string"),
+    ("KG_BLOB_CONTAINER", "azure_blob.container"),
+    ("KG_BLOB_PREFIX", "azure_blob.prefix"),
+    ("KG_BLOB_SAS_TOKEN", "azure_blob.sas_token"),
+    ("KG_BLOB_DOWNLOAD_PATH", "azure_blob.download_path"),
+    ("KG_OCR_ENGINE", "ocr.provider"),
+    ("KG_RUNTIME", "runtime.runtime"),
+    ("KG_JOB_ID", "job.job_id"),
+    ("KG_GRAPH_ID", "job.graph_id"),
+    ("KG_JOB_USE_LEASE", "job.use_lease"),
+    ("KG_JOB_USE_FILE_QUEUE", "job.use_file_queue"),
+    ("KG_WORKER_ID", "job.lease_owner"),
+    ("KG_JOB_LEASE_OWNER", "job.lease_owner"),
+    ("KG_JOB_LEASE_SECONDS", "job.lease_seconds"),
+    ("KG_BATCH_FILES", "job.file_batch_size"),
+    ("KG_FILE_BATCH_SIZE", "job.file_batch_size"),
+    ("KG_DISTRIBUTED_DATABASE_URL", "distributed.database_url"),
+    ("KG_DISTRIBUTED_WORKER_ID", "distributed.worker_id"),
+    ("KG_DISTRIBUTED_WORKER_STAGES", "distributed.worker_stages"),
+    ("KG_DISTRIBUTED_LEASE_SECONDS", "distributed.lease_seconds"),
+    ("KG_DISTRIBUTED_POLL_INTERVAL_SECONDS", "distributed.poll_interval_seconds"),
+    ("KG_DISTRIBUTED_RETRY_DELAY_SECONDS", "distributed.retry_delay_seconds"),
+    ("KG_DISTRIBUTED_MAX_ATTEMPTS", "distributed.max_attempts"),
+    ("KG_DISTRIBUTED_ARTIFACT_COMPRESSION_LEVEL", "distributed.artifact_compression_level"),
+    ("KG_DISTRIBUTED_MAX_ARTIFACT_BYTES", "distributed.max_artifact_bytes"),
+    ("KG_DISTRIBUTED_ARTIFACT_URI", "distributed.artifact_uri"),
+    ("KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL", "distributed.artifact_endpoint_url"),
+    ("KG_DISTRIBUTED_ARTIFACT_ACCESS_KEY_ID", "distributed.artifact_access_key_id"),
+    ("KG_DISTRIBUTED_ARTIFACT_SECRET_ACCESS_KEY", "distributed.artifact_secret_access_key"),
+    ("KG_DISTRIBUTED_ARTIFACT_REGION", "distributed.artifact_region"),
+    ("KG_DISTRIBUTED_FINALIZATION_ENGINE", "distributed.finalization_engine"),
+    ("KG_DISTRIBUTED_PRIORITY_OFFSET", "distributed.priority_offset"),
+    ("KG_DISTRIBUTED_SPARK_MASTER", "distributed.spark_master"),
+    ("KG_DISTRIBUTED_SPARK_IMAGE", "distributed.spark_image"),
+    ("KG_DISTRIBUTED_SPARK_NAMESPACE", "distributed.spark_namespace"),
+    ("KG_DISTRIBUTED_SPARK_SERVICE_ACCOUNT", "distributed.spark_service_account"),
+    ("KG_DISTRIBUTED_SPARK_EXECUTOR_POD_TEMPLATE", "distributed.spark_executor_pod_template"),
+    ("KG_DISTRIBUTED_SPARK_EXECUTOR_INSTANCES", "distributed.spark_executor_instances"),
+    ("KG_DISTRIBUTED_SPARK_EXECUTOR_CORES", "distributed.spark_executor_cores"),
+    ("KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY", "distributed.spark_executor_memory"),
+    ("KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY_OVERHEAD", "distributed.spark_executor_memory_overhead"),
+    ("KG_DISTRIBUTED_SPARK_SHUFFLE_PARTITIONS", "distributed.spark_shuffle_partitions"),
+    ("KG_FILE_SOURCE", "files.source"),
+    ("KG_INPUT_PATH", "files.input_path"),
+    ("KG_MANIFEST_PATH", "files.manifest_path"),
+    ("KG_STAGE_PREFIX", "files.stage_prefix"),
+    ("KG_STAGE_CONTENT_HASH", "files.stage_content_hash"),
+    ("KG_AZURE_BLOB_ACCOUNT_URL", "azure_blob.account_url"),
+    ("KG_AZURE_BLOB_CONNECTION_STRING", "azure_blob.connection_string"),
+    ("KG_AZURE_BLOB_CONTAINER", "azure_blob.container"),
+    ("KG_AZURE_BLOB_PREFIX", "azure_blob.prefix"),
+    ("KG_AZURE_BLOB_SAS_TOKEN", "azure_blob.sas_token"),
+    ("KG_AZURE_BLOB_DOWNLOAD_PATH", "azure_blob.download_path"),
+    ("KG_S3_BUCKET", "s3.bucket"),
+    ("KG_S3_PREFIX", "s3.prefix"),
+    ("KG_S3_ENDPOINT_URL", "s3.endpoint_url"),
+    ("KG_S3_REGION", "s3.region"),
+    ("KG_S3_DOWNLOAD_PATH", "s3.download_path"),
+    ("KG_OCR_PROVIDER", "ocr.provider"),
+    ("KG_OCR_LANGUAGE", "ocr.language"),
+    ("KG_OCR_PAGE_RANGE", "ocr.page_range"),
+    ("KG_OCR_MODEL_CACHE_DIR", "ocr.model_cache_dir"),
+    ("KG_MINERU_COMMAND", "ocr.mineru_command"),
+    ("KG_MINERU_METHOD", "ocr.mineru_method"),
+    ("KG_MINERU_BACKEND", "ocr.mineru_backend"),
+    ("KG_MINERU_EFFORT", "ocr.mineru_effort"),
+    ("KG_MINERU_API_URL", "ocr.mineru_api_url"),
+    ("KG_MINERU_API_KEY", "ocr.mineru_api_key"),
+    ("KG_MINERU_SERVER_URL", "ocr.mineru_server_url"),
+    ("KG_MINERU_START_PAGE_ID", "ocr.mineru_start_page_id"),
+    ("KG_MINERU_END_PAGE_ID", "ocr.mineru_end_page_id"),
+    ("KG_MINERU_FORMULA", "ocr.mineru_formula"),
+    ("KG_MINERU_TABLE", "ocr.mineru_table"),
+    ("KG_MINERU_IMAGE_ANALYSIS", "ocr.mineru_image_analysis"),
+    ("KG_MINERU_CLIENT_SIDE_OUTPUT", "ocr.mineru_client_side_output_generation"),
+    ("KG_TESSERACT_COMMAND", "ocr.tesseract_command"),
+    ("KG_TESSERACT_PDF_RENDERER_COMMAND", "ocr.tesseract_pdf_renderer_command"),
+    ("KG_TESSERACT_DPI", "ocr.tesseract_dpi"),
+    ("KG_SNOWFLAKE_PARSE_MODE", "ocr.snowflake_parse_mode"),
+    ("KG_SNOWFLAKE_EXTRACT_IMAGES", "ocr.snowflake_extract_images"),
+    ("KG_SNOWFLAKE_PAGE_SPLIT", "ocr.snowflake_page_split"),
+    ("KG_GENERIC_HTTP_OCR_ENDPOINT", "generic_http_ocr.endpoint"),
+    ("KG_GENERIC_HTTP_OCR_MAX_RESPONSE_BYTES", "generic_http_ocr.max_response_bytes"),
+    ("KG_GENERIC_HTTP_OCR_API_KEY", "generic_http_ocr.api_key"),
+    ("KG_GENERIC_HTTP_OCR_API_KEY_HEADER", "generic_http_ocr.api_key_header"),
+    ("KG_GENERIC_HTTP_OCR_API_KEY_PREFIX", "generic_http_ocr.api_key_prefix"),
+    ("KG_GENERIC_HTTP_OCR_FILE_FIELD", "generic_http_ocr.file_field"),
+    ("KG_GENERIC_HTTP_OCR_RESULT_PATH", "generic_http_ocr.result_path"),
+    ("KG_GENERIC_HTTP_OCR_PAGES_PATH", "generic_http_ocr.pages_path"),
+    ("KG_GENERIC_HTTP_OCR_PAGE_NUMBER_PATH", "generic_http_ocr.page_number_path"),
+    ("KG_GENERIC_HTTP_OCR_MARKDOWN_PATH", "generic_http_ocr.markdown_path"),
+    ("KG_GENERIC_HTTP_OCR_RAW_TEXT_PATH", "generic_http_ocr.raw_text_path"),
+    ("KG_GENERIC_HTTP_OCR_LANGUAGE_PATH", "generic_http_ocr.detected_language_path"),
+    ("KG_GENERIC_HTTP_OCR_BLOCKS_PATH", "generic_http_ocr.blocks_path"),
+    ("KG_GENERIC_HTTP_OCR_BLOCK_ID_PATH", "generic_http_ocr.block_id_path"),
+    ("KG_GENERIC_HTTP_OCR_BLOCK_KIND_PATH", "generic_http_ocr.block_kind_path"),
+    ("KG_GENERIC_HTTP_OCR_BLOCK_TEXT_PATH", "generic_http_ocr.block_text_path"),
+    ("KG_GENERIC_HTTP_OCR_BLOCK_BBOX_PATH", "generic_http_ocr.block_bbox_path"),
+    ("KG_GENERIC_HTTP_OCR_BLOCK_CONFIDENCE_PATH", "generic_http_ocr.block_confidence_path"),
+    ("KG_GENERIC_HTTP_OCR_BLOCK_METADATA_PATH", "generic_http_ocr.block_metadata_path"),
+    ("KG_GENERIC_HTTP_OCR_ASSETS_PATH", "generic_http_ocr.assets_path"),
+    ("KG_GENERIC_HTTP_OCR_ASSET_ID_PATH", "generic_http_ocr.asset_id_path"),
+    ("KG_GENERIC_HTTP_OCR_ASSET_KIND_PATH", "generic_http_ocr.asset_kind_path"),
+    ("KG_GENERIC_HTTP_OCR_ASSET_URI_PATH", "generic_http_ocr.asset_uri_path"),
+    ("KG_GENERIC_HTTP_OCR_ASSET_PAGE_NUMBER_PATH", "generic_http_ocr.asset_page_number_path"),
+    ("KG_GENERIC_HTTP_OCR_ASSET_CONFIDENCE_PATH", "generic_http_ocr.asset_confidence_path"),
+    ("KG_GENERIC_HTTP_OCR_ASSET_METADATA_PATH", "generic_http_ocr.asset_metadata_path"),
+    ("KG_GENERIC_HTTP_OCR_WARNINGS_PATH", "generic_http_ocr.warnings_path"),
+    ("KG_GENERIC_HTTP_OCR_ERROR_PATH", "generic_http_ocr.error_path"),
+    ("KG_GENERIC_HTTP_OCR_STATUS_PATH", "generic_http_ocr.status_path"),
+    ("KG_LLM_PROVIDER", "llm.provider"),
+    ("KG_LLM_ENDPOINT", "llm.endpoint"),
+    ("KG_LLM_MODEL", "llm.model"),
+    ("KG_LLM_API_KEY", "llm.api_key"),
+    ("KG_LLM_API_VERSION", "llm.api_version"),
+    ("KG_LLM_TIMEOUT_SECONDS", "llm.timeout_seconds"),
+    ("KG_LLM_MAX_OUTPUT_TOKENS", "llm.max_output_tokens"),
+    ("KG_EMBED_PROVIDER", "embedding.provider"),
+    ("KG_EMBED_ENDPOINT", "embedding.endpoint"),
+    ("KG_EMBED_MODEL", "embedding.model"),
+    ("KG_EMBED_API_KEY", "embedding.api_key"),
+    ("KG_EMBED_API_VERSION", "embedding.api_version"),
+    ("KG_EMBED_DIM", "embedding.dimension"),
+    ("KG_EMBED_BATCH_SIZE", "embedding.batch_size"),
+    ("KG_EMBED_DEVICE", "embedding.device"),
+    ("KG_ONTOLOGY_PROFILE", "ontology.profile_path"),
+    ("KG_ENTITY_EXTRACTOR", "extractors.entity_provider"),
+    ("KG_GLINER_MODEL", "extractors.gliner_model"),
+    ("KG_GLINER_THRESHOLD", "extractors.gliner_threshold"),
+    ("KG_GRAPH_EXTRACTION_WINDOW_TOKENS", "graph.extraction_window_tokens"),
+    ("KG_GRAPH_MAX_CHUNKS_PER_LLM_CALL", "graph.max_chunks_per_llm_call"),
+    ("KG_GRAPH_EXTRACTION_PARALLELISM", "graph.extraction_parallelism"),
+    ("KG_GRAPH_DESCRIPTION_MERGE_PARALLELISM", "graph.description_merge_parallelism"),
+    ("KG_GRAPH_MAX_ENTITIES_PER_BATCH", "graph.max_entities_per_batch"),
+    ("KG_GRAPH_MAX_RELATIONS_PER_BATCH", "graph.max_relations_per_batch"),
+    ("KG_GRAPH_GLEANING_MAX_PASSES", "graph.gleaning_max_passes"),
+    ("KG_GRAPH_GLEANING_MIN_UNCOVERED_TOKENS", "graph.gleaning_min_uncovered_tokens"),
+    ("KG_GRAPH_GLEANING_SATURATION_THRESHOLD", "graph.gleaning_saturation_threshold"),
+    ("KG_GRAPH_MIN_ENTITY_CONFIDENCE", "graph.min_entity_confidence"),
+    ("KG_GRAPH_MIN_RELATION_CONFIDENCE", "graph.min_relation_confidence"),
+    ("KG_GRAPH_VERIFY_RELATIONS", "graph.verify_relations"),
+    ("KG_GRAPH_VERIFICATION_MIN_CONFIDENCE", "graph.verification_min_confidence"),
+    ("KG_GRAPH_ENTITY_RESOLUTION_ENABLED", "graph.entity_resolution_enabled"),
+    ("KG_GRAPH_RESOLUTION_LEXICAL_AUTO_MERGE", "graph.resolution_lexical_auto_merge"),
+    ("KG_GRAPH_RESOLUTION_EMBEDDING_AUTO_MERGE", "graph.resolution_embedding_auto_merge"),
+    ("KG_GRAPH_RESOLUTION_CANDIDATE_THRESHOLD", "graph.resolution_candidate_threshold"),
+    ("KG_GRAPH_RESOLUTION_EMBEDDING_LEXICAL_FLOOR", "graph.resolution_embedding_lexical_floor"),
+    (
+        "KG_GRAPH_RESOLUTION_MAX_CANDIDATES_PER_MENTION",
+        "graph.resolution_max_candidates_per_mention",
+    ),
+    ("KG_GRAPH_RESOLUTION_ADJUDICATION_BATCH_SIZE", "graph.resolution_adjudication_batch_size"),
+    ("KG_GRAPH_RESOLUTION_PARALLELISM", "graph.resolution_parallelism"),
+    ("KG_GRAPH_RESOLUTION_LLM_MERGE_MIN_CONFIDENCE", "graph.resolution_llm_merge_min_confidence"),
+    ("KG_GRAPH_DETERMINISTIC_SEED", "graph.deterministic_seed"),
+    ("KG_GRAPH_MIN_ENTITY_NAME_LENGTH", "graph.min_entity_name_length"),
+    ("KG_GRAPH_REQUIRE_RELATION_ENDPOINT_GROUNDING", "graph.require_relation_endpoint_grounding"),
+    ("KG_GRAPH_ENTITY_BLOCKLIST", "graph.entity_blocklist"),
+    ("KG_GRAPH_DESCRIPTION_MERGE_MIN_OBSERVATIONS", "graph.description_merge_min_observations"),
+    ("KG_GRAPH_DESCRIPTION_MERGE_MAX_DESCRIPTIONS", "graph.description_merge_max_descriptions"),
+    ("KG_GRAPH_DESCRIPTION_MERGE_MAX_EVIDENCE", "graph.description_merge_max_evidence"),
+    ("KG_GRAPH_COMMUNITY_REPORT_PARALLELISM", "graph.community_report_parallelism"),
+    ("KG_GRAPH_MIN_COMMUNITY_SIZE", "graph.min_community_size"),
+    ("KG_GRAPH_MAX_COMMUNITY_SIZE", "graph.max_community_size"),
+    ("KG_GRAPH_COMMUNITY_RESOLUTION", "graph.community_resolution"),
+    ("KG_GRAPH_COMMUNITY_CO_MENTION_WEIGHT", "graph.community_co_mention_weight"),
+    ("KG_GRAPH_FAIL_ON_QUALITY_ERROR", "graph.fail_on_quality_error"),
+    ("KG_OUTPUT_PATH", "writer.output_path"),
+    ("KG_WRITER", "writer.provider"),
+    ("KG_CACHE_PROVIDER", "cache.provider"),
+    ("KG_CACHE_PATH", "cache.path"),
+    ("KG_SNOWFLAKE_ACCOUNT", "snowflake.account"),
+    ("KG_SNOWFLAKE_HOST", "snowflake.host"),
+    ("KG_SNOWFLAKE_USER", "snowflake.user"),
+    ("KG_SNOWFLAKE_PASSWORD", "snowflake.password"),
+    ("KG_SNOWFLAKE_AUTHENTICATOR", "snowflake.authenticator"),
+    ("KG_SNOWFLAKE_PRIVATE_KEY_PATH", "snowflake.private_key_path"),
+    ("KG_SNOWFLAKE_OAUTH_TOKEN", "snowflake.oauth_token"),
+    ("KG_SNOWFLAKE_OAUTH_TOKEN_PATH", "snowflake.oauth_token_path"),
+    ("KG_SNOWFLAKE_STORE_TEMPORARY_CREDENTIAL", "snowflake.store_temporary_credential"),
+    ("KG_SNOWFLAKE_DATABASE", "snowflake.database"),
+    ("KG_SNOWFLAKE_SCHEMA", "snowflake.schema"),
+    ("KG_SNOWFLAKE_ROLE", "snowflake.role"),
+    ("KG_SNOWFLAKE_WAREHOUSE", "snowflake.warehouse"),
+    ("KG_SNOWFLAKE_STAGE", "snowflake.stage"),
+    ("KG_SNOWFLAKE_BULK_STAGE", "snowflake.bulk_stage"),
+    ("KG_BULK_TARGET_FILE_MB", "snowflake.bulk_target_file_size_mb"),
+    ("KG_SNOWFLAKE_BULK_TARGET_FILE_MB", "snowflake.bulk_target_file_size_mb"),
+    ("KG_SNOWFLAKE_IMAGE_REPOSITORY", "snowflake.image_repository"),
+    ("KG_SNOWFLAKE_IMAGE_NAME", "snowflake.image_name"),
+    ("KG_SNOWFLAKE_IMAGE_DIGEST", "snowflake.image_digest"),
+    ("KG_SNOWFLAKE_COMPUTE_POOL", "snowflake.compute_pool"),
+    ("KG_SNOWFLAKE_COMPUTE_POOL_INSTANCE_FAMILY", "snowflake.compute_pool_instance_family"),
+    ("KG_SNOWFLAKE_COMPUTE_POOL_MIN_NODES", "snowflake.compute_pool_min_nodes"),
+    ("KG_SNOWFLAKE_COMPUTE_POOL_MAX_NODES", "snowflake.compute_pool_max_nodes"),
+    ("KG_SNOWFLAKE_SERVICE_NAME", "snowflake.service_name"),
+    ("KG_SNOWFLAKE_SERVICE_SPEC_STAGE", "snowflake.service_spec_stage"),
+    ("KG_SPCS_CPU_REQUEST", "snowflake.service_cpu_request"),
+    ("KG_SPCS_CPU_LIMIT", "snowflake.service_cpu_limit"),
+    ("KG_SPCS_MEMORY_REQUEST", "snowflake.service_memory_request"),
+    ("KG_SPCS_MEMORY_LIMIT", "snowflake.service_memory_limit"),
+    ("KG_SPCS_GPU_COUNT", "snowflake.service_gpu_count"),
+)
+
+# Fields whose validators want a specific vocabulary rather than a type-shaped
+# sample, and the value the loader should produce for it.
+_VALIDATOR_SHAPED_VALUES: dict[str, tuple[str, object]] = {
+    "files.source": ("manifest", "manifest"),
+    "ocr.provider": ("tesseract", "tesseract_internal"),
+    "llm.provider": ("fake", "fake"),
+    "embedding.provider": ("hash", "hash"),
+    "writer.provider": ("snowflake_bulk", "snowflake_bulk"),
+    "snowflake.image_digest": ("sha256:" + "A" * 64, "sha256:" + "a" * 64),
+    "snowflake.authenticator": ("keypair", "SNOWFLAKE_JWT"),
+    "distributed.priority_offset": ("1000", 1000),
+}
+
+# Fields a model validator checks against a sibling that the sample would trip.
+_COMPANION_ENVIRONMENT: dict[str, dict[str, str]] = {
+    "snowflake.compute_pool_min_nodes": {"KG_SNOWFLAKE_COMPUTE_POOL_MAX_NODES": "7"},
+}
+
+
+def _sample_environment_value(annotation: object) -> tuple[str, object]:
+    """Pick an environment string for a field type and the value it should become."""
+
+    if get_origin(annotation) in (UnionType, Union):
+        annotation = next(arg for arg in get_args(annotation) if arg is not NoneType)
+    if get_origin(annotation) is Literal:
+        first = get_args(annotation)[0]
+        return first, first
+    if get_origin(annotation) is list:
+        (item,) = get_args(annotation)
+        items = list(get_args(item))[:2] if get_origin(item) is Literal else ["a", "b"]
+        return ",".join(items), items
+    samples: dict[object, tuple[str, object]] = {
+        bool: ("true", True),
+        int: ("7", 7),
+        float: ("0.5", 0.5),
+        Path: ("/tmp/x", Path("/tmp/x")),
+        str: ("x", "x"),
+    }
+    return samples[annotation]
 
 
 def test_settings_defaults_match_local_open_source_runtime_profile() -> None:
@@ -145,22 +398,6 @@ def test_settings_allows_explicit_llm_timeout_override() -> None:
     settings = Settings.load(env={"KG_LLM_TIMEOUT_SECONDS": "900"})
 
     assert settings.llm.timeout_seconds == 900
-
-
-def test_settings_loads_file_queue_runtime_from_env() -> None:
-    settings = Settings.load(
-        env={
-            "KG_JOB_USE_FILE_QUEUE": "true",
-            "KG_WORKER_ID": "worker-1",
-            "KG_JOB_LEASE_SECONDS": "420",
-            "KG_BATCH_FILES": "250",
-        }
-    )
-
-    assert settings.job.use_file_queue is True
-    assert settings.job.lease_owner == "worker-1"
-    assert settings.job.lease_seconds == 420
-    assert settings.job.file_batch_size == 250
 
 
 def test_settings_loads_spcs_and_snowflake_spec_aliases_from_env() -> None:
@@ -344,28 +581,6 @@ def test_local_vllm_profile_defaults_to_real_local_providers() -> None:
     assert settings.writer.output_path == Path("out/local-vllm")
 
 
-def test_settings_loads_graph_parallelism_overrides_from_env() -> None:
-    """Preserve concurrency overrides for measured multi-replica provider deployments.
-
-    Every independent LLM-heavy stage remains tunable.
-    """
-
-    settings = Settings.load(
-        Path("data/martial_arts/configs/local-vllm.yaml"),
-        env={
-            "KG_GRAPH_EXTRACTION_PARALLELISM": "3",
-            "KG_GRAPH_RESOLUTION_PARALLELISM": "2",
-            "KG_GRAPH_RESOLUTION_MAX_CANDIDATES_PER_MENTION": "4",
-            "KG_GRAPH_COMMUNITY_REPORT_PARALLELISM": "5",
-        },
-    )
-
-    assert settings.graph.extraction_parallelism == 3
-    assert settings.graph.resolution_parallelism == 2
-    assert settings.graph.resolution_max_candidates_per_mention == 4
-    assert settings.graph.community_report_parallelism == 5
-
-
 def test_settings_rejects_unknown_ai_backend_profile() -> None:
     with pytest.raises(ValueError, match="KG_AI_BACKEND must be one of"):
         Settings.load(env={"KG_AI_BACKEND": "surprise"})
@@ -475,263 +690,15 @@ llm:
         Settings.load(config, env={})
 
 
-def test_settings_loads_mineru_provider_options_from_env() -> None:
-    settings = Settings.load(
-        env={
-            "KG_MINERU_METHOD": "ocr",
-            "KG_MINERU_BACKEND": "pipeline",
-            "KG_MINERU_EFFORT": "high",
-            "KG_MINERU_API_URL": "http://mineru-api:8000",
-            "KG_MINERU_SERVER_URL": "http://mineru-vlm:30000",
-            "KG_MINERU_START_PAGE_ID": "2",
-            "KG_MINERU_END_PAGE_ID": "4",
-            "KG_MINERU_FORMULA": "false",
-            "KG_MINERU_TABLE": "true",
-            "KG_MINERU_IMAGE_ANALYSIS": "false",
-            "KG_MINERU_CLIENT_SIDE_OUTPUT": "true",
-        }
-    )
-
-    assert settings.ocr.mineru_method == "ocr"
-    assert settings.ocr.mineru_backend == "pipeline"
-    assert settings.ocr.mineru_effort == "high"
-    assert settings.ocr.mineru_api_url == "http://mineru-api:8000"
-    assert settings.ocr.mineru_server_url == "http://mineru-vlm:30000"
-    assert settings.ocr.mineru_start_page_id == 2
-    assert settings.ocr.mineru_end_page_id == 4
-    assert settings.ocr.mineru_formula is False
-    assert settings.ocr.mineru_table is True
-    assert settings.ocr.mineru_image_analysis is False
-    assert settings.ocr.mineru_client_side_output_generation is True
-
-
-def test_settings_loads_tesseract_provider_options_from_env() -> None:
-    settings = Settings.load(
-        env={
-            "KG_TESSERACT_COMMAND": "custom-tesseract",
-            "KG_TESSERACT_PDF_RENDERER_COMMAND": "custom-pdftoppm",
-            "KG_TESSERACT_DPI": "200",
-        }
-    )
-
-    assert settings.ocr.tesseract_command == "custom-tesseract"
-    assert settings.ocr.tesseract_pdf_renderer_command == "custom-pdftoppm"
-    assert settings.ocr.tesseract_dpi == 200
-
-
-def test_settings_loads_generic_http_ocr_metadata_paths_from_env() -> None:
-    settings = Settings.load(
-        env={
-            "KG_GENERIC_HTTP_OCR_MAX_RESPONSE_BYTES": "1048576",
-            "KG_GENERIC_HTTP_OCR_BLOCK_CONFIDENCE_PATH": "layout.score",
-            "KG_GENERIC_HTTP_OCR_BLOCK_METADATA_PATH": "layout.attributes",
-            "KG_GENERIC_HTTP_OCR_ASSET_CONFIDENCE_PATH": "media.score",
-            "KG_GENERIC_HTTP_OCR_ASSET_METADATA_PATH": "media.details",
-        }
-    )
-
-    assert settings.generic_http_ocr.max_response_bytes == 1048576
-    assert settings.generic_http_ocr.block_confidence_path == "layout.score"
-    assert settings.generic_http_ocr.block_metadata_path == "layout.attributes"
-    assert settings.generic_http_ocr.asset_confidence_path == "media.score"
-    assert settings.generic_http_ocr.asset_metadata_path == "media.details"
-
-
-def test_settings_env_caster_errors_name_offending_variable() -> None:
-    with pytest.raises(ValueError, match="KG_TESSERACT_DPI"):
+def test_settings_environment_value_errors_name_the_field_they_reach() -> None:
+    with pytest.raises(ValueError, match="ocr.tesseract_dpi"):
         Settings.load(env={"KG_TESSERACT_DPI": "not-an-int"})
-
-
-def test_settings_loads_azure_blob_options_from_env() -> None:
-    settings = Settings.load(
-        env={
-            "KG_FILE_SOURCE": "azure_blob",
-            "KG_AZURE_BLOB_ACCOUNT_URL": "https://storage.example",
-            "KG_AZURE_BLOB_CONTAINER": "documents",
-            "KG_AZURE_BLOB_PREFIX": "incoming",
-            "KG_AZURE_BLOB_SAS_TOKEN": "sas",
-            "KG_AZURE_BLOB_DOWNLOAD_PATH": "out/blob-downloads",
-        }
-    )
-
-    assert settings.files.source == "azure_blob"
-    assert settings.azure_blob.account_url == "https://storage.example"
-    assert settings.azure_blob.container == "documents"
-    assert settings.azure_blob.prefix == "incoming"
-    assert settings.azure_blob.sas_token == "sas"
-    assert settings.azure_blob.download_path == Path("out/blob-downloads")
-
-
-def test_settings_loads_manifest_file_source_from_env() -> None:
-    settings = Settings.load(
-        env={
-            "KG_FILE_SOURCE": "manifest",
-            "KG_MANIFEST_PATH": "data/martial_arts/manifest.jsonl",
-        }
-    )
-
-    assert settings.files.source == "manifest"
-    assert settings.files.manifest_path == Path("data/martial_arts/manifest.jsonl")
-
-
-def test_settings_loads_snowflake_deployment_options_from_env() -> None:
-    digest = "sha256:" + "A" * 64
-    settings = Settings.load(
-        env={
-            "KG_SNOWFLAKE_OAUTH_TOKEN_PATH": "/snowflake/session/token",
-            "KG_SNOWFLAKE_IMAGE_REPOSITORY": "KG_DB.GRAPH.KG_IMAGES",
-            "KG_SNOWFLAKE_IMAGE_NAME": "flakegraph:latest",
-            "KG_SNOWFLAKE_IMAGE_DIGEST": digest,
-            "KG_SNOWFLAKE_COMPUTE_POOL": "SYSTEM_COMPUTE_POOL_GPU",
-            "KG_SNOWFLAKE_COMPUTE_POOL_INSTANCE_FAMILY": "GPU_NV_SM",
-            "KG_SNOWFLAKE_COMPUTE_POOL_MIN_NODES": "1",
-            "KG_SNOWFLAKE_COMPUTE_POOL_MAX_NODES": "3",
-            "KG_SNOWFLAKE_SERVICE_NAME": "KG_PROCESSOR_JOB",
-            "KG_SNOWFLAKE_SERVICE_SPEC_STAGE": "@KG_DB.GRAPH.KG_SERVICE_SPECS",
-            "KG_SPCS_CPU_REQUEST": "2",
-            "KG_SPCS_CPU_LIMIT": "4",
-            "KG_SPCS_MEMORY_REQUEST": "16Gi",
-            "KG_SPCS_MEMORY_LIMIT": "32Gi",
-            "KG_SPCS_GPU_COUNT": "1",
-            "KG_SNOWFLAKE_BULK_TARGET_FILE_MB": "192",
-        }
-    )
-
-    assert settings.snowflake.oauth_token_path == Path("/snowflake/session/token")
-    assert settings.snowflake.image_repository == "KG_DB.GRAPH.KG_IMAGES"
-    assert settings.snowflake.image_name == "flakegraph:latest"
-    assert settings.snowflake.image_digest == digest.lower()
-    assert settings.snowflake.compute_pool == "SYSTEM_COMPUTE_POOL_GPU"
-    assert settings.snowflake.compute_pool_instance_family == "GPU_NV_SM"
-    assert settings.snowflake.compute_pool_min_nodes == 1
-    assert settings.snowflake.compute_pool_max_nodes == 3
-    assert settings.snowflake.service_name == "KG_PROCESSOR_JOB"
-    assert settings.snowflake.service_spec_stage == "@KG_DB.GRAPH.KG_SERVICE_SPECS"
-    assert settings.snowflake.service_cpu_request == "2"
-    assert settings.snowflake.service_cpu_limit == "4"
-    assert settings.snowflake.service_memory_request == "16Gi"
-    assert settings.snowflake.service_memory_limit == "32Gi"
-    assert settings.snowflake.service_gpu_count == 1
-    assert settings.snowflake.bulk_target_file_size_mb == 192
-
-
-def test_settings_loads_embedding_batch_and_device_from_env() -> None:
-    settings = Settings.load(
-        env={
-            "KG_EMBED_PROVIDER": "sentence_transformers",
-            "KG_EMBED_MODEL": "sentence-transformers/all-MiniLM-L6-v2",
-            "KG_EMBED_DIM": "384",
-            "KG_EMBED_BATCH_SIZE": "16",
-            "KG_EMBED_DEVICE": "cpu",
-        }
-    )
-
-    assert settings.embedding.provider == "sentence_transformers"
-    assert settings.embedding.model == "sentence-transformers/all-MiniLM-L6-v2"
-    assert settings.embedding.dimension == 384
-    assert settings.embedding.batch_size == 16
-    assert settings.embedding.device == "cpu"
-
-
-def test_settings_loads_description_merge_options_from_env() -> None:
-    settings = Settings.load(
-        env={
-            "KG_GRAPH_DESCRIPTION_MERGE_MIN_OBSERVATIONS": "3",
-            "KG_GRAPH_DESCRIPTION_MERGE_MAX_DESCRIPTIONS": "6",
-            "KG_GRAPH_DESCRIPTION_MERGE_MAX_EVIDENCE": "4",
-        }
-    )
-
-    assert settings.graph.description_merge_min_observations == 3
-    assert settings.graph.description_merge_max_descriptions == 6
-    assert settings.graph.description_merge_max_evidence == 4
-
-
-def test_settings_loads_graph_quality_options_from_env() -> None:
-    settings = Settings.load(
-        env={
-            "KG_GRAPH_MAX_CHUNKS_PER_LLM_CALL": "4",
-            "KG_GRAPH_MAX_ENTITIES_PER_BATCH": "12",
-            "KG_GRAPH_MAX_RELATIONS_PER_BATCH": "18",
-            "KG_GRAPH_GLEANING_MAX_PASSES": "2",
-            "KG_GRAPH_GLEANING_SATURATION_THRESHOLD": "9",
-            "KG_GRAPH_MIN_ENTITY_CONFIDENCE": "0.7",
-            "KG_GRAPH_MIN_RELATION_CONFIDENCE": "0.6",
-            "KG_GRAPH_MIN_ENTITY_NAME_LENGTH": "3",
-            "KG_GRAPH_REQUIRE_RELATION_ENDPOINT_GROUNDING": "false",
-            "KG_GRAPH_ENTITY_BLOCKLIST": "chapter,page, appendix ",
-            "KG_GRAPH_FAIL_ON_QUALITY_ERROR": "false",
-        }
-    )
-
-    assert settings.graph.max_chunks_per_llm_call == 4
-    assert settings.graph.max_entities_per_batch == 12
-    assert settings.graph.max_relations_per_batch == 18
-    assert settings.graph.gleaning_max_passes == 2
-    assert settings.graph.gleaning_saturation_threshold == 9
-    assert settings.graph.min_entity_confidence == 0.7
-    assert settings.graph.min_relation_confidence == 0.6
-    assert settings.graph.min_entity_name_length == 3
-    assert settings.graph.require_relation_endpoint_grounding is False
-    assert settings.graph.entity_blocklist == ["chapter", "page", "appendix"]
-    assert settings.graph.fail_on_quality_error is False
 
 
 def test_settings_accepts_zero_gleaning_passes() -> None:
     settings = Settings.load(overrides={"graph": {"gleaning_max_passes": 0}})
 
     assert settings.graph.gleaning_max_passes == 0
-
-
-def test_settings_loads_distributed_worker_controls_from_environment() -> None:
-    settings = Settings.load(
-        env={
-            "KG_RUNTIME": "kubernetes",
-            "KG_DISTRIBUTED_DATABASE_URL": "postgresql://database/flakegraph",
-            "KG_DISTRIBUTED_WORKER_ID": "worker-1",
-            "KG_DISTRIBUTED_WORKER_STAGES": ("prepare_document,extract_relation_window"),
-            "KG_DISTRIBUTED_LEASE_SECONDS": "1200",
-            "KG_DISTRIBUTED_POLL_INTERVAL_SECONDS": "0.5",
-            "KG_DISTRIBUTED_RETRY_DELAY_SECONDS": "4",
-            "KG_DISTRIBUTED_MAX_ATTEMPTS": "5",
-            "KG_DISTRIBUTED_ARTIFACT_COMPRESSION_LEVEL": "7",
-            "KG_DISTRIBUTED_MAX_ARTIFACT_BYTES": "2048",
-            "KG_DISTRIBUTED_ARTIFACT_URI": "s3://flakegraph/runs",
-            "KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL": "http://objects:8333",
-            "KG_DISTRIBUTED_ARTIFACT_ACCESS_KEY_ID": "access",
-            "KG_DISTRIBUTED_ARTIFACT_SECRET_ACCESS_KEY": "secret",
-            "KG_DISTRIBUTED_FINALIZATION_ENGINE": "spark",
-            "KG_DISTRIBUTED_SPARK_MASTER": "k8s://https://kubernetes.default.svc",
-            "KG_DISTRIBUTED_SPARK_IMAGE": "registry/flakegraph-spark@sha256:abc",
-            "KG_DISTRIBUTED_SPARK_NAMESPACE": "graph-system",
-            "KG_DISTRIBUTED_SPARK_SERVICE_ACCOUNT": "graph-spark",
-            "KG_DISTRIBUTED_SPARK_EXECUTOR_POD_TEMPLATE": "/spark/executor.yaml",
-            "KG_DISTRIBUTED_SPARK_EXECUTOR_INSTANCES": "4",
-            "KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY_OVERHEAD": "3g",
-        }
-    )
-
-    assert settings.runtime.runtime == "kubernetes"
-    assert settings.distributed.database_url == "postgresql://database/flakegraph"
-    assert settings.distributed.worker_id == "worker-1"
-    assert settings.distributed.worker_stages == [
-        "prepare_document",
-        "extract_relation_window",
-    ]
-    assert settings.distributed.lease_seconds == 1200
-    assert settings.distributed.poll_interval_seconds == 0.5
-    assert settings.distributed.retry_delay_seconds == 4
-    assert settings.distributed.max_attempts == 5
-    assert settings.distributed.artifact_compression_level == 7
-    assert settings.distributed.max_artifact_bytes == 2048
-    assert settings.distributed.artifact_uri == "s3://flakegraph/runs"
-    assert settings.distributed.artifact_endpoint_url == "http://objects:8333"
-    assert settings.distributed.finalization_engine == "spark"
-    assert settings.distributed.spark_namespace == "graph-system"
-    assert settings.distributed.spark_service_account == "graph-spark"
-    assert settings.distributed.spark_executor_pod_template == "/spark/executor.yaml"
-    assert settings.distributed.spark_executor_instances == 4
-    assert settings.distributed.spark_executor_memory_overhead == "3g"
 
 
 @pytest.mark.parametrize(
@@ -812,6 +779,108 @@ def test_settings_expose_both_community_bounds_to_the_environment() -> None:
 
     assert settings.graph.min_community_size == 1
     assert settings.graph.max_community_size == 1
+
+
+@pytest.mark.parametrize(("env_name", "field_path"), ENVIRONMENT_NAMES)
+def test_every_environment_name_still_reaches_its_field(env_name: str, field_path: str) -> None:
+    group, key = field_path.split(".")
+    group_model = Settings.model_fields[group].annotation
+    assert group_model is not None
+    field = next(
+        name for name, info in group_model.model_fields.items() if key in (name, info.alias)
+    )
+    raw, expected = _VALIDATOR_SHAPED_VALUES.get(field_path) or _sample_environment_value(
+        group_model.model_fields[field].annotation
+    )
+
+    settings = Settings.load(env={env_name: raw, **_COMPANION_ENVIRONMENT.get(field_path, {})})
+
+    assert getattr(getattr(settings, group), field) == expected
+
+
+@pytest.mark.parametrize(
+    ("older_name", "winning_name", "field_path", "older_value", "winning_value"),
+    [
+        ("KG_STAGE", "KG_SNOWFLAKE_STAGE", "snowflake.stage", "a", "b"),
+        ("KG_BULK_STAGE", "KG_SNOWFLAKE_BULK_STAGE", "snowflake.bulk_stage", "a", "b"),
+        ("KG_BLOB_ACCOUNT_URL", "KG_AZURE_BLOB_ACCOUNT_URL", "azure_blob.account_url", "a", "b"),
+        (
+            "KG_BLOB_CONNECTION_STRING",
+            "KG_AZURE_BLOB_CONNECTION_STRING",
+            "azure_blob.connection_string",
+            "a",
+            "b",
+        ),
+        ("KG_BLOB_CONTAINER", "KG_AZURE_BLOB_CONTAINER", "azure_blob.container", "a", "b"),
+        ("KG_BLOB_PREFIX", "KG_AZURE_BLOB_PREFIX", "azure_blob.prefix", "a", "b"),
+        ("KG_BLOB_SAS_TOKEN", "KG_AZURE_BLOB_SAS_TOKEN", "azure_blob.sas_token", "a", "b"),
+        (
+            "KG_BLOB_DOWNLOAD_PATH",
+            "KG_AZURE_BLOB_DOWNLOAD_PATH",
+            "azure_blob.download_path",
+            "/a",
+            Path("/b"),
+        ),
+        ("KG_OCR_ENGINE", "KG_OCR_PROVIDER", "ocr.provider", "tesseract", "mineru_api"),
+        ("KG_WORKER_ID", "KG_JOB_LEASE_OWNER", "job.lease_owner", "a", "b"),
+        ("KG_BATCH_FILES", "KG_FILE_BATCH_SIZE", "job.file_batch_size", "1", 2),
+        (
+            "KG_BULK_TARGET_FILE_MB",
+            "KG_SNOWFLAKE_BULK_TARGET_FILE_MB",
+            "snowflake.bulk_target_file_size_mb",
+            "1",
+            2,
+        ),
+        (
+            "SNOWFLAKE_AUTH",
+            "SNOWFLAKE_AUTHENTICATOR",
+            "snowflake.authenticator",
+            "password",
+            "SNOWFLAKE_JWT",
+        ),
+    ],
+)
+def test_a_field_set_under_two_names_keeps_its_established_winner(
+    older_name: str,
+    winning_name: str,
+    field_path: str,
+    older_value: str,
+    winning_value: object,
+) -> None:
+    """Which spelling wins is part of the contract, whatever order the shell exports them."""
+
+    group, field = field_path.split(".")
+    for env in (
+        {older_name: older_value, winning_name: str(winning_value)},
+        {winning_name: str(winning_value), older_name: older_value},
+    ):
+        settings = Settings.load(env=env)
+
+        assert getattr(getattr(settings, group), field) == winning_value
+
+
+def test_comma_separated_environment_lists_trim_their_items() -> None:
+    settings = Settings.load(
+        env={
+            "KG_GRAPH_ENTITY_BLOCKLIST": "chapter,page, appendix ,",
+            "KG_DISTRIBUTED_WORKER_STAGES": "prepare_document, extract_relation_window",
+        }
+    )
+
+    assert settings.graph.entity_blocklist == ["chapter", "page", "appendix"]
+    assert settings.distributed.worker_stages == ["prepare_document", "extract_relation_window"]
+
+
+def test_settings_accept_friendly_ocr_engine_names_from_yaml(tmp_path: Path) -> None:
+    """The environment and a configuration file must accept the same vocabulary."""
+
+    config = tmp_path / "config.yaml"
+    config.write_text("ocr:\n  provider: mineru\nfiles:\n  source: stage\n", encoding="utf-8")
+
+    settings = Settings.load(config, env={})
+
+    assert settings.ocr.provider == "mineru_internal"
+    assert settings.files.source == "snowflake_stage"
 
 
 def test_settings_accept_friendly_ocr_engine_names_under_either_variable() -> None:

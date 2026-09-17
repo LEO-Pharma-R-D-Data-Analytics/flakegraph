@@ -168,6 +168,13 @@ class DistributedSettings(_SettingsModel):
             raise ValueError("distributed text settings must not be blank")
         return value
 
+    @field_validator("worker_stages", mode="before")
+    @classmethod
+    def worker_stages_from_comma_list(cls, value: object) -> object:
+        """Accept the comma-separated spelling an environment variable carries."""
+
+        return _str_to_list(value) if isinstance(value, str) else value
+
     @field_validator("worker_stages")
     @classmethod
     def worker_stages_must_not_be_empty(
@@ -291,8 +298,10 @@ class FileSettings(_SettingsModel):
     @field_validator("source", mode="before")
     @classmethod
     def source_must_be_registered(cls, value: object) -> object:
-        """Validate file-source names against the shared provider catalog."""
+        """Normalize friendly file-source names, then check the shared provider catalog."""
 
+        if isinstance(value, str):
+            value = _file_source_alias(value)
         return _validate_provider_name(value, "file_source")
 
 
@@ -371,8 +380,10 @@ class OcrSettings(_SettingsModel):
     @field_validator("provider", mode="before")
     @classmethod
     def provider_must_be_registered(cls, value: object) -> object:
-        """Validate OCR provider names before factory construction."""
+        """Normalize friendly OCR engine names, then check the shared provider catalog."""
 
+        if isinstance(value, str):
+            value = _ocr_provider_alias(value)
         return _validate_provider_name(value, "ocr")
 
     @field_validator("fallback_primary_provider", "fallback_secondary_provider", mode="before")
@@ -740,6 +751,13 @@ class GraphSettings(_SettingsModel):
             "page",
         ]
     )
+
+    @field_validator("entity_blocklist", mode="before")
+    @classmethod
+    def entity_blocklist_from_comma_list(cls, value: object) -> object:
+        """Accept the comma-separated spelling an environment variable carries."""
+
+        return _str_to_list(value) if isinstance(value, str) else value
 
     @field_validator("chunk_token_size")
     @classmethod
@@ -1158,510 +1176,133 @@ def _deep_update(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]
     return result
 
 
+# Environment names that predate the ``KG_<GROUP>_<FIELD>`` convention. They stay
+# supported because charts, service specs, and operator shells already set them.
+# Order matters: when several names reach one field, a later alias beats an
+# earlier one and the conventional name beats every alias.
+_ENV_ALIASES: dict[str, tuple[str, str]] = {
+    "KG_STAGE": ("snowflake", "stage"),
+    "KG_BULK_STAGE": ("snowflake", "bulk_stage"),
+    "KG_BLOB_ACCOUNT_URL": ("azure_blob", "account_url"),
+    "KG_BLOB_CONNECTION_STRING": ("azure_blob", "connection_string"),
+    "KG_BLOB_CONTAINER": ("azure_blob", "container"),
+    "KG_BLOB_PREFIX": ("azure_blob", "prefix"),
+    "KG_BLOB_SAS_TOKEN": ("azure_blob", "sas_token"),
+    "KG_BLOB_DOWNLOAD_PATH": ("azure_blob", "download_path"),
+    "KG_OCR_ENGINE": ("ocr", "provider"),
+    "KG_RUNTIME": ("runtime", "runtime"),
+    "KG_JOB_ID": ("job", "job_id"),
+    "KG_GRAPH_ID": ("job", "graph_id"),
+    "KG_WORKER_ID": ("job", "lease_owner"),
+    "KG_BATCH_FILES": ("job", "file_batch_size"),
+    "KG_FILE_BATCH_SIZE": ("job", "file_batch_size"),
+    "KG_FILE_SOURCE": ("files", "source"),
+    "KG_INPUT_PATH": ("files", "input_path"),
+    "KG_MANIFEST_PATH": ("files", "manifest_path"),
+    "KG_STAGE_PREFIX": ("files", "stage_prefix"),
+    "KG_STAGE_CONTENT_HASH": ("files", "stage_content_hash"),
+    "KG_MINERU_COMMAND": ("ocr", "mineru_command"),
+    "KG_MINERU_METHOD": ("ocr", "mineru_method"),
+    "KG_MINERU_BACKEND": ("ocr", "mineru_backend"),
+    "KG_MINERU_EFFORT": ("ocr", "mineru_effort"),
+    "KG_MINERU_API_URL": ("ocr", "mineru_api_url"),
+    "KG_MINERU_API_KEY": ("ocr", "mineru_api_key"),
+    "KG_MINERU_SERVER_URL": ("ocr", "mineru_server_url"),
+    "KG_MINERU_START_PAGE_ID": ("ocr", "mineru_start_page_id"),
+    "KG_MINERU_END_PAGE_ID": ("ocr", "mineru_end_page_id"),
+    "KG_MINERU_FORMULA": ("ocr", "mineru_formula"),
+    "KG_MINERU_TABLE": ("ocr", "mineru_table"),
+    "KG_MINERU_IMAGE_ANALYSIS": ("ocr", "mineru_image_analysis"),
+    "KG_MINERU_CLIENT_SIDE_OUTPUT": ("ocr", "mineru_client_side_output_generation"),
+    "KG_TESSERACT_COMMAND": ("ocr", "tesseract_command"),
+    "KG_TESSERACT_PDF_RENDERER_COMMAND": ("ocr", "tesseract_pdf_renderer_command"),
+    "KG_TESSERACT_DPI": ("ocr", "tesseract_dpi"),
+    "KG_SNOWFLAKE_PARSE_MODE": ("ocr", "snowflake_parse_mode"),
+    "KG_SNOWFLAKE_EXTRACT_IMAGES": ("ocr", "snowflake_extract_images"),
+    "KG_SNOWFLAKE_PAGE_SPLIT": ("ocr", "snowflake_page_split"),
+    "KG_GENERIC_HTTP_OCR_LANGUAGE_PATH": ("generic_http_ocr", "detected_language_path"),
+    "KG_EMBED_PROVIDER": ("embedding", "provider"),
+    "KG_EMBED_ENDPOINT": ("embedding", "endpoint"),
+    "KG_EMBED_MODEL": ("embedding", "model"),
+    "KG_EMBED_API_KEY": ("embedding", "api_key"),
+    "KG_EMBED_API_VERSION": ("embedding", "api_version"),
+    "KG_EMBED_DIM": ("embedding", "dimension"),
+    "KG_EMBED_BATCH_SIZE": ("embedding", "batch_size"),
+    "KG_EMBED_DEVICE": ("embedding", "device"),
+    # Shadows the conventional name of ``ontology.profile``, which is an inline
+    # document and has no sensible single-variable spelling anyway.
+    "KG_ONTOLOGY_PROFILE": ("ontology", "profile_path"),
+    "KG_ENTITY_EXTRACTOR": ("extractors", "entity_provider"),
+    "KG_GLINER_MODEL": ("extractors", "gliner_model"),
+    "KG_GLINER_THRESHOLD": ("extractors", "gliner_threshold"),
+    "KG_OUTPUT_PATH": ("writer", "output_path"),
+    "KG_WRITER": ("writer", "provider"),
+    "KG_BULK_TARGET_FILE_MB": ("snowflake", "bulk_target_file_size_mb"),
+    "KG_SNOWFLAKE_BULK_TARGET_FILE_MB": ("snowflake", "bulk_target_file_size_mb"),
+    "KG_SPCS_CPU_REQUEST": ("snowflake", "service_cpu_request"),
+    "KG_SPCS_CPU_LIMIT": ("snowflake", "service_cpu_limit"),
+    "KG_SPCS_MEMORY_REQUEST": ("snowflake", "service_memory_request"),
+    "KG_SPCS_MEMORY_LIMIT": ("snowflake", "service_memory_limit"),
+    "KG_SPCS_GPU_COUNT": ("snowflake", "service_gpu_count"),
+}
+
+# Snowpark containers receive the connection through these unprefixed names.
+_AMBIENT_SNOWFLAKE_ENV: dict[str, str] = {
+    "SNOWFLAKE_ACCOUNT": "account",
+    "SNOWFLAKE_HOST": "host",
+    "SNOWFLAKE_USER": "user",
+    "SNOWFLAKE_PASSWORD": "password",
+    "SNOWFLAKE_AUTH": "authenticator",
+    "SNOWFLAKE_AUTHENTICATOR": "authenticator",
+    "SNOWFLAKE_PRIVATE_KEY_PATH": "private_key_path",
+    "SNOWFLAKE_OAUTH_TOKEN": "oauth_token",
+    "SNOWFLAKE_OAUTH_TOKEN_PATH": "oauth_token_path",
+    "SNOWFLAKE_DATABASE": "database",
+    "SNOWFLAKE_SCHEMA": "schema",
+    "SNOWFLAKE_ROLE": "role",
+    "SNOWFLAKE_WAREHOUSE": "warehouse",
+}
+
+
+def _environment_names() -> dict[str, tuple[str, str]]:
+    """Map every supported environment variable to the settings key it fills.
+
+    Every field answers to ``KG_<GROUP>_<FIELD>`` (spelled with the field's
+    configuration alias, so ``schema`` reads the same from YAML and from the
+    environment); the aliases come first so their declared precedence holds.
+    """
+
+    names = dict(_ENV_ALIASES)
+    for group, group_field in Settings.model_fields.items():
+        group_model = group_field.annotation
+        if isinstance(group_model, type) and issubclass(group_model, _SettingsModel):
+            for field, field_info in group_model.model_fields.items():
+                key = field_info.alias or field
+                names.setdefault(f"KG_{group}_{key}".upper(), (group, key))
+    return names
+
+
 def _from_env(env: dict[str, str]) -> dict[str, Any]:
     """Translate supported environment variables into the nested settings structure.
 
-    Keeping conversion functions in a declarative mapping makes precedence,
-    validation, redaction, documentation, and tests share one environment surface.
+    Values stay raw strings so the models coerce and validate environment input
+    exactly as they do YAML, and an error names the field rather than a variable.
+    An empty value means unset, which lets a chart template leave a slot blank.
     """
 
-    # Keep env parsing as data rather than scattered conditionals. This makes
-    # redaction, config printing, preflight, and tests reason over the same
-    # supported environment-variable surface.
     data = _ai_backend_profile_from_env(env)
-    alias_mapping: dict[str, tuple[str, str, Any]] = {
-        # FlakeGraph-owned KG_* variables override YAML so container and
-        # orchestrator injection follows one predictable precedence rule.
-        "KG_STAGE": ("snowflake", "stage", str),
-        "KG_BULK_STAGE": ("snowflake", "bulk_stage", str),
-        "KG_BLOB_ACCOUNT_URL": ("azure_blob", "account_url", str),
-        "KG_BLOB_CONNECTION_STRING": ("azure_blob", "connection_string", str),
-        "KG_BLOB_CONTAINER": ("azure_blob", "container", str),
-        "KG_BLOB_PREFIX": ("azure_blob", "prefix", str),
-        "KG_BLOB_SAS_TOKEN": ("azure_blob", "sas_token", str),
-        "KG_BLOB_DOWNLOAD_PATH": ("azure_blob", "download_path", Path),
-        "KG_OCR_ENGINE": ("ocr", "provider", _ocr_provider_alias),
-    }
-    mapping: dict[str, tuple[str, str, Any]] = {
-        "KG_RUNTIME": ("runtime", "runtime", str),
-        "KG_JOB_ID": ("job", "job_id", str),
-        "KG_GRAPH_ID": ("job", "graph_id", str),
-        "KG_JOB_USE_LEASE": ("job", "use_lease", _str_to_bool),
-        "KG_JOB_USE_FILE_QUEUE": ("job", "use_file_queue", _str_to_bool),
-        "KG_WORKER_ID": ("job", "lease_owner", str),
-        "KG_JOB_LEASE_OWNER": ("job", "lease_owner", str),
-        "KG_JOB_LEASE_SECONDS": ("job", "lease_seconds", int),
-        "KG_BATCH_FILES": ("job", "file_batch_size", int),
-        "KG_FILE_BATCH_SIZE": ("job", "file_batch_size", int),
-        "KG_DISTRIBUTED_DATABASE_URL": ("distributed", "database_url", str),
-        "KG_DISTRIBUTED_WORKER_ID": ("distributed", "worker_id", str),
-        "KG_DISTRIBUTED_WORKER_STAGES": ("distributed", "worker_stages", _str_to_list),
-        "KG_DISTRIBUTED_LEASE_SECONDS": ("distributed", "lease_seconds", int),
-        "KG_DISTRIBUTED_POLL_INTERVAL_SECONDS": (
-            "distributed",
-            "poll_interval_seconds",
-            float,
-        ),
-        "KG_DISTRIBUTED_RETRY_DELAY_SECONDS": (
-            "distributed",
-            "retry_delay_seconds",
-            float,
-        ),
-        "KG_DISTRIBUTED_MAX_ATTEMPTS": ("distributed", "max_attempts", int),
-        "KG_DISTRIBUTED_ARTIFACT_COMPRESSION_LEVEL": (
-            "distributed",
-            "artifact_compression_level",
-            int,
-        ),
-        "KG_DISTRIBUTED_MAX_ARTIFACT_BYTES": (
-            "distributed",
-            "max_artifact_bytes",
-            int,
-        ),
-        "KG_DISTRIBUTED_ARTIFACT_URI": ("distributed", "artifact_uri", str),
-        "KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL": (
-            "distributed",
-            "artifact_endpoint_url",
-            str,
-        ),
-        "KG_DISTRIBUTED_ARTIFACT_ACCESS_KEY_ID": (
-            "distributed",
-            "artifact_access_key_id",
-            str,
-        ),
-        "KG_DISTRIBUTED_ARTIFACT_SECRET_ACCESS_KEY": (
-            "distributed",
-            "artifact_secret_access_key",
-            str,
-        ),
-        "KG_DISTRIBUTED_ARTIFACT_REGION": ("distributed", "artifact_region", str),
-        "KG_DISTRIBUTED_FINALIZATION_ENGINE": (
-            "distributed",
-            "finalization_engine",
-            str,
-        ),
-        "KG_DISTRIBUTED_PRIORITY_OFFSET": ("distributed", "priority_offset", int),
-        "KG_DISTRIBUTED_SPARK_MASTER": ("distributed", "spark_master", str),
-        "KG_DISTRIBUTED_SPARK_IMAGE": ("distributed", "spark_image", str),
-        "KG_DISTRIBUTED_SPARK_NAMESPACE": (
-            "distributed",
-            "spark_namespace",
-            str,
-        ),
-        "KG_DISTRIBUTED_SPARK_SERVICE_ACCOUNT": (
-            "distributed",
-            "spark_service_account",
-            str,
-        ),
-        "KG_DISTRIBUTED_SPARK_EXECUTOR_POD_TEMPLATE": (
-            "distributed",
-            "spark_executor_pod_template",
-            str,
-        ),
-        "KG_DISTRIBUTED_SPARK_EXECUTOR_INSTANCES": (
-            "distributed",
-            "spark_executor_instances",
-            int,
-        ),
-        "KG_DISTRIBUTED_SPARK_EXECUTOR_CORES": (
-            "distributed",
-            "spark_executor_cores",
-            int,
-        ),
-        "KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY": (
-            "distributed",
-            "spark_executor_memory",
-            str,
-        ),
-        "KG_DISTRIBUTED_SPARK_EXECUTOR_MEMORY_OVERHEAD": (
-            "distributed",
-            "spark_executor_memory_overhead",
-            str,
-        ),
-        "KG_DISTRIBUTED_SPARK_SHUFFLE_PARTITIONS": (
-            "distributed",
-            "spark_shuffle_partitions",
-            int,
-        ),
-        "KG_FILE_SOURCE": ("files", "source", _file_source_alias),
-        "KG_INPUT_PATH": ("files", "input_path", Path),
-        "KG_MANIFEST_PATH": ("files", "manifest_path", Path),
-        "KG_STAGE_PREFIX": ("files", "stage_prefix", str),
-        "KG_STAGE_CONTENT_HASH": ("files", "stage_content_hash", _str_to_bool),
-        "KG_AZURE_BLOB_ACCOUNT_URL": ("azure_blob", "account_url", str),
-        "KG_AZURE_BLOB_CONNECTION_STRING": ("azure_blob", "connection_string", str),
-        "KG_AZURE_BLOB_CONTAINER": ("azure_blob", "container", str),
-        "KG_AZURE_BLOB_PREFIX": ("azure_blob", "prefix", str),
-        "KG_AZURE_BLOB_SAS_TOKEN": ("azure_blob", "sas_token", str),
-        "KG_AZURE_BLOB_DOWNLOAD_PATH": ("azure_blob", "download_path", Path),
-        "KG_S3_BUCKET": ("s3", "bucket", str),
-        "KG_S3_PREFIX": ("s3", "prefix", str),
-        "KG_S3_ENDPOINT_URL": ("s3", "endpoint_url", str),
-        "KG_S3_REGION": ("s3", "region", str),
-        "KG_S3_DOWNLOAD_PATH": ("s3", "download_path", Path),
-        # Both spellings select the same field, so both accept the same friendly
-        # engine aliases rather than making the accepted vocabulary depend on
-        # which variable name an operator reached for.
-        "KG_OCR_PROVIDER": ("ocr", "provider", _ocr_provider_alias),
-        "KG_OCR_LANGUAGE": ("ocr", "language", str),
-        "KG_OCR_PAGE_RANGE": ("ocr", "page_range", str),
-        "KG_OCR_MODEL_CACHE_DIR": ("ocr", "model_cache_dir", Path),
-        "KG_MINERU_COMMAND": ("ocr", "mineru_command", str),
-        "KG_MINERU_METHOD": ("ocr", "mineru_method", str),
-        "KG_MINERU_BACKEND": ("ocr", "mineru_backend", str),
-        "KG_MINERU_EFFORT": ("ocr", "mineru_effort", str),
-        "KG_MINERU_API_URL": ("ocr", "mineru_api_url", str),
-        "KG_MINERU_API_KEY": ("ocr", "mineru_api_key", str),
-        "KG_MINERU_SERVER_URL": ("ocr", "mineru_server_url", str),
-        "KG_MINERU_START_PAGE_ID": ("ocr", "mineru_start_page_id", int),
-        "KG_MINERU_END_PAGE_ID": ("ocr", "mineru_end_page_id", int),
-        "KG_MINERU_FORMULA": ("ocr", "mineru_formula", _str_to_bool),
-        "KG_MINERU_TABLE": ("ocr", "mineru_table", _str_to_bool),
-        "KG_MINERU_IMAGE_ANALYSIS": ("ocr", "mineru_image_analysis", _str_to_bool),
-        "KG_MINERU_CLIENT_SIDE_OUTPUT": (
-            "ocr",
-            "mineru_client_side_output_generation",
-            _str_to_bool,
-        ),
-        "KG_TESSERACT_COMMAND": ("ocr", "tesseract_command", str),
-        "KG_TESSERACT_PDF_RENDERER_COMMAND": (
-            "ocr",
-            "tesseract_pdf_renderer_command",
-            str,
-        ),
-        "KG_TESSERACT_DPI": ("ocr", "tesseract_dpi", int),
-        "KG_SNOWFLAKE_PARSE_MODE": ("ocr", "snowflake_parse_mode", str),
-        "KG_SNOWFLAKE_EXTRACT_IMAGES": ("ocr", "snowflake_extract_images", _str_to_bool),
-        "KG_SNOWFLAKE_PAGE_SPLIT": ("ocr", "snowflake_page_split", _str_to_bool),
-        "KG_GENERIC_HTTP_OCR_ENDPOINT": ("generic_http_ocr", "endpoint", str),
-        "KG_GENERIC_HTTP_OCR_MAX_RESPONSE_BYTES": (
-            "generic_http_ocr",
-            "max_response_bytes",
-            int,
-        ),
-        "KG_GENERIC_HTTP_OCR_API_KEY": ("generic_http_ocr", "api_key", str),
-        "KG_GENERIC_HTTP_OCR_API_KEY_HEADER": (
-            "generic_http_ocr",
-            "api_key_header",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_API_KEY_PREFIX": (
-            "generic_http_ocr",
-            "api_key_prefix",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_FILE_FIELD": ("generic_http_ocr", "file_field", str),
-        "KG_GENERIC_HTTP_OCR_RESULT_PATH": ("generic_http_ocr", "result_path", str),
-        "KG_GENERIC_HTTP_OCR_PAGES_PATH": ("generic_http_ocr", "pages_path", str),
-        "KG_GENERIC_HTTP_OCR_PAGE_NUMBER_PATH": (
-            "generic_http_ocr",
-            "page_number_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_MARKDOWN_PATH": ("generic_http_ocr", "markdown_path", str),
-        "KG_GENERIC_HTTP_OCR_RAW_TEXT_PATH": ("generic_http_ocr", "raw_text_path", str),
-        "KG_GENERIC_HTTP_OCR_LANGUAGE_PATH": (
-            "generic_http_ocr",
-            "detected_language_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_BLOCKS_PATH": ("generic_http_ocr", "blocks_path", str),
-        "KG_GENERIC_HTTP_OCR_BLOCK_ID_PATH": ("generic_http_ocr", "block_id_path", str),
-        "KG_GENERIC_HTTP_OCR_BLOCK_KIND_PATH": (
-            "generic_http_ocr",
-            "block_kind_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_BLOCK_TEXT_PATH": (
-            "generic_http_ocr",
-            "block_text_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_BLOCK_BBOX_PATH": (
-            "generic_http_ocr",
-            "block_bbox_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_BLOCK_CONFIDENCE_PATH": (
-            "generic_http_ocr",
-            "block_confidence_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_BLOCK_METADATA_PATH": (
-            "generic_http_ocr",
-            "block_metadata_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_ASSETS_PATH": ("generic_http_ocr", "assets_path", str),
-        "KG_GENERIC_HTTP_OCR_ASSET_ID_PATH": ("generic_http_ocr", "asset_id_path", str),
-        "KG_GENERIC_HTTP_OCR_ASSET_KIND_PATH": (
-            "generic_http_ocr",
-            "asset_kind_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_ASSET_URI_PATH": ("generic_http_ocr", "asset_uri_path", str),
-        "KG_GENERIC_HTTP_OCR_ASSET_PAGE_NUMBER_PATH": (
-            "generic_http_ocr",
-            "asset_page_number_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_ASSET_CONFIDENCE_PATH": (
-            "generic_http_ocr",
-            "asset_confidence_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_ASSET_METADATA_PATH": (
-            "generic_http_ocr",
-            "asset_metadata_path",
-            str,
-        ),
-        "KG_GENERIC_HTTP_OCR_WARNINGS_PATH": ("generic_http_ocr", "warnings_path", str),
-        "KG_GENERIC_HTTP_OCR_ERROR_PATH": ("generic_http_ocr", "error_path", str),
-        "KG_GENERIC_HTTP_OCR_STATUS_PATH": ("generic_http_ocr", "status_path", str),
-        "KG_LLM_PROVIDER": ("llm", "provider", str),
-        "KG_LLM_ENDPOINT": ("llm", "endpoint", str),
-        "KG_LLM_MODEL": ("llm", "model", str),
-        "KG_LLM_API_KEY": ("llm", "api_key", str),
-        "KG_LLM_API_VERSION": ("llm", "api_version", str),
-        "KG_LLM_TIMEOUT_SECONDS": ("llm", "timeout_seconds", int),
-        "KG_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens", int),
-        "KG_EMBED_PROVIDER": ("embedding", "provider", str),
-        "KG_EMBED_ENDPOINT": ("embedding", "endpoint", str),
-        "KG_EMBED_MODEL": ("embedding", "model", str),
-        "KG_EMBED_API_KEY": ("embedding", "api_key", str),
-        "KG_EMBED_API_VERSION": ("embedding", "api_version", str),
-        "KG_EMBED_DIM": ("embedding", "dimension", int),
-        "KG_EMBED_BATCH_SIZE": ("embedding", "batch_size", int),
-        "KG_EMBED_DEVICE": ("embedding", "device", str),
-        "KG_ONTOLOGY_PROFILE": ("ontology", "profile_path", Path),
-        "KG_ENTITY_EXTRACTOR": ("extractors", "entity_provider", str),
-        "KG_GLINER_MODEL": ("extractors", "gliner_model", str),
-        "KG_GLINER_THRESHOLD": ("extractors", "gliner_threshold", float),
-        "KG_GRAPH_EXTRACTION_WINDOW_TOKENS": (
-            "graph",
-            "extraction_window_tokens",
-            int,
-        ),
-        "KG_GRAPH_MAX_CHUNKS_PER_LLM_CALL": ("graph", "max_chunks_per_llm_call", int),
-        "KG_GRAPH_EXTRACTION_PARALLELISM": ("graph", "extraction_parallelism", int),
-        "KG_GRAPH_DESCRIPTION_MERGE_PARALLELISM": (
-            "graph",
-            "description_merge_parallelism",
-            int,
-        ),
-        "KG_GRAPH_MAX_ENTITIES_PER_BATCH": ("graph", "max_entities_per_batch", int),
-        "KG_GRAPH_MAX_RELATIONS_PER_BATCH": ("graph", "max_relations_per_batch", int),
-        "KG_GRAPH_GLEANING_MAX_PASSES": ("graph", "gleaning_max_passes", int),
-        "KG_GRAPH_GLEANING_MIN_UNCOVERED_TOKENS": (
-            "graph",
-            "gleaning_min_uncovered_tokens",
-            int,
-        ),
-        "KG_GRAPH_GLEANING_SATURATION_THRESHOLD": (
-            "graph",
-            "gleaning_saturation_threshold",
-            int,
-        ),
-        "KG_GRAPH_MIN_ENTITY_CONFIDENCE": ("graph", "min_entity_confidence", float),
-        "KG_GRAPH_MIN_RELATION_CONFIDENCE": ("graph", "min_relation_confidence", float),
-        "KG_GRAPH_VERIFY_RELATIONS": ("graph", "verify_relations", _str_to_bool),
-        "KG_GRAPH_VERIFICATION_MIN_CONFIDENCE": (
-            "graph",
-            "verification_min_confidence",
-            float,
-        ),
-        "KG_GRAPH_ENTITY_RESOLUTION_ENABLED": (
-            "graph",
-            "entity_resolution_enabled",
-            _str_to_bool,
-        ),
-        "KG_GRAPH_RESOLUTION_LEXICAL_AUTO_MERGE": (
-            "graph",
-            "resolution_lexical_auto_merge",
-            float,
-        ),
-        "KG_GRAPH_RESOLUTION_EMBEDDING_AUTO_MERGE": (
-            "graph",
-            "resolution_embedding_auto_merge",
-            float,
-        ),
-        "KG_GRAPH_RESOLUTION_CANDIDATE_THRESHOLD": (
-            "graph",
-            "resolution_candidate_threshold",
-            float,
-        ),
-        "KG_GRAPH_RESOLUTION_EMBEDDING_LEXICAL_FLOOR": (
-            "graph",
-            "resolution_embedding_lexical_floor",
-            float,
-        ),
-        "KG_GRAPH_RESOLUTION_MAX_CANDIDATES_PER_MENTION": (
-            "graph",
-            "resolution_max_candidates_per_mention",
-            int,
-        ),
-        "KG_GRAPH_RESOLUTION_ADJUDICATION_BATCH_SIZE": (
-            "graph",
-            "resolution_adjudication_batch_size",
-            int,
-        ),
-        "KG_GRAPH_RESOLUTION_PARALLELISM": (
-            "graph",
-            "resolution_parallelism",
-            int,
-        ),
-        "KG_GRAPH_RESOLUTION_LLM_MERGE_MIN_CONFIDENCE": (
-            "graph",
-            "resolution_llm_merge_min_confidence",
-            float,
-        ),
-        "KG_GRAPH_DETERMINISTIC_SEED": ("graph", "deterministic_seed", int),
-        "KG_GRAPH_MIN_ENTITY_NAME_LENGTH": ("graph", "min_entity_name_length", int),
-        "KG_GRAPH_REQUIRE_RELATION_ENDPOINT_GROUNDING": (
-            "graph",
-            "require_relation_endpoint_grounding",
-            _str_to_bool,
-        ),
-        "KG_GRAPH_ENTITY_BLOCKLIST": ("graph", "entity_blocklist", _str_to_list),
-        "KG_GRAPH_DESCRIPTION_MERGE_MIN_OBSERVATIONS": (
-            "graph",
-            "description_merge_min_observations",
-            int,
-        ),
-        "KG_GRAPH_DESCRIPTION_MERGE_MAX_DESCRIPTIONS": (
-            "graph",
-            "description_merge_max_descriptions",
-            int,
-        ),
-        "KG_GRAPH_DESCRIPTION_MERGE_MAX_EVIDENCE": (
-            "graph",
-            "description_merge_max_evidence",
-            int,
-        ),
-        "KG_GRAPH_COMMUNITY_REPORT_PARALLELISM": (
-            "graph",
-            "community_report_parallelism",
-            int,
-        ),
-        # Both community bounds are env-settable because a cross-field validator
-        # rejects a maximum below the minimum: exposing only one makes some
-        # otherwise valid maxima unreachable without a configuration file.
-        "KG_GRAPH_MIN_COMMUNITY_SIZE": ("graph", "min_community_size", int),
-        "KG_GRAPH_MAX_COMMUNITY_SIZE": ("graph", "max_community_size", int),
-        "KG_GRAPH_COMMUNITY_RESOLUTION": ("graph", "community_resolution", float),
-        "KG_GRAPH_COMMUNITY_CO_MENTION_WEIGHT": (
-            "graph",
-            "community_co_mention_weight",
-            float,
-        ),
-        "KG_GRAPH_FAIL_ON_QUALITY_ERROR": ("graph", "fail_on_quality_error", _str_to_bool),
-        "KG_OUTPUT_PATH": ("writer", "output_path", Path),
-        "KG_WRITER": ("writer", "provider", str),
-        "KG_CACHE_PROVIDER": ("cache", "provider", str),
-        "KG_CACHE_PATH": ("cache", "path", Path),
-        "KG_SNOWFLAKE_ACCOUNT": ("snowflake", "account", str),
-        "KG_SNOWFLAKE_HOST": ("snowflake", "host", str),
-        "KG_SNOWFLAKE_USER": ("snowflake", "user", str),
-        "KG_SNOWFLAKE_PASSWORD": ("snowflake", "password", str),
-        "KG_SNOWFLAKE_AUTHENTICATOR": (
-            "snowflake",
-            "authenticator",
-            _snowflake_auth_alias,
-        ),
-        "KG_SNOWFLAKE_PRIVATE_KEY_PATH": ("snowflake", "private_key_path", Path),
-        "KG_SNOWFLAKE_OAUTH_TOKEN": ("snowflake", "oauth_token", str),
-        "KG_SNOWFLAKE_OAUTH_TOKEN_PATH": ("snowflake", "oauth_token_path", Path),
-        "KG_SNOWFLAKE_STORE_TEMPORARY_CREDENTIAL": (
-            "snowflake",
-            "store_temporary_credential",
-            _str_to_bool,
-        ),
-        "KG_SNOWFLAKE_DATABASE": ("snowflake", "database", str),
-        "KG_SNOWFLAKE_SCHEMA": ("snowflake", "schema", str),
-        "KG_SNOWFLAKE_ROLE": ("snowflake", "role", str),
-        "KG_SNOWFLAKE_WAREHOUSE": ("snowflake", "warehouse", str),
-        "KG_SNOWFLAKE_STAGE": ("snowflake", "stage", str),
-        "KG_SNOWFLAKE_BULK_STAGE": ("snowflake", "bulk_stage", str),
-        "KG_BULK_TARGET_FILE_MB": ("snowflake", "bulk_target_file_size_mb", int),
-        "KG_SNOWFLAKE_BULK_TARGET_FILE_MB": (
-            "snowflake",
-            "bulk_target_file_size_mb",
-            int,
-        ),
-        "KG_SNOWFLAKE_IMAGE_REPOSITORY": ("snowflake", "image_repository", str),
-        "KG_SNOWFLAKE_IMAGE_NAME": ("snowflake", "image_name", str),
-        "KG_SNOWFLAKE_IMAGE_DIGEST": ("snowflake", "image_digest", str),
-        "KG_SNOWFLAKE_COMPUTE_POOL": ("snowflake", "compute_pool", str),
-        "KG_SNOWFLAKE_COMPUTE_POOL_INSTANCE_FAMILY": (
-            "snowflake",
-            "compute_pool_instance_family",
-            str,
-        ),
-        "KG_SNOWFLAKE_COMPUTE_POOL_MIN_NODES": (
-            "snowflake",
-            "compute_pool_min_nodes",
-            int,
-        ),
-        "KG_SNOWFLAKE_COMPUTE_POOL_MAX_NODES": (
-            "snowflake",
-            "compute_pool_max_nodes",
-            int,
-        ),
-        "KG_SNOWFLAKE_SERVICE_NAME": ("snowflake", "service_name", str),
-        "KG_SNOWFLAKE_SERVICE_SPEC_STAGE": ("snowflake", "service_spec_stage", str),
-        "KG_SPCS_CPU_REQUEST": ("snowflake", "service_cpu_request", str),
-        "KG_SPCS_CPU_LIMIT": ("snowflake", "service_cpu_limit", str),
-        "KG_SPCS_MEMORY_REQUEST": ("snowflake", "service_memory_request", str),
-        "KG_SPCS_MEMORY_LIMIT": ("snowflake", "service_memory_limit", str),
-        "KG_SPCS_GPU_COUNT": ("snowflake", "service_gpu_count", int),
-    }
-    _apply_env_mapping(data, alias_mapping, env)
-    _apply_env_mapping(data, mapping, env)
+    for env_name, (group, key) in _environment_names().items():
+        value = env.get(env_name, "")
+        if value != "":
+            data.setdefault(group, {})[key] = value
     return data
 
 
 def _ambient_snowflake_from_env(env: dict[str, str]) -> dict[str, Any]:
     """Load Snowpark-provided Snowflake env vars as low-priority defaults."""
 
-    data: dict[str, Any] = {}
-    _apply_env_mapping(
-        data,
-        {
-            "SNOWFLAKE_ACCOUNT": ("snowflake", "account", str),
-            "SNOWFLAKE_HOST": ("snowflake", "host", str),
-            "SNOWFLAKE_USER": ("snowflake", "user", str),
-            "SNOWFLAKE_PASSWORD": ("snowflake", "password", str),
-            "SNOWFLAKE_AUTH": ("snowflake", "authenticator", _snowflake_auth_alias),
-            "SNOWFLAKE_AUTHENTICATOR": (
-                "snowflake",
-                "authenticator",
-                _snowflake_auth_alias,
-            ),
-            "SNOWFLAKE_PRIVATE_KEY_PATH": ("snowflake", "private_key_path", Path),
-            "SNOWFLAKE_OAUTH_TOKEN": ("snowflake", "oauth_token", str),
-            "SNOWFLAKE_OAUTH_TOKEN_PATH": ("snowflake", "oauth_token_path", Path),
-            "SNOWFLAKE_DATABASE": ("snowflake", "database", str),
-            "SNOWFLAKE_SCHEMA": ("snowflake", "schema", str),
-            "SNOWFLAKE_ROLE": ("snowflake", "role", str),
-            "SNOWFLAKE_WAREHOUSE": ("snowflake", "warehouse", str),
-        },
-        env,
-    )
-    return data
-
-
-def _apply_env_mapping(
-    data: dict[str, Any],
-    mapping: dict[str, tuple[str, str, Any]],
-    env: dict[str, str],
-) -> None:
-    for env_name, (group, key, caster) in mapping.items():
-        if env_name not in env or env[env_name] == "":
-            continue
-        try:
-            data.setdefault(group, {})[key] = caster(env[env_name])
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Invalid value for {env_name}: {exc}") from exc
+    snowflake = {key: env[name] for name, key in _AMBIENT_SNOWFLAKE_ENV.items() if env.get(name)}
+    return {"snowflake": snowflake} if snowflake else {}
 
 
 def _ai_backend_profile_from_env(env: dict[str, str]) -> dict[str, Any]:
@@ -1720,15 +1361,6 @@ def _snowflake_auth_alias(value: str) -> str:
         "password": "snowflake",
         "snowflake": "snowflake",
     }.get(normalized, value)
-
-
-def _str_to_bool(value: str) -> bool:
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "y", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "n", "off"}:
-        return False
-    raise ValueError(f"Expected boolean environment value, got: {value}")
 
 
 def _str_to_list(value: str) -> list[str]:
