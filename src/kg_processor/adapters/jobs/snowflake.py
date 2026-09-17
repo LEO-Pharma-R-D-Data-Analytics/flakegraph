@@ -16,7 +16,6 @@ from kg_processor.adapters.snowflake import (
     ReusableSnowflakeConnections,
     SnowflakeConnectionConfig,
     SnowflakeCursor,
-    set_snowflake_autocommit,
 )
 from kg_processor.application.progress import ProgressEvent
 from kg_processor.application.redaction import redact_sensitive_data
@@ -81,11 +80,7 @@ class SnowflakeJobManager:
         cannot leave a lease held by a worker that never learned it owns the job.
         """
 
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        autocommit_disabled = False
-        try:
-            autocommit_disabled = set_snowflake_autocommit(connection, False)
+        with self._connections.transaction() as cursor:
             cursor.execute(
                 build_create_pending_job_statement(),
                 [job_id, graph_id, _json(config)],
@@ -96,21 +91,6 @@ class SnowflakeJobManager:
             )
             cursor.execute(build_select_claimed_job_statement(), [job_id, lease_owner])
             row = cursor.fetchone()
-            connection.commit()
-        except Exception:
-            with suppress(Exception):
-                connection.rollback()
-            if autocommit_disabled:
-                with suppress(Exception):
-                    set_snowflake_autocommit(connection, True)
-                autocommit_disabled = False
-            with suppress(Exception):
-                self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
-            if autocommit_disabled:
-                set_snowflake_autocommit(connection, True)
         if row is None:
             return JobClaimResult(claimed=False, job_id=job_id)
         return JobClaimResult(
@@ -137,9 +117,7 @@ class SnowflakeJobManager:
 
         if not files:
             raise ValueError("Cannot submit a Snowflake job with no input files")
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor(commit=True) as cursor:
             cursor.execute(
                 build_create_pending_job_statement(),
                 [job_id, graph_id, _json(config)],
@@ -157,13 +135,6 @@ class SnowflakeJobManager:
                     ],
                 )
             cursor.execute(build_merge_job_file_submission_statement())
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
         return len(files)
 
     def complete_job(self, job_id: str, lease_owner: str, report: dict[str, Any]) -> None:
@@ -220,12 +191,8 @@ class SnowflakeJobManager:
         received them and will never heartbeat.
         """
 
-        connection = self._connections.get()
-        cursor = connection.cursor()
         claim_token = _claim_token(worker_id)
-        autocommit_disabled = False
-        try:
-            autocommit_disabled = set_snowflake_autocommit(connection, False)
+        with self._connections.transaction() as cursor:
             cursor.execute(build_mark_job_running_statement(), [job_id, graph_id])
             cursor.execute(
                 build_claim_job_files_statement(lease_seconds, batch_size),
@@ -236,21 +203,6 @@ class SnowflakeJobManager:
                 [job_id, graph_id, worker_id, claim_token],
             )
             rows = cursor.fetchall()
-            connection.commit()
-        except Exception:
-            with suppress(Exception):
-                connection.rollback()
-            if autocommit_disabled:
-                with suppress(Exception):
-                    set_snowflake_autocommit(connection, True)
-                autocommit_disabled = False
-            with suppress(Exception):
-                self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
-            if autocommit_disabled:
-                set_snowflake_autocommit(connection, True)
         return [_job_file_claim_from_row(row) for row in rows]
 
     def complete_job_files(
@@ -264,11 +216,7 @@ class SnowflakeJobManager:
 
         if not results:
             return
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        autocommit_disabled = False
-        try:
-            autocommit_disabled = set_snowflake_autocommit(connection, False)
+        with self._connections.transaction() as cursor:
             statement = build_complete_job_file_statement()
             params = [
                 [
@@ -290,21 +238,6 @@ class SnowflakeJobManager:
             affected_rows = _execute_many_updates(cursor, statement, params)
             if affected_rows != len(results):
                 raise RuntimeError("one or more claimed files are no longer owned by this worker")
-            connection.commit()
-        except Exception:
-            with suppress(Exception):
-                connection.rollback()
-            if autocommit_disabled:
-                with suppress(Exception):
-                    set_snowflake_autocommit(connection, True)
-                autocommit_disabled = False
-            with suppress(Exception):
-                self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
-            if autocommit_disabled:
-                set_snowflake_autocommit(connection, True)
 
     def worker_owns_entire_file_queue(
         self,
@@ -322,19 +255,12 @@ class SnowflakeJobManager:
 
         if not file_ids:
             return False
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor() as cursor:
             cursor.execute(
                 build_complete_file_queue_ownership_statement(len(file_ids)),
                 [worker_id, *file_ids, graph_id],
             )
             row = cursor.fetchone()
-        except Exception:
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
         if row is None or len(row) < _OWNERSHIP_COUNT_COLUMNS:
             raise ValueError("Snowflake file-queue ownership query returned no counts")
         total_count = int(str(row[0] or 0))
@@ -353,11 +279,7 @@ class SnowflakeJobManager:
 
         if not file_ids:
             return
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        autocommit_disabled = False
-        try:
-            autocommit_disabled = set_snowflake_autocommit(connection, False)
+        with self._connections.transaction() as cursor:
             statement = build_fail_job_file_statement()
             error_json = json.dumps(redact_sensitive_data(error), sort_keys=True)
             affected_rows = _execute_many_updates(
@@ -367,42 +289,12 @@ class SnowflakeJobManager:
             )
             if affected_rows != len(file_ids):
                 raise RuntimeError("one or more claimed files are no longer owned by this worker")
-            connection.commit()
-        except Exception:
-            with suppress(Exception):
-                connection.rollback()
-            if autocommit_disabled:
-                with suppress(Exception):
-                    set_snowflake_autocommit(connection, True)
-                autocommit_disabled = False
-            with suppress(Exception):
-                self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
-            if autocommit_disabled:
-                set_snowflake_autocommit(connection, True)
 
     def count_job_files_by_status(self, job_id: str, graph_id: str) -> dict[str, int]:
         """Return this job's queue counts keyed by status."""
 
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
-            cursor.execute(build_count_job_files_by_status_statement(), [job_id, graph_id])
-            rows = cursor.fetchall()
-        except Exception:
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
-        counts: dict[str, int] = {}
-        for row in rows:
-            values = cast(Sequence[object], row)
-            if len(values) < _STATUS_COUNT_COLUMNS:
-                continue
-            counts[str(values[0])] = int(str(values[1] or 0))
-        return counts
+        with self._connections.cursor() as cursor:
+            return self._status_counts(cursor, job_id, graph_id)
 
     def retry_failed_job_files(
         self,
@@ -417,29 +309,14 @@ class SnowflakeJobManager:
         reset together or a relaunched worker drains immediately without work.
         """
 
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        autocommit_disabled = False
-        try:
-            autocommit_disabled = set_snowflake_autocommit(connection, False)
+        with self._connections.transaction() as cursor:
             before = self._status_counts(cursor, job_id, graph_id)
             cursor.execute(
                 build_retry_failed_job_files_statement(max_attempts),
                 [job_id, graph_id],
             )
             cursor.execute(build_reset_job_for_retry_statement(), [job_id, graph_id])
-            connection.commit()
-            after = self._status_counts(cursor, job_id, graph_id)
-        except Exception:
-            with suppress(Exception):
-                connection.rollback()
-            with suppress(Exception):
-                self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
-            if autocommit_disabled:
-                set_snowflake_autocommit(connection, True)
+        after = self.count_job_files_by_status(job_id, graph_id)
         failed_before = before.get("FAILED", 0)
         failed_after = after.get("FAILED", 0)
         return JobRetryResult(
@@ -476,21 +353,12 @@ class SnowflakeJobManager:
 
         if not file_ids:
             return
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor(commit=True) as cursor:
             cursor.execute(
                 build_heartbeat_job_files_statement(lease_seconds, len(file_ids)),
                 [job_id, graph_id, worker_id, *file_ids],
             )
             _require_owned_update(cursor, "job-file heartbeat")
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
 
     def update_job_file_progress(
         self,
@@ -504,20 +372,11 @@ class SnowflakeJobManager:
 
         if not file_ids:
             return
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor(commit=True) as cursor:
             cursor.execute(
                 build_update_job_file_progress_statement(len(file_ids)),
                 [stage, job_id, graph_id, worker_id, *file_ids],
             )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
 
     def complete_job_if_file_queue_drained(
         self,
@@ -552,19 +411,10 @@ class SnowflakeJobManager:
         *,
         require_update: bool = True,
     ) -> None:
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor(commit=True) as cursor:
             cursor.execute(sql, params)
             if require_update:
                 _require_owned_update(cursor, "job lease")
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
 
 
 def _execute_many_updates(
@@ -961,8 +811,7 @@ def build_count_job_files_by_status_statement() -> str:
     """Return SQL that summarizes one job's queue by status."""
 
     return (
-        "SELECT STATUS, COUNT(*) FROM KG_JOB_FILE "
-        "WHERE JOB_ID = ? AND GRAPH_ID = ? GROUP BY STATUS"
+        "SELECT STATUS, COUNT(*) FROM KG_JOB_FILE WHERE JOB_ID = ? AND GRAPH_ID = ? GROUP BY STATUS"
     )
 
 

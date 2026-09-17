@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from contextlib import suppress
 
 from kg_processor.adapters.snowflake import (
     ConnectorFactory,
@@ -103,34 +102,16 @@ class SnowflakeCache:
         )
 
     def _fetch_variant(self, table: str, column: str, cache_id: str) -> object | None:
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor() as cursor:
             cursor.execute(f"SELECT {column} FROM {table} WHERE ID = ?", [cache_id])
             row = cursor.fetchone()
-        except Exception:
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
         if row is None or len(row) == 0:
             return None
         return _variant_value(row[0])
 
     def _execute_merge(self, sql: str, params: Sequence[object]) -> None:
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor(commit=True) as cursor:
             cursor.execute(sql, params)
-            connection.commit()
-        except Exception:
-            with suppress(Exception):
-                connection.rollback()
-            with suppress(Exception):
-                self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
 
 
 def build_ocr_cache_merge_statement() -> str:

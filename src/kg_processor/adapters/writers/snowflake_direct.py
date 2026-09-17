@@ -14,7 +14,7 @@ from kg_processor.adapters.snowflake import (
     ConnectorFactory,
     SnowflakeConnectionConfig,
     load_snowflake_connector,
-    set_snowflake_autocommit,
+    snowflake_transaction,
 )
 from kg_processor.adapters.snowflake import (
     compact_json as _json,
@@ -282,15 +282,12 @@ class SnowflakeDirectWriter:
         """
 
         connection = self.connector_factory(**self.config.connect_kwargs())
-        autocommit_disabled = False
         try:
-            cursor = connection.cursor()
-            try:
+            with snowflake_transaction(connection) as cursor:
                 for statement in split_sql_statements(
                     render_snowflake_schema_sql(self.embedding_dimension)
                 ):
                     cursor.execute(statement)
-                autocommit_disabled = set_snowflake_autocommit(connection, False)
                 for sql, params in build_reindex_delete_statements(batch):
                     cursor.execute(sql, params)
                 for table_name, rows in build_snowflake_rows(batch).items():
@@ -321,14 +318,6 @@ class SnowflakeDirectWriter:
                     cursor.execute(sql, params)
                 for sql, params in build_node_reconciliation_statements(batch):
                     cursor.execute(sql, params)
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
-            finally:
-                if autocommit_disabled:
-                    set_snowflake_autocommit(connection, True)
-                cursor.close()
         finally:
             connection.close()
 

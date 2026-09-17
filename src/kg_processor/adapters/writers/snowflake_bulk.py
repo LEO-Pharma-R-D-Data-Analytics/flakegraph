@@ -23,7 +23,7 @@ from kg_processor.adapters.snowflake import (
     SnowflakeConnectionConfig,
     load_snowflake_connector,
     quote_sql_string,
-    set_snowflake_autocommit,
+    snowflake_transaction,
     stage_path,
     validate_stage_location,
 )
@@ -113,7 +113,6 @@ class SnowflakeBulkWriter:
         prefix = build_bulk_load_prefix(batch, self.load_id)
         connection = self.connector_factory(**self.config.connect_kwargs())
         cursor = connection.cursor()
-        autocommit_disabled = False
         try:
             for statement in split_sql_statements(
                 render_snowflake_schema_sql(self.embedding_dimension)
@@ -155,49 +154,42 @@ class SnowflakeBulkWriter:
                                 load_file.stage_file_location,
                             )
                         )
-                autocommit_disabled = set_snowflake_autocommit(connection, False)
-                for sql, params in build_reindex_delete_statements(batch):
-                    cursor.execute(sql, params)
-                for table_name, table_load_files in load_files_by_table.items():
-                    columns = TABLE_COLUMNS[table_name]
-                    load_table_name = table_load_files[0].load_table_name
-                    cursor.execute(
-                        build_bulk_merge_statement(
-                            table_name,
-                            load_table_name,
-                            columns,
-                            self.embedding_dimension,
-                            preserve_on_match=(
-                                {
-                                    "ALIASES",
-                                    "DESCRIPTION",
-                                    "EMBEDDING",
-                                    "NAME",
-                                    "PRIMARY_TYPE",
-                                    "SOURCE_CHUNK_IDS",
-                                    "TYPES",
-                                    "DEGREE",
-                                    "RANK",
-                                }
-                                if batch.write_scope == "file_batch" and table_name == "KG_NODE"
-                                else None
-                            ),
+                # Staging above is per statement; from here the replacement
+                # of the graph is one transaction.
+                with snowflake_transaction(connection) as transaction:
+                    for sql, params in build_reindex_delete_statements(batch):
+                        transaction.execute(sql, params)
+                    for table_name, table_load_files in load_files_by_table.items():
+                        columns = TABLE_COLUMNS[table_name]
+                        load_table_name = table_load_files[0].load_table_name
+                        transaction.execute(
+                            build_bulk_merge_statement(
+                                table_name,
+                                load_table_name,
+                                columns,
+                                self.embedding_dimension,
+                                preserve_on_match=(
+                                    {
+                                        "ALIASES",
+                                        "DESCRIPTION",
+                                        "EMBEDDING",
+                                        "NAME",
+                                        "PRIMARY_TYPE",
+                                        "SOURCE_CHUNK_IDS",
+                                        "TYPES",
+                                        "DEGREE",
+                                        "RANK",
+                                    }
+                                    if batch.write_scope == "file_batch" and table_name == "KG_NODE"
+                                    else None
+                                ),
+                            )
                         )
-                    )
-                for sql, params in build_edge_reconciliation_statements(batch):
-                    cursor.execute(sql, params)
-                for sql, params in build_node_reconciliation_statements(batch):
-                    cursor.execute(sql, params)
-            connection.commit()
-            if autocommit_disabled:
-                set_snowflake_autocommit(connection, True)
-                autocommit_disabled = False
-        except Exception:
-            connection.rollback()
-            raise
+                    for sql, params in build_edge_reconciliation_statements(batch):
+                        transaction.execute(sql, params)
+                    for sql, params in build_node_reconciliation_statements(batch):
+                        transaction.execute(sql, params)
         finally:
-            if autocommit_disabled:
-                set_snowflake_autocommit(connection, True)
             best_effort_remove_stage_prefix(cursor, connection, self.bulk_stage, prefix)
             cursor.close()
             connection.close()

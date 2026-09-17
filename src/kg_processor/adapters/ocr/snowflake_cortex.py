@@ -55,20 +55,13 @@ class SnowflakeCortexOcrProvider:
 
         stage, relative_path = split_stage_uri(file.source_uri)
         parse_options = _build_parse_options(file, options)
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor() as cursor:
             cast(Any, cursor).execute(
                 _SNOWFLAKE_PARSE_SQL,
                 [stage, relative_path, json.dumps(parse_options, sort_keys=True)],
                 timeout=options.timeout_seconds,
             )
             raw_result = scalar_from_first_row(cursor)
-        except Exception:
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
 
         result = as_json_object(raw_result)
         value, metadata = _extract_value_or_raise(result, file.source_uri)

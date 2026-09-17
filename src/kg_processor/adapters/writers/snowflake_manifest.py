@@ -14,8 +14,9 @@ import pyarrow.parquet as pq
 from kg_processor.adapters.snowflake import (
     ConnectorFactory,
     SnowflakeConnectionConfig,
+    SnowflakeCursor,
     load_snowflake_connector,
-    set_snowflake_autocommit,
+    snowflake_transaction,
     stage_path,
 )
 from kg_processor.adapters.writers.snowflake_bulk import (
@@ -112,7 +113,6 @@ class SnowflakeManifestWriter:
         prefix = build_bulk_load_prefix(metadata_batch, load_id)
         connection = self.connector_factory(**self.config.connect_kwargs())
         cursor = connection.cursor()
-        autocommit_disabled = False
         load_tables: dict[str, str] = {}
         try:
             for statement in split_sql_statements(
@@ -162,39 +162,40 @@ class SnowflakeManifestWriter:
                     )
 
                 self._ensure_publication_fence(cursor)
-                autocommit_disabled = set_snowflake_autocommit(connection, False)
-                if not self._acquire_publication_fence(cursor, manifest.graph_id):
-                    connection.rollback()
-                    return
-                for sql, params in build_reindex_delete_statements(metadata_batch):
-                    cursor.execute(sql, params)
-                for table_name, load_table_name in load_tables.items():
-                    cursor.execute(
-                        build_bulk_merge_statement(
-                            table_name,
-                            load_table_name,
-                            TABLE_COLUMNS[table_name],
-                            self.embedding_dimension,
-                        )
-                    )
-                # KG_EDGE_OBSERVATION rows are the durable per-file support for
-                # every edge, so canonical aggregates are rebuilt from them the
-                # same way the direct and bulk writers do.
-                for sql, params in build_edge_reconciliation_statements(metadata_batch):
-                    cursor.execute(sql, params)
-            connection.commit()
-            if autocommit_disabled:
-                set_snowflake_autocommit(connection, True)
-                autocommit_disabled = False
-        except Exception:
-            connection.rollback()
-            raise
+                # A fence that is not ours means a newer generation has already
+                # been delivered; the transaction then ends with nothing in it.
+                with snowflake_transaction(connection) as transaction:
+                    if self._acquire_publication_fence(transaction, manifest.graph_id):
+                        self._replace_graph(transaction, metadata_batch, load_tables)
         finally:
-            if autocommit_disabled:
-                set_snowflake_autocommit(connection, True)
             best_effort_remove_stage_prefix(cursor, connection, self.bulk_stage, prefix)
             cursor.close()
             connection.close()
+
+    def _replace_graph(
+        self,
+        cursor: SnowflakeCursor,
+        metadata_batch: GraphWriteBatch,
+        load_tables: Mapping[str, str],
+    ) -> None:
+        """Swap the staged rows in for the graph's previous snapshot."""
+
+        for sql, params in build_reindex_delete_statements(metadata_batch):
+            cursor.execute(sql, params)
+        for table_name, load_table_name in load_tables.items():
+            cursor.execute(
+                build_bulk_merge_statement(
+                    table_name,
+                    load_table_name,
+                    TABLE_COLUMNS[table_name],
+                    self.embedding_dimension,
+                )
+            )
+        # KG_EDGE_OBSERVATION rows are the durable per-file support for
+        # every edge, so canonical aggregates are rebuilt from them the
+        # same way the direct and bulk writers do.
+        for sql, params in build_edge_reconciliation_statements(metadata_batch):
+            cursor.execute(sql, params)
 
     def _download_manifest_file(self, uri: str, destination: Path) -> None:
         """Download one partition to disk so Parquet batches stay memory bounded."""

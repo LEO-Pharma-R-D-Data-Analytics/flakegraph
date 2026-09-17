@@ -281,9 +281,7 @@ class SnowflakeCortexLlmProvider:
         # request. The connector cancels the running query when the bound
         # elapses, which is what releases the extraction thread; without it a
         # stalled AI_COMPLETE holds that thread for the whole retry budget.
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor() as cursor:
             cast(Any, cursor).execute(
                 _SNOWFLAKE_COMPLETE_SQL,
                 [
@@ -295,11 +293,6 @@ class SnowflakeCortexLlmProvider:
                 timeout=timeout_seconds,
             )
             raw_result = scalar_from_first_row(cursor)
-        except Exception:
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
         result = _snowflake_result_to_object(raw_result)
         details = _unwrap_completion_result(result)
         payload = _structured_payload(details)

@@ -60,9 +60,7 @@ class SnowflakeCortexEmbeddingProvider:
         if not texts:
             return []
         vectors: list[list[float]] = []
-        connection = self._connections.get()
-        cursor = connection.cursor()
-        try:
+        with self._connections.cursor() as cursor:
             for start in range(0, len(texts), options.batch_size):
                 batch = texts[start : start + options.batch_size]
                 cast(Any, cursor).execute(
@@ -90,11 +88,6 @@ class SnowflakeCortexEmbeddingProvider:
                             f"expected {options.dimension}, got {len(vector)}"
                         )
                     vectors.append(vector)
-        except Exception:
-            self._connections.invalidate()
-            raise
-        finally:
-            cursor.close()
         return vectors
 
 

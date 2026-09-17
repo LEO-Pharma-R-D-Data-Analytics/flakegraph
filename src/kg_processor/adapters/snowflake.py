@@ -10,7 +10,8 @@ import importlib
 import json
 import re
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -212,6 +213,50 @@ class ReusableSnowflakeConnections:
                 self._connections[id(connection)] = connection
         return cast(SnowflakeConnection, connection)
 
+    @contextmanager
+    def cursor(self, *, commit: bool = False) -> Iterator[SnowflakeCursor]:
+        """Run one unit of work on this thread's connection.
+
+        A failure inside the block discards the connection: after a connector
+        error its session state cannot be trusted, and the next call opens a
+        fresh one. With ``commit`` the block's statements are committed on the
+        way out and rolled back on failure, which matters once a caller has
+        turned autocommit off for the session.
+        """
+
+        connection = self.get()
+        cursor = connection.cursor()
+        try:
+            yield cursor
+            if commit:
+                connection.commit()
+        except Exception:
+            if commit:
+                with suppress(Exception):
+                    connection.rollback()
+            with suppress(Exception):
+                self.invalidate()
+            raise
+        finally:
+            cursor.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[SnowflakeCursor]:
+        """Run several statements as one transaction on this thread's connection.
+
+        The connection is discarded on failure for the same reason as in
+        :meth:`cursor`.
+        """
+
+        connection = self.get()
+        try:
+            with snowflake_transaction(connection) as cursor:
+                yield cursor
+        except Exception:
+            with suppress(Exception):
+                self.invalidate()
+            raise
+
     def invalidate(self) -> None:
         """Discard the current thread's connection after a connector failure."""
 
@@ -256,6 +301,35 @@ def set_snowflake_autocommit(connection: object, enabled: bool) -> bool:
         return False
     autocommit(enabled)
     return True
+
+
+@contextmanager
+def snowflake_transaction(connection: SnowflakeConnection) -> Iterator[SnowflakeCursor]:
+    """Commit a block's statements together, or roll every one of them back.
+
+    The connector's default is autocommit, so it is switched off before the
+    first statement and restored afterwards whatever happened; the caller's
+    error is what propagates, never a failed rollback or restore.
+    """
+
+    cursor = connection.cursor()
+    autocommit_disabled = False
+    try:
+        autocommit_disabled = set_snowflake_autocommit(connection, False)
+        yield cursor
+        connection.commit()
+    except Exception:
+        with suppress(Exception):
+            connection.rollback()
+        if autocommit_disabled:
+            autocommit_disabled = False
+            with suppress(Exception):
+                set_snowflake_autocommit(connection, True)
+        raise
+    finally:
+        cursor.close()
+        if autocommit_disabled:
+            set_snowflake_autocommit(connection, True)
 
 
 def validate_stage_location(value: str) -> str:
