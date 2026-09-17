@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -27,6 +27,7 @@ from kg_processor.config.settings import Settings
 from kg_processor.domain.distributed import (
     ArtifactKind,
     ArtifactRef,
+    PublicationLease,
     RunDefinition,
     RunOverview,
     RunSnapshot,
@@ -257,6 +258,38 @@ class MemoryDistributedStore:
         retry_delay: timedelta,
     ) -> None:
         self.failed.append((task_id, worker_id, error, retry_delay))
+
+    def claim_publication(
+        self, worker_id: str, lease_duration: timedelta
+    ) -> PublicationLease | None:
+        # Nothing here publishes to a destination, so there is never a command to lease.
+        del worker_id, lease_duration
+        return None
+
+    def publish_claimed(
+        self,
+        publication_id: str,
+        worker_id: str,
+        publish: Callable[[PublicationLease], None],
+    ) -> None:
+        del worker_id, publish
+        raise KeyError(publication_id)
+
+    def heartbeat_publication(
+        self, publication_id: str, worker_id: str, lease_duration: timedelta
+    ) -> None:
+        del worker_id, lease_duration
+        raise KeyError(publication_id)
+
+    def fail_publication(
+        self,
+        publication_id: str,
+        worker_id: str,
+        error: dict[str, Any],
+        retry_delay: timedelta,
+    ) -> None:
+        del worker_id, error, retry_delay
+        raise KeyError(publication_id)
 
 
 class RecordingPipeline:

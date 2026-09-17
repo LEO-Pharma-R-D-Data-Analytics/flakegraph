@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from io import BytesIO
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 import pandas as pd
 import pyarrow as pa
@@ -115,6 +115,11 @@ class MemoryBlobStore:
         """Return a previously registered Parquet payload."""
 
         return self.payloads[uri]
+
+    def download_to(self, uri: str, destination: BinaryIO) -> None:
+        """Write a registered payload into the caller's file."""
+
+        destination.write(self.payloads[uri])
 
 
 def test_bulk_load_files_write_string_parquet_rows(tmp_path: Path) -> None:

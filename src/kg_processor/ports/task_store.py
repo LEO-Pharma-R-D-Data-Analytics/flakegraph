@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from datetime import timedelta
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from kg_processor.domain.distributed import (
     PublicationLease,
@@ -30,7 +30,19 @@ class TaskStoreUnavailableError(RuntimeError):
 
 
 class TaskStore(Protocol):
-    """Coordinate dependency-aware tasks through leases and atomic transitions."""
+    """Coordinate dependency-aware tasks through leases and atomic transitions.
+
+    Publication commands are an outbox the store owns. ``publish_claimed`` must
+    not hold a store lock across the callback: external delivery can outlast any
+    lease, and blocking cancellation and lease reclamation behind it would make
+    an unresponsive destination stall the run. A stale finalizer is fenced
+    optimistically instead: the store validates ownership before the callback
+    and publishes the lease's generation and attempt with it, then acknowledges
+    completion only when the row still carries that same generation, attempt,
+    owner, and live lease under a still-running run. A superseded or reclaimed
+    finalizer therefore fails to acknowledge, and the destination uses the
+    published generation to reject its late write.
+    """
 
     def initialize(self) -> None:
         """Create or migrate durable coordination structures idempotently."""
@@ -125,25 +137,9 @@ class TaskStore(Protocol):
         """Return recent bounded run overviews without configuration or task payloads."""
         ...
 
-
-@runtime_checkable
-class InitialTaskStreamWriter(Protocol):
-    """Optional task-store capability for constant-memory corpus submission.
-
-    The initial distributed plan has a deliberately restricted shape: one
-    independent preparation task per source plus one run-wide final barrier.
-    Stores that can validate and bulk-load that shape incrementally avoid forcing
-    a coordinator to retain hundreds of thousands of Pydantic task objects.
-    """
-
     def add_initial_tasks(self, run_id: str, tasks: Iterable[TaskDefinition]) -> None:
         """Validate and persist a streamed initial document plan atomically."""
         ...
-
-
-@runtime_checkable
-class TaskProgressWriter(Protocol):
-    """Optional capability for durable progress within a long-running task."""
 
     def report_task_progress(
         self,
@@ -153,23 +149,6 @@ class TaskProgressWriter(Protocol):
     ) -> None:
         """Replace progress only while the caller owns the running task lease."""
         ...
-
-
-@runtime_checkable
-class FencedPublicationStore(Protocol):
-    """Optional durable outbox for externally visible graph publication.
-
-    ``publish_claimed`` must not hold a store lock across the callback: external
-    delivery can outlast any lease, and blocking cancellation and lease
-    reclamation behind it would make an unresponsive destination stall the run.
-
-    A stale finalizer is fenced optimistically instead. The store validates
-    ownership before the callback and publishes the lease's generation and
-    attempt with it, then acknowledges completion only when the row still carries
-    that same generation, attempt, owner, and live lease under a still-running
-    run. A superseded or reclaimed finalizer therefore fails to acknowledge, and
-    the destination uses the published generation to reject its late write.
-    """
 
     def claim_publication(
         self,

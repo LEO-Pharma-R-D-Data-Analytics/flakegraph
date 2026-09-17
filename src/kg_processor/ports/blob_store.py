@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import BinaryIO, Protocol, runtime_checkable
+from typing import BinaryIO, Protocol
 
 
 class BlobStore(Protocol):
@@ -20,11 +20,6 @@ class BlobStore(Protocol):
     def get(self, uri: str) -> bytes:
         """Return exact bytes for an object previously written by this store."""
         ...
-
-
-@runtime_checkable
-class BlobDownloader(Protocol):
-    """Optional streaming download capability for bounded consumers."""
 
     def download_to(self, uri: str, destination: BinaryIO) -> None:
         """Stream an object into an open binary destination without collecting it."""

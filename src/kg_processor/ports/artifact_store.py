@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from kg_processor.domain.distributed import ArtifactKind, ArtifactRef, StoredArtifact
 
@@ -31,32 +31,9 @@ class ArtifactStore(Protocol):
         """Load and checksum-verify an artifact or raise when absent or corrupt."""
         ...
 
-
-@runtime_checkable
-class BatchArtifactReader(Protocol):
-    """Optional capability for resolving several immutable artifacts efficiently.
-
-    Distributed compaction commonly consumes all extraction windows for one
-    document. Stores backed by a database plus object storage can collapse those
-    metadata lookups into one query and overlap independent object reads. The
-    separate capability keeps simple third-party artifact adapters valid; workers
-    transparently fall back to repeated ``ArtifactStore.get`` calls.
-    """
-
     def get_many(self, artifact_ids: list[str]) -> list[StoredArtifact]:
         """Load artifacts in caller order or raise if any item is missing or corrupt."""
         ...
-
-
-@runtime_checkable
-class RunArtifactReader(Protocol):
-    """Optional capability for discovering artifacts by run and semantic kind.
-
-    Finalization is a run-wide operation rather than a task with hundreds of
-    thousands of explicit dependency edges. A store that supports local distributed
-    finalization therefore exposes immutable stage outputs directly by their run
-    ownership and kind.
-    """
 
     def get_run_artifacts(
         self,

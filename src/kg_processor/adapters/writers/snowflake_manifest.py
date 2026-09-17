@@ -43,7 +43,7 @@ from kg_processor.application.snowflake_schema import (
 from kg_processor.config.settings import Settings
 from kg_processor.domain.finalization import GraphDatasetManifest
 from kg_processor.domain.graph import GraphWriteBatch
-from kg_processor.ports.blob_store import BlobDownloader, BlobStore
+from kg_processor.ports.blob_store import BlobStore
 
 _BYTES_PER_MEBIBYTE = 1024 * 1024
 _PARQUET_BATCH_ROWS = 8_192
@@ -202,10 +202,7 @@ class SnowflakeManifestWriter:
 
         public_uri = _public_object_uri(uri)
         with destination.open("wb") as output:
-            if isinstance(self.blob_store, BlobDownloader):
-                self.blob_store.download_to(public_uri, output)
-            else:
-                output.write(self.blob_store.get(public_uri))
+            self.blob_store.download_to(public_uri, output)
 
     def _acquire_publication_fence(self, cursor: Any, graph_id: str) -> bool:
         """Make newer durable generations permanently supersede older deliveries."""

@@ -29,7 +29,7 @@ from kg_processor.domain.documents import InputFile
 from kg_processor.domain.ids import sha256_hex, stable_id
 from kg_processor.ports.artifact_store import ArtifactStore
 from kg_processor.ports.file_source import FileSource, IterableFileSource
-from kg_processor.ports.task_store import InitialTaskStreamWriter, TaskStore
+from kg_processor.ports.task_store import TaskStore
 
 _SOURCE_STAGING_PARALLELISM = 16
 _SOURCE_STAGING_MAX_IN_FLIGHT_BYTES = 512 * 1024 * 1024
@@ -101,12 +101,7 @@ class DistributedRunPlanner:
         self.task_store.create_run(definition)
         try:
             tasks = self._iter_initial_tasks(effective_run_id, validated_files)
-            if isinstance(self.task_store, InitialTaskStreamWriter):
-                self.task_store.add_initial_tasks(effective_run_id, tasks)
-            else:
-                # Lightweight or third-party stores can retain the general DAG
-                # API. Production PostgreSQL consumes the iterator directly.
-                self.task_store.add_tasks(effective_run_id, list(tasks))
+            self.task_store.add_initial_tasks(effective_run_id, tasks)
             self.task_store.activate_run(effective_run_id)
         except Exception:
             # Explicit run IDs are durable planning idempotency keys. PostgreSQL

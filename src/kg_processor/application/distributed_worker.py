@@ -51,19 +51,10 @@ from kg_processor.domain.stages import (
     PreparedDocumentShard,
     RelationWindowShard,
 )
-from kg_processor.ports.artifact_store import (
-    ArtifactStore,
-    BatchArtifactReader,
-    RunArtifactReader,
-)
+from kg_processor.ports.artifact_store import ArtifactStore
 from kg_processor.ports.distributed_pipeline import DistributedPipeline
 from kg_processor.ports.graph_manifest_publisher import GraphManifestPublisher
-from kg_processor.ports.task_store import (
-    FencedPublicationStore,
-    TaskProgressWriter,
-    TaskStore,
-    TaskStoreUnavailableError,
-)
+from kg_processor.ports.task_store import TaskStore, TaskStoreUnavailableError
 
 _JSON_MEDIA_TYPE = "application/json"
 _GRAPH_MANIFEST_MEDIA_TYPE = "application/vnd.flakegraph.graph-manifest+json"
@@ -232,7 +223,7 @@ class DistributedWorker:
         """Drain one durable destination command before claiming more finalizer work."""
 
         store = self.task_store
-        if self.manifest_publisher is None or not isinstance(store, FencedPublicationStore):
+        if self.manifest_publisher is None:
             return None
         lease = store.claim_publication(self.worker_id, self.lease_duration)
         if lease is None:
@@ -889,16 +880,10 @@ class DistributedWorker:
 
         report = self._task_progress_reporter(lease)
         report(finalization_progress("read_artifacts", completed=0, total=1))
-        if isinstance(self.artifact_store, RunArtifactReader):
-            inputs = self.artifact_store.get_run_artifacts(
-                lease.task.run_id,
-                {ArtifactKind.EXTRACTED_DOCUMENT},
-            )
-        else:
-            raise TypeError(
-                "local finalization requires an artifact store implementing "
-                "RunArtifactReader for run-scoped extracted-document discovery"
-            )
+        inputs = self.artifact_store.get_run_artifacts(
+            lease.task.run_id,
+            {ArtifactKind.EXTRACTED_DOCUMENT},
+        )
         document_shards = [
             ExtractedDocumentShard.model_validate_json(item.payload)
             for item in inputs
@@ -941,8 +926,6 @@ class DistributedWorker:
         """Return a best-effort reporter bound to the task's current lease owner."""
 
         writer = self.task_store
-        if not isinstance(writer, TaskProgressWriter):
-            return lambda _progress: None
 
         def report(progress: TaskProgress) -> None:
             """Persist progress without allowing observability failure to abort work."""
@@ -987,11 +970,9 @@ class DistributedWorker:
         return self._load_artifacts(artifact_ids)
 
     def _load_artifacts(self, artifact_ids: list[str]) -> list[StoredArtifact]:
-        """Use a store's batch-read capability while retaining adapter compatibility."""
+        """Resolve a task's inputs in one store round trip."""
 
-        if isinstance(self.artifact_store, BatchArtifactReader):
-            return self.artifact_store.get_many(artifact_ids)
-        return [self.artifact_store.get(artifact_id) for artifact_id in artifact_ids]
+        return self.artifact_store.get_many(artifact_ids)
 
 
 def _unique_entities(entities: list[EntityMention]) -> list[EntityMention]:
