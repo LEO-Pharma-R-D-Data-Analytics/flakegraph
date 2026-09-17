@@ -6,7 +6,7 @@ same row mapping and table column specs for production-sized loads.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -557,12 +557,12 @@ _FILE_BATCH_PRESERVED_NODE_COLUMNS = frozenset(
 )
 
 
-def preserved_columns(batch: GraphWriteBatch, table_name: str) -> set[str] | None:
+def preserved_columns(batch: GraphWriteBatch, table_name: str) -> frozenset[str]:
     """Return the columns a merge of this batch into ``table_name`` must leave alone."""
 
     if batch.write_scope == "file_batch" and table_name == "KG_NODE":
-        return set(_FILE_BATCH_PRESERVED_NODE_COLUMNS)
-    return None
+        return _FILE_BATCH_PRESERVED_NODE_COLUMNS
+    return frozenset()
 
 
 def build_merge_statement(
@@ -570,7 +570,7 @@ def build_merge_statement(
     row: Mapping[str, object],
     columns: Sequence[ColumnSpec],
     embedding_dimension: int,
-    preserve_on_match: set[str] | None = None,
+    preserve_on_match: Set[str] = frozenset(),
 ) -> tuple[str, list[object]]:
     """Build a parameterized MERGE statement for a single Snowflake row.
 
@@ -588,9 +588,10 @@ def build_merge_statement(
         params.extend(expression_params)
 
     source_sql = "SELECT " + ", ".join(select_parts)
-    preserved = preserve_on_match or set()
     update_columns = [
-        column.name for column in columns if column.name != "ID" and column.name not in preserved
+        column.name
+        for column in columns
+        if column.name != "ID" and column.name not in preserve_on_match
     ]
     update_sql = ", ".join(f"{name} = source.{name}" for name in update_columns)
     column_names = ", ".join(column.name for column in columns)

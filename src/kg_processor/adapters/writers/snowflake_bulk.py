@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import tempfile
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence, Set
 from contextlib import suppress
 from dataclasses import dataclass
 from itertools import chain
@@ -366,7 +366,7 @@ def build_bulk_merge_statement(
     load_table_name: str,
     columns: Sequence[ColumnSpec],
     embedding_dimension: int,
-    preserve_on_match: set[str] | None = None,
+    preserve_on_match: Set[str] = frozenset(),
 ) -> str:
     """Return SQL that casts staged strings and merges rows into a target table."""
 
@@ -380,9 +380,10 @@ def build_bulk_merge_statement(
         for column in columns
     ]
     source_sql = f"SELECT {', '.join(select_parts)} FROM {load_table}"
-    preserved = preserve_on_match or set()
     update_columns = [
-        column.name for column in columns if column.name != "ID" and column.name not in preserved
+        column.name
+        for column in columns
+        if column.name != "ID" and column.name not in preserve_on_match
     ]
     update_sql = ", ".join(f"{name} = source.{name}" for name in update_columns)
     column_names = ", ".join(column.name for column in columns)

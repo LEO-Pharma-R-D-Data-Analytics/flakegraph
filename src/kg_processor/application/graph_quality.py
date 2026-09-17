@@ -13,6 +13,10 @@ from kg_processor.domain.graph import Chunk, Community, Evidence, GraphEdge, Gra
 from kg_processor.domain.ontology import OntologyProfile, normalize_ontology_label
 
 _DETAIL_LIMIT = 20
+# Shape heuristics are warnings, not gates: legitimate corpora can exceed them.
+_MAX_ISOLATE_RATIO = 0.15
+_MAX_COMPONENT_RATIO = 0.25
+_MAX_RELATION_VOCABULARY_RATIO = 0.50
 _MIN_EDGES_FOR_VOCABULARY_WARNING = 5
 _MIN_REPORTED_COMMUNITY_SIZE = 2
 
@@ -114,9 +118,6 @@ def evaluate_graph_quality_rows(
     chunks: list[dict[str, Any]] | None = None,
     communities: list[dict[str, Any]] | None = None,
     ontology: OntologyProfile | None = None,
-    max_isolate_ratio: float = 0.15,
-    max_component_ratio: float = 0.25,
-    max_relation_vocabulary_ratio: float = 0.50,
 ) -> GraphQualityResult:
     """Evaluate structural, grounding, ontology, and embedding diagnostics.
 
@@ -137,9 +138,9 @@ def evaluate_graph_quality_rows(
         checks.append(_evidence_span_check(chunks, evidence))
     checks.extend(
         [
-            _isolate_check(nodes, edges, max_isolate_ratio),
-            _component_check(nodes, edges, max_component_ratio),
-            _relation_vocabulary_check(edges, max_relation_vocabulary_ratio),
+            _isolate_check(nodes, edges, _MAX_ISOLATE_RATIO),
+            _component_check(nodes, edges, _MAX_COMPONENT_RATIO),
+            _relation_vocabulary_check(edges, _MAX_RELATION_VOCABULARY_RATIO),
             _singleton_community_check(communities or []),
         ]
     )

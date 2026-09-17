@@ -103,25 +103,12 @@ def _grounded_entities(
 ) -> list[_GroundedEntity]:
     """Return every exact local occurrence of each grounded inventory surface."""
 
-    grounded: list[_GroundedEntity] = []
-    seen: set[tuple[str, int, int]] = set()
     sentence_index = build_surface_text_index(sentence)
-    for entity in entities:
-        for surface in _candidate_surfaces(entity):
-            for start, end in indexed_surface_spans(sentence_index, [surface]):
-                key = (entity.id, start, end)
-                if key in seen:
-                    continue
-                seen.add(key)
-                grounded.append(
-                    _GroundedEntity(
-                        entity.id,
-                        sentence[start:end],
-                        entity.type,
-                        start,
-                        end,
-                    )
-                )
+    grounded = [
+        _GroundedEntity(entity.id, sentence[start:end], entity.type, start, end)
+        for entity in entities
+        for start, end in indexed_surface_spans(sentence_index, _candidate_surfaces(entity))
+    ]
     # Prefer the most specific surface when names overlap. For example, the
     # occurrence ``World Taekwondo`` must not also bind the nested art name
     # ``taekwondo`` as the grammatical subject of the same assertion.
@@ -157,7 +144,7 @@ def _is_direct_cue_assertion(
     matching_relations = {
         definition.name
         for definition in ontology.relation_types
-        if _types_allowed(source.entity_type, target.entity_type, definition)
+        if definition.admits(source.entity_type, target.entity_type)
         for match in _cue_matches(sentence, definition)
         if match.span() == cue.span()
     }
@@ -289,22 +276,10 @@ def _orient_pair(
 ) -> tuple[_GroundedEntity, _GroundedEntity] | None:
     """Orient a pair using ontology types, falling back to sentence order."""
 
-    forward = _types_allowed(left.entity_type, right.entity_type, definition)
-    reverse = _types_allowed(right.entity_type, left.entity_type, definition)
+    forward = definition.admits(left.entity_type, right.entity_type)
+    reverse = definition.admits(right.entity_type, left.entity_type)
     if forward:
         return left, right
     if reverse:
         return right, left
     return None
-
-
-def _types_allowed(
-    source_type: str,
-    target_type: str,
-    definition: RelationTypeDefinition,
-) -> bool:
-    """Apply an ontology relation's optional domain and range restrictions."""
-
-    source_allowed = not definition.source_types or source_type in definition.source_types
-    target_allowed = not definition.target_types or target_type in definition.target_types
-    return source_allowed and target_allowed

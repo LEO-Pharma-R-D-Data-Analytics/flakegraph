@@ -12,10 +12,10 @@ from kg_processor.application.community_reports import (
     CommunityProgressCallback,
     CommunityReportResult,
     CommunitySeed,
+    community_stable_key,
     generate_community_reports,
 )
 from kg_processor.domain.graph import Evidence, GraphEdge, GraphNode
-from kg_processor.domain.ids import stable_id
 from kg_processor.ports.llm import DEFAULT_LLM_TIMEOUT_SECONDS, LlmProvider
 
 _MAX_HIERARCHY_LEVEL = 2
@@ -109,7 +109,7 @@ def _community_seeds(
             graph,
             members,
             level=1,
-            parent_stable_key=_stable_key(members, 0),
+            parent_stable_key=community_stable_key(members, 0),
             min_community_size=min_community_size,
             max_community_size=max_community_size,
             resolution=resolution * _CHILD_RESOLUTION_MULTIPLIER,
@@ -159,7 +159,7 @@ def _append_child_seeds(
             induced,
             child,
             level=level + 1,
-            parent_stable_key=_stable_key(child, level),
+            parent_stable_key=community_stable_key(child, level),
             min_community_size=min_community_size,
             max_community_size=max_community_size,
             resolution=resolution * _CHILD_RESOLUTION_MULTIPLIER,
@@ -225,12 +225,6 @@ def _add_co_mention_projection(
         bounded_ids = sorted(set(node_ids))[:_MAX_CO_MENTION_NODES]
         for source, target in combinations(bounded_ids, 2):
             _add_weighted_edge(graph, source, target, weight)
-
-
-def _stable_key(members: set[str], level: int) -> str:
-    """Derive a reproducible community hierarchy key from sorted member IDs and depth."""
-
-    return stable_id("community_key", level, ",".join(sorted(members)), length=40)
 
 
 def _add_weighted_edge(

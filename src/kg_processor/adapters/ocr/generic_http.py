@@ -184,7 +184,7 @@ def _page_from_payload(
     if not isinstance(payload, dict):
         text = _as_text(payload)
         blocks = [_text_block(file, index, text)] if text else []
-        return _page(file, index, text, text, blocks, None)
+        return ParsedPage(page_number=index, markdown=text, raw_text=text, blocks=blocks)
 
     mapped_page_number = _as_int(_get_path(payload, settings.page_number_path))
     page_number = index if mapped_page_number is None else mapped_page_number
@@ -199,13 +199,12 @@ def _page_from_payload(
         markdown = raw_text
     if not blocks and (markdown or raw_text):
         blocks = [_text_block(file, page_number, markdown or raw_text)]
-    return _page(
-        file,
-        page_number,
-        markdown,
-        raw_text,
-        blocks,
-        _optional_text(_get_path(payload, settings.detected_language_path)),
+    return ParsedPage(
+        page_number=page_number,
+        markdown=markdown,
+        raw_text=raw_text,
+        blocks=blocks,
+        detected_language=_optional_text(_get_path(payload, settings.detected_language_path)),
     )
 
 
@@ -217,23 +216,6 @@ def _text_block(file: InputFile, page_number: int, text: str) -> LayoutBlock:
         page_number=page_number,
         kind="text",
         text=text,
-    )
-
-
-def _page(
-    _file: InputFile,
-    page_number: int,
-    markdown: str,
-    raw_text: str,
-    blocks: list[LayoutBlock],
-    detected_language: str | None,
-) -> ParsedPage:
-    return ParsedPage(
-        page_number=page_number,
-        markdown=markdown,
-        raw_text=raw_text,
-        blocks=blocks,
-        detected_language=detected_language,
     )
 
 

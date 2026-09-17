@@ -54,6 +54,18 @@ class CommunitySeed:
     level: int = 0
     parent_stable_key: str | None = None
 
+    @property
+    def stable_key(self) -> str:
+        """Derive a reproducible hierarchy key from sorted member IDs and depth."""
+
+        return community_stable_key(self.member_ids, self.level)
+
+
+def community_stable_key(member_ids: set[str], level: int) -> str:
+    """Key a community by its members and depth, the same way on every engine."""
+
+    return stable_id("community_key", level, ",".join(sorted(member_ids)), length=40)
+
 
 @dataclass(frozen=True)
 class _CommunityReportContext:
@@ -76,7 +88,7 @@ class _CommunityReportContext:
 
 def generate_community_reports(
     graph_id: str,
-    community_member_sets: Sequence[set[str] | CommunitySeed],
+    community_seeds: Sequence[CommunitySeed],
     nodes: list[GraphNode],
     edges: list[GraphEdge],
     llm: CommunitySummaryProvider,
@@ -99,7 +111,7 @@ def generate_community_reports(
     # makes report regeneration safe even when summaries or ratings change.
     node_by_id = {node.id: node for node in nodes}
     contexts = _report_contexts(
-        community_member_sets,
+        community_seeds,
         node_by_id,
         edges,
         max_relations_per_community,
@@ -186,7 +198,7 @@ def generate_community_reports(
 
 
 def _report_contexts(
-    community_member_sets: Sequence[set[str] | CommunitySeed],
+    community_seeds: Sequence[CommunitySeed],
     node_by_id: dict[str, GraphNode],
     edges: list[GraphEdge],
     max_relations_per_community: int,
@@ -203,12 +215,7 @@ def _report_contexts(
     evidence_by_subject: dict[str, list[Evidence]] = {}
     for evidence_item in evidence:
         evidence_by_subject.setdefault(evidence_item.subject_id, []).append(evidence_item)
-    for index, community_item in enumerate(community_member_sets):
-        seed = (
-            community_item
-            if isinstance(community_item, CommunitySeed)
-            else CommunitySeed(member_ids=community_item)
-        )
+    for index, seed in enumerate(community_seeds):
         member_ids = seed.member_ids
         members = _ordered_members(member_ids, node_by_id)
         if not members:
@@ -221,12 +228,7 @@ def _report_contexts(
             relations=[_relation_line(edge, node_by_id) for edge in internal_edges],
             evidence_quotes=_evidence_lines(internal_edges, evidence_by_subject),
         )
-        stable_key = stable_id(
-            "community_key",
-            seed.level,
-            ",".join(sorted(member_ids)),
-            length=40,
-        )
+        stable_key = seed.stable_key
         contexts.append(
             _CommunityReportContext(
                 member_ids=member_ids,

@@ -382,7 +382,7 @@ class LlmRelationExtractor:
                 reasons["self_loop"] += 1
                 continue
             source, target, direction_repaired = _orient_relation(source, target, definition)
-            if not _types_allowed(source.type, target.type, definition):
+            if not definition.admits(source.type, target.type):
                 reasons["domain_or_range_violation"] += 1
                 continue
             if direction_repaired:
@@ -763,22 +763,6 @@ def _validated_records[RecordT: BaseModel](
     return raw_records, records
 
 
-def _types_allowed(
-    source_type: str,
-    target_type: str,
-    definition: RelationTypeDefinition,
-) -> bool:
-    """Check whether endpoint types satisfy an ontology relation signature.
-
-    An empty source or target type list means the ontology intentionally leaves
-    that side unrestricted.
-    """
-
-    source_allowed = not definition.source_types or source_type in definition.source_types
-    target_allowed = not definition.target_types or target_type in definition.target_types
-    return source_allowed and target_allowed
-
-
 def _orient_relation(
     source: EntityMention,
     target: EntityMention,
@@ -790,9 +774,9 @@ def _orient_relation(
     original order and are rejected by the caller's subsequent type check.
     """
 
-    if _types_allowed(source.type, target.type, definition):
+    if definition.admits(source.type, target.type):
         return source, target, False
-    if _types_allowed(target.type, source.type, definition):
+    if definition.admits(target.type, source.type):
         return target, source, True
     return source, target, False
 
@@ -863,9 +847,7 @@ def _ontology_definition_keys(ontology: OntologyProfile) -> frozenset[str]:
     """Return every ontology definition in the form used to recognize one."""
 
     return frozenset(
-        key
-        for key in (_definition_key(item.description) for item in ontology.entity_types)
-        if key
+        key for key in (_definition_key(item.description) for item in ontology.entity_types) if key
     )
 
 

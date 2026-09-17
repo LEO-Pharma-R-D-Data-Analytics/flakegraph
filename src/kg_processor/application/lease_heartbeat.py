@@ -10,6 +10,9 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
+# One blip is recoverable; three in a row means the lease is not ours to keep.
+_MAX_CONSECUTIVE_FAILURES = 3
+
 
 class LeaseHeartbeat:
     """Context manager that heartbeats a leased job on a daemon thread."""
@@ -62,7 +65,7 @@ class LeaseHeartbeat:
                 self.failed_heartbeats += 1
                 self.consecutive_failures += 1
 
-    def raise_if_unhealthy(self, maximum_consecutive_failures: int = 3) -> None:
+    def raise_if_unhealthy(self) -> None:
         """Stop completion after repeated lease-refresh failures.
 
         A single network blip remains recoverable. Repeated failures mean the
@@ -70,9 +73,7 @@ class LeaseHeartbeat:
         duplicated results as if its lease were healthy.
         """
 
-        if maximum_consecutive_failures <= 0:
-            raise ValueError("maximum consecutive heartbeat failures must be positive")
-        if self.consecutive_failures < maximum_consecutive_failures:
+        if self.consecutive_failures < _MAX_CONSECUTIVE_FAILURES:
             return
         raise RuntimeError(
             f"lease heartbeat failed {self.consecutive_failures} consecutive times"

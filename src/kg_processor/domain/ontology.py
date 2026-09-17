@@ -46,6 +46,16 @@ class RelationTypeDefinition(BaseModel):
     examples: list[str] = Field(default_factory=list)
     evidence_cues: list[str] = Field(default_factory=list)
 
+    def admits(self, source_type: str, target_type: str) -> bool:
+        """Return whether endpoint types satisfy this relation's signature.
+
+        An empty source or target type list leaves that side unrestricted.
+        """
+
+        source_allowed = not self.source_types or source_type in self.source_types
+        target_allowed = not self.target_types or target_type in self.target_types
+        return source_allowed and target_allowed
+
 
 class OntologyProfile(BaseModel):
     """Represent a complete, reviewable extraction vocabulary and enforcement mode.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 
-from kg_processor.application.community_reports import generate_community_reports
+from kg_processor.application.community_reports import CommunitySeed, generate_community_reports
 from kg_processor.domain.graph import GraphEdge, GraphNode
 from kg_processor.ports.llm import (
     CommunitySummaryRequest,
@@ -44,7 +44,7 @@ def test_generate_community_reports_uses_grounded_member_and_relation_context() 
 
     result = generate_community_reports(
         "graph",
-        [{"node_alice", "node_acme", "node_copenhagen"}],
+        [CommunitySeed(member_ids={"node_alice", "node_acme", "node_copenhagen"})],
         nodes,
         edges,
         provider,
@@ -117,7 +117,10 @@ def test_generate_community_reports_parallel_preserves_input_order() -> None:
 
     result = generate_community_reports(
         "graph",
-        [{"node_alice", "node_bob"}, {"node_copenhagen", "node_dojo"}],
+        [
+            CommunitySeed(member_ids={"node_alice", "node_bob"}),
+            CommunitySeed(member_ids={"node_copenhagen", "node_dojo"}),
+        ],
         nodes,
         edges,
         provider,

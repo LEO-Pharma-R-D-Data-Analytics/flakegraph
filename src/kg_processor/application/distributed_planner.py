@@ -175,10 +175,6 @@ class DistributedRunPlanner:
         replaces a finished upload even when an earlier object remains slow.
         """
 
-        if len(files) <= 1:
-            for file in files:
-                yield file, self._store_source(run_id, file)
-            return
         workers = _source_staging_workers(files)
         with ThreadPoolExecutor(max_workers=workers) as executor:
             uploads = {executor.submit(self._store_source, run_id, file): file for file in files}
@@ -302,8 +298,6 @@ def _source_staging_workers(files: Sequence[InputFile]) -> int:
     many gigabytes merely because the corpus contains several large documents.
     """
 
-    if not files:
-        return 1
     largest_file = max(file.size_bytes for file in files)
     byte_limited_workers = max(
         1,

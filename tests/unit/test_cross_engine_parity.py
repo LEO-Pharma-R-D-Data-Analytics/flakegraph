@@ -11,6 +11,7 @@ from typing import Any
 
 from kg_processor.application import spark_finalization
 from kg_processor.application.community_reports import (
+    CommunitySeed,
     generate_community_reports,
     structural_rating,
 )
@@ -172,7 +173,7 @@ def test_community_rating_uses_the_relations_the_report_received() -> None:
 
     result = generate_community_reports(
         "graph",
-        [{"node_a", "node_b", "node_c"}],
+        [CommunitySeed(member_ids={"node_a", "node_b", "node_c"})],
         nodes,
         edges,
         _StubCommunityLlm(),

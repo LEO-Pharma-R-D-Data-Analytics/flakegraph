@@ -352,27 +352,19 @@ def _spcs_runtime_configuration(settings: Settings) -> dict[str, Any]:
             },
         },
     )
-    _inline_ontology_profile(settings, payload)
+    _inline_ontology_profile(payload, settings.ontology.profile_path)
     return payload
 
 
-def _inline_ontology_profile(settings: Settings, payload: dict[str, Any]) -> None:
-    """Replace an ontology file reference with the profile itself."""
-
-    inline_ontology_profile(payload, settings.ontology.profile_path)
-
-
-def inline_ontology_profile(payload: dict[str, Any], profile_path: Path | None) -> None:
+def _inline_ontology_profile(payload: dict[str, Any], profile_path: Path | None) -> None:
     """Replace an ontology file reference in a run payload with the profile itself.
 
     ``profile_path`` is resolved against the author's filesystem. The container
     only receives this payload and the image, so a dataset-relative path dangles
     and the worker aborts before claiming any file. Reading the profile here
-    keeps the promise that a staged specification is complete on its own.
-
-    Public because two callers build container payloads — the CLI's specification
-    renderer and the application's run configuration. Inlining in only one of them
-    leaves the other producing a run that cannot start.
+    keeps the promise that a staged specification is complete on its own. The
+    application ships without this package and carries its own copy, pinned to
+    this one by a parity test.
     """
 
     ontology = payload.get("ontology")

@@ -34,9 +34,7 @@ class WorkerProgressContext:
     job_id: str
     graph_id: str
     ocr_provider: str
-    llm_provider: str
     llm_model: str
-    embedding_provider: str
     embedding_model: str
     writer_provider: str
     output_path: Path
