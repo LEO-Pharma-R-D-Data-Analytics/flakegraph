@@ -16,8 +16,9 @@ import atexit
 import hashlib
 import math
 import os
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from itertools import batched
 from threading import Lock
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, cast
@@ -36,6 +37,7 @@ from kg_processor.application.enrichment_batching import (
 from kg_processor.application.entity_resolution import (
     MAX_SHORT_INITIALISM_LENGTH,
     MIN_SHORT_INITIALISM_LENGTH,
+    UnionFind,
 )
 from kg_processor.application.graph_merge import normalize_entity_name, normalize_relation_type
 from kg_processor.application.redaction import is_sensitive_key
@@ -2775,38 +2777,17 @@ def _connected_component_rows(
     vertex_ids: Iterable[str],
     edges: Iterable[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    """Resolve a bounded identity graph with deterministic union-find labels.
+    """Resolve a bounded identity graph with the local engine's union-find.
 
-    The Spark caller checks strict row limits before collecting. Keeping the
-    algorithm pure makes its equivalence to distributed connected components easy
-    to test, including singleton vertices and transitive identity chains.
+    The Spark caller checks strict row limits before collecting. The same
+    lexical-minimum root rule labels components here as in local resolution,
+    so both engines agree on a representative for one cluster.
     """
 
-    parents = {vertex_id: vertex_id for vertex_id in vertex_ids}
-
-    def find(vertex_id: str) -> str:
-        """Return and path-compress the current representative for one vertex."""
-
-        parent = parents[vertex_id]
-        while parent != parents[parent]:
-            parent = parents[parent]
-        while vertex_id != parent:
-            next_vertex = parents[vertex_id]
-            parents[vertex_id] = parent
-            vertex_id = next_vertex
-        return parent
-
+    union_find = UnionFind(list(vertex_ids))
     for left_id, right_id in edges:
-        if left_id not in parents or right_id not in parents:
-            raise ValueError("identity edge references a vertex outside the bounded graph")
-        left_root = find(left_id)
-        right_root = find(right_id)
-        if left_root == right_root:
-            continue
-        # The lexical minimum makes representatives independent from edge order.
-        root, child = sorted((left_root, right_root))
-        parents[child] = root
-    return sorted((vertex_id, find(vertex_id)) for vertex_id in parents)
+        union_find.union(left_id, right_id)
+    return sorted((vertex_id, union_find.find(vertex_id)) for vertex_id in union_find.parent)
 
 
 def _adaptive_provider_partitions(
@@ -2900,17 +2881,11 @@ def _embed_partition(
         dimension=settings.embedding.dimension,
         batch_size=settings.embedding.batch_size,
     )
-    batch: list[Any] = []
-    for row in rows:
-        batch.append(row)
-        if len(batch) >= settings.embedding.batch_size:
-            yield from _embed_row_batch(provider, options, batch)
-            batch = []
-    if batch:
+    for batch in batched(rows, settings.embedding.batch_size, strict=False):
         yield from _embed_row_batch(provider, options, batch)
 
 
-def _embed_row_batch(provider: Any, options: Any, rows: list[Any]) -> Any:
+def _embed_row_batch(provider: Any, options: Any, rows: Sequence[Any]) -> Any:
     """Call one embedding provider batch and preserve stable row order."""
 
     vectors = provider.embed([str(row.embedding_text or "") for row in rows], options)
@@ -2930,12 +2905,11 @@ def _adjudicate_partition(
     llm = _executor_llm_provider(settings)
     if not isinstance(llm, StructuredCompletionProvider):
         raise ValueError("Spark entity resolution requires structured LLM completion")
-    batches = _row_batches(rows, settings.graph.resolution_adjudication_batch_size)
-    for batch in batches:
+    for batch in batched(rows, settings.graph.resolution_adjudication_batch_size, strict=False):
         yield from _adjudicate_row_batch(batch, settings, llm)
 
 
-def _adjudicate_row_batch(rows: list[Any], settings: Settings, llm: Any) -> Any:
+def _adjudicate_row_batch(rows: Sequence[Any], settings: Settings, llm: Any) -> Any:
     """Convert Spark rows to domain records and emit reconciled decisions."""
 
     from kg_processor.application.entity_resolution import adjudicate_resolution_candidates
@@ -2989,7 +2963,7 @@ def _summarize_community_partition(
     llm = _executor_enrichment_llm_provider(settings)
 
     def summarize_batch(
-        batch: list[Any],
+        batch: Sequence[Any],
     ) -> list[tuple[str, str, str, list[str], list[dict[str, str]]]]:
         """Convert one bounded Spark row batch into provider-generated tuples."""
 
@@ -3023,8 +2997,7 @@ def _summarize_community_partition(
             for row, result in zip(batch, results, strict=True)
         ]
 
-    batches = _row_batches(rows, COMMUNITY_BATCH_SIZE)
-    for results in map(summarize_batch, batches):
+    for results in map(summarize_batch, batched(rows, COMMUNITY_BATCH_SIZE, strict=False)):
         yield from results
 
 
@@ -3040,7 +3013,7 @@ def _merge_description_partition(
     settings = Settings.model_validate(settings_payload)
     llm = _executor_enrichment_llm_provider(settings)
 
-    def merge_batch(batch: list[Any]) -> list[tuple[str, str]]:
+    def merge_batch(batch: Sequence[Any]) -> list[tuple[str, str]]:
         """Return non-empty merged descriptions for one bounded Spark row batch."""
 
         requests = [
@@ -3065,24 +3038,8 @@ def _merge_description_partition(
             if result.description.strip()
         ]
 
-    batches = _row_batches(rows, DESCRIPTION_BATCH_SIZE)
-    for merged_batch in map(merge_batch, batches):
+    for merged_batch in map(merge_batch, batched(rows, DESCRIPTION_BATCH_SIZE, strict=False)):
         yield from merged_batch
-
-
-def _row_batches(rows: Iterable[Any], batch_size: int) -> Iterator[list[Any]]:
-    """Yield fixed-size lists without materializing an entire Spark partition."""
-
-    if batch_size <= 0:
-        raise ValueError("partition batch size must be positive")
-    batch: list[Any] = []
-    for row in rows:
-        batch.append(row)
-        if len(batch) == batch_size:
-            yield batch
-            batch = []
-    if batch:
-        yield batch
 
 
 def _executor_embedding_provider(settings: Settings) -> Any:

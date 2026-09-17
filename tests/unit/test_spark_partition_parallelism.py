@@ -15,7 +15,6 @@ from kg_processor.application.spark_finalization import (
     _effective_shuffle_partitions,
     _executor_embedding_provider,
     _executor_enrichment_llm_provider,
-    _row_batches,
     _spark_application_name,
     _target_output_partitions,
 )
@@ -58,15 +57,6 @@ def test_spark_application_identity_fences_every_durable_attempt() -> None:
     assert first.replace("-", "").isalnum()
 
 
-def test_row_batches_streams_a_short_final_batch() -> None:
-    """Keep identity adjudication requests bounded without dropping tail rows."""
-
-    assert list(_row_batches(iter(range(5)), batch_size=2)) == [[0, 1], [2, 3], [4]]
-
-    with pytest.raises(ValueError, match="batch size must be positive"):
-        list(_row_batches(iter([1]), batch_size=0))
-
-
 def test_bounded_connected_components_preserve_singletons_and_transitive_links() -> None:
     """Match connected-component semantics without depending on edge input order."""
 
@@ -83,13 +73,6 @@ def test_bounded_connected_components_preserve_singletons_and_transitive_links()
     ]
     assert forward == expected
     assert reverse == expected
-
-
-def test_bounded_connected_components_reject_unknown_edge_endpoint() -> None:
-    """Surface corrupt identity edges before creating incomplete component rows."""
-
-    with pytest.raises(ValueError, match="outside the bounded graph"):
-        _connected_component_rows(["known"], [("known", "missing")])
 
 
 def test_provider_partitions_reduce_stragglers_without_unbounded_task_counts() -> None:

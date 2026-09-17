@@ -88,7 +88,7 @@ def resolve_entity_mentions(  # noqa: PLR0912,PLR0915 - branches record distinct
     Every rule records a decision, while provider failures keep candidates separate.
     """
 
-    union_find = _UnionFind([mention.id for mention in mentions])
+    union_find = UnionFind([mention.id for mention in mentions])
     mentions_by_id = {mention.id: mention for mention in mentions}
     decisions: list[ResolutionDecision] = []
     pairs = _same_type_pairs(mentions)
@@ -576,7 +576,7 @@ def _candidate_batches(
     return [candidates[index : index + size] for index in range(0, len(candidates), size)]
 
 
-class _UnionFind:
+class UnionFind:
     """Maintain mention identity clusters with deterministic disjoint-set unions.
 
     Lexically smaller roots always win, ensuring equivalent decisions produce the
@@ -626,7 +626,7 @@ class _UnionFind:
 
 
 def _cluster_initialism_conflict(
-    union_find: _UnionFind,
+    union_find: UnionFind,
     mentions_by_id: dict[str, EntityMention],
     left_id: str,
     right_id: str,
