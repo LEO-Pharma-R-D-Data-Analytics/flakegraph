@@ -24,7 +24,7 @@ from kg_processor.domain.extraction import (
 from kg_processor.ports.embeddings import EmbeddingProvider, EmbedOptions
 from kg_processor.ports.llm import StructuredCompletionProvider
 
-_MIN_EMBEDDING_FOR_LEXICAL_MERGE = 0.75
+MIN_EMBEDDING_FOR_LEXICAL_MERGE = 0.75
 _MIN_EXPANDED_IDENTITY_SIMILARITY = 0.80
 _SORTED_NEIGHBORHOOD_SIZE = 12
 _MIN_PAIR_BLOCK_SIZE = 2
@@ -155,7 +155,7 @@ def resolve_entity_mentions(  # noqa: PLR0912,PLR0915 - branches record distinct
         ambiguous_initialism = _has_ambiguous_initialism_overlap(left, right)
         lexical_merge = (
             lexical_score >= lexical_auto_merge
-            and embedding_score >= _MIN_EMBEDDING_FOR_LEXICAL_MERGE
+            and embedding_score >= MIN_EMBEDDING_FOR_LEXICAL_MERGE
             and not numeric_mismatch
             and not ambiguous_initialism
         )

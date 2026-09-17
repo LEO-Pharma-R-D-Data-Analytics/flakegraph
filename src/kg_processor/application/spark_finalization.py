@@ -36,6 +36,7 @@ from kg_processor.application.enrichment_batching import (
 )
 from kg_processor.application.entity_resolution import (
     MAX_SHORT_INITIALISM_LENGTH,
+    MIN_EMBEDDING_FOR_LEXICAL_MERGE,
     MIN_SHORT_INITIALISM_LENGTH,
     UnionFind,
 )
@@ -1923,7 +1924,7 @@ class SparkGraphFinalizer:
         ).checkpoint(eager=True)
         auto_condition = (
             (F.col("lexical_score") >= F.lit(self.settings.graph.resolution_lexical_auto_merge))
-            & (F.col("embedding_score") >= F.lit(0.75))
+            & (F.col("embedding_score") >= F.lit(MIN_EMBEDDING_FOR_LEXICAL_MERGE))
         ) | (
             (F.col("embedding_score") >= F.lit(self.settings.graph.resolution_embedding_auto_merge))
             & (F.col("lexical_score") >= F.lit(self.settings.graph.resolution_candidate_threshold))
