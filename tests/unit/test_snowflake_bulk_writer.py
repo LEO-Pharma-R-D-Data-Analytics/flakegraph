@@ -103,6 +103,9 @@ class MemoryBlobStore:
     def __init__(self, payloads: dict[str, bytes]) -> None:
         self.payloads = payloads
 
+    def initialize(self) -> None:
+        """Nothing to create for an in-memory store."""
+
     def put(self, key: str, payload: bytes, media_type: str) -> str:
         """Store one payload under a deterministic test URI."""
 

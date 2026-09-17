@@ -13,6 +13,10 @@ class BlobStore(Protocol):
     byte plane so workers and distributed data engines can read objects directly.
     """
 
+    def initialize(self) -> None:
+        """Create whatever the store needs once; safe to call from every replica."""
+        ...
+
     def put(self, key: str, payload: bytes, media_type: str) -> str:
         """Store bytes idempotently and return their canonical object URI."""
         ...

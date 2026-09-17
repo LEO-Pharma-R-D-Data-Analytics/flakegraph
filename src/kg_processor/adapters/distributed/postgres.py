@@ -175,9 +175,7 @@ class PostgresDistributedStore:
         """
 
         if self.blob_store is not None:
-            initialize = getattr(self.blob_store, "initialize", None)
-            if callable(initialize):
-                initialize()
+            self.blob_store.initialize()
 
         with self._connection() as connection:
             connection.execute(
@@ -1894,7 +1892,9 @@ class PostgresDistributedStore:
                       SELECT 1
                       FROM flakegraph_task_output AS output
                       JOIN flakegraph_task AS task ON task.id = output.task_id
-                      WHERE output.artifact_id = artifact.id AND task.status = %s
+                      WHERE output.artifact_id = artifact.id
+                        AND task.run_id = artifact.run_id
+                        AND task.status = %s
                   )
                 ORDER BY artifact.created_at, artifact.id
                 """,
