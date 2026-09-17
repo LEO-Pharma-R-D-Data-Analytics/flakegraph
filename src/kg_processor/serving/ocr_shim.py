@@ -614,20 +614,20 @@ def create_app(
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
         priority = resolved.priority_for(consumer_class)
-        body = await request.body()
-
-        # Settle the backend before the request costs anything. Refusing here
-        # turns a several-minute download ending in an opaque 409 into an
-        # immediate answer that names the problem, and supplying the default
-        # means a caller who followed MinerU's own documentation still works.
-        if route == PARSE_ROUTE and request.method == "POST":
-            settled = _settle_backend(request.headers.get("content-type", ""), body)
-            if isinstance(settled, JSONResponse):
-                metrics.requests.labels(consumer_class, OUTCOME_REJECTED).inc()
-                return settled
-            body = settled
-
         try:
+            # A caller can hang up while still uploading, so the read is inside.
+            body = await request.body()
+            # Settle the backend before the request costs anything. Refusing
+            # here turns a several-minute download ending in an opaque 409 into
+            # an immediate answer that names the problem, and supplying the
+            # default means a caller who followed MinerU's own documentation
+            # still works.
+            if route == PARSE_ROUTE and request.method == "POST":
+                settled = _settle_backend(request.headers.get("content-type", ""), body)
+                if isinstance(settled, JSONResponse):
+                    metrics.requests.labels(consumer_class, OUTCOME_REJECTED).inc()
+                    return settled
+                body = settled
             return await _hold_and_forward(
                 request, route, body, priority, consumer_class, pool_view, config, metrics
             )
