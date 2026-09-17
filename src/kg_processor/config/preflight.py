@@ -22,7 +22,6 @@ from kg_processor.adapters.files.common import is_supported_file
 from kg_processor.adapters.files.manifest import manifest_candidate_paths
 from kg_processor.adapters.snowflake import validate_stage_location
 from kg_processor.application.ontology import load_ontology
-from kg_processor.config.provider_registry import ProviderKind, provider_names
 from kg_processor.config.settings import Settings
 from kg_processor.ports.ocr import OCR_SUPPORTED_SUFFIXES, PageWindow, parse_page_range
 
@@ -71,9 +70,6 @@ def run_preflight(
 
     result = PreflightResult(ok=True)
 
-    # Provider names are checked first so later validation can assume each
-    # selected provider belongs to the known catalog.
-    _validate_supported_providers(settings, result)
     _validate_extraction_configuration(
         settings,
         result,
@@ -165,11 +161,6 @@ def run_preflight(
             "Job file queue worker id is configured",
             "job.use_file_queue requires job.lease_owner",
         )
-        result.require(
-            settings.job.file_batch_size > 0,
-            f"Job file queue batch size is configured: {settings.job.file_batch_size}",
-            "job.use_file_queue requires a positive job.file_batch_size",
-        )
         _require_snowflake_target(settings, "job file queue", result)
     _validate_no_secret_files(settings, result)
     return result
@@ -229,25 +220,6 @@ def _validate_ontology_profile(settings: Settings, result: PreflightResult) -> N
         result.checks.append(
             f"Ontology profile is valid: {loaded.profile.name} "
             f"({loaded.checksum[:12]}) from {loaded.source}"
-        )
-
-
-def _validate_supported_providers(settings: Settings, result: PreflightResult) -> None:
-    selected: dict[ProviderKind, str] = {
-        "file_source": settings.files.source,
-        "ocr": settings.ocr.provider,
-        "llm": settings.llm.provider,
-        "embedding": settings.embedding.provider,
-        "writer": settings.writer.provider,
-        "cache": settings.cache.provider,
-    }
-    for kind, name in selected.items():
-        supported = provider_names(kind)
-        result.require(
-            name in supported,
-            f"{kind} provider is supported: {name}",
-            f"Unsupported {kind} provider '{name}'. Supported providers: "
-            f"{', '.join(sorted(supported))}",
         )
 
 

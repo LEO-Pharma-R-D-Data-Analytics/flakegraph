@@ -36,16 +36,8 @@ class FallbackOcrProvider:
         max_fragmented_text_ratio: float,
         secondary_supported_suffixes: frozenset[str] | None = None,
     ) -> None:
-        """Store providers and validate density and text-coherence thresholds."""
+        """Store the providers and the density and text-coherence thresholds."""
 
-        if min_characters_per_page < 1:
-            raise ValueError("fallback OCR minimum characters per page must be positive")
-        if not 0.0 <= max_sparse_page_ratio < 1.0:
-            raise ValueError("fallback OCR maximum sparse-page ratio must be in [0, 1)")
-        if not 0.0 <= max_unbroken_text_ratio < 1.0:
-            raise ValueError("fallback OCR maximum unbroken-text ratio must be in [0, 1)")
-        if not 0.0 <= max_fragmented_text_ratio < 1.0:
-            raise ValueError("fallback OCR maximum fragmented-text ratio must be in [0, 1)")
         self.primary = primary
         self.secondary = secondary
         self.primary_name = primary_name

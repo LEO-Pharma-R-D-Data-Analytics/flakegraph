@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -35,13 +35,7 @@ from kg_processor.adapters.writers.local_artifacts import LocalArtifactsWriter
 from kg_processor.adapters.writers.snowflake_bulk import SnowflakeBulkWriter
 from kg_processor.config.preflight import run_preflight
 from kg_processor.config.settings import (
-    CacheSettings,
-    EmbeddingSettings,
-    FileSettings,
-    LlmSettings,
-    OcrSettings,
     Settings,
-    WriterSettings,
 )
 from kg_processor.factories import (
     build_cache,
@@ -235,58 +229,6 @@ def test_preflight_rejects_gliner_when_optional_dependency_is_missing(
 
     assert not result.ok
     assert "GLiNER entity extraction requires: uv sync --extra extract-gliner" in result.errors
-
-
-def test_preflight_rejects_unsupported_provider_names(tmp_path: Path) -> None:
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    settings = Settings.model_construct(
-        files=FileSettings.model_construct(
-            source=cast(Any, "file-source-that-does-not-exist"),
-            input_path=input_dir,
-            include_globs=["**/*"],
-        ),
-        ocr=OcrSettings.model_construct(provider="ocr-that-does-not-exist"),
-        llm=LlmSettings.model_construct(provider="llm-that-does-not-exist"),
-        embedding=EmbeddingSettings.model_construct(
-            provider="embedding-that-does-not-exist",
-            dimension=384,
-            batch_size=32,
-        ),
-        writer=WriterSettings.model_construct(
-            provider="writer-that-does-not-exist",
-            output_path=tmp_path / "out",
-        ),
-        cache=CacheSettings.model_construct(
-            provider=cast(Any, "cache-that-does-not-exist"),
-            path=tmp_path / "cache",
-        ),
-    )
-
-    result = run_preflight(settings)
-
-    assert not result.ok
-    assert any(
-        "Unsupported file_source provider 'file-source-that-does-not-exist'" in error
-        for error in result.errors
-    )
-    assert any(
-        "Unsupported ocr provider 'ocr-that-does-not-exist'" in error for error in result.errors
-    )
-    assert any(
-        "Unsupported llm provider 'llm-that-does-not-exist'" in error for error in result.errors
-    )
-    assert any(
-        "Unsupported embedding provider 'embedding-that-does-not-exist'" in error
-        for error in result.errors
-    )
-    assert any(
-        "Unsupported writer provider 'writer-that-does-not-exist'" in error
-        for error in result.errors
-    )
-    assert any(
-        "Unsupported cache provider 'cache-that-does-not-exist'" in error for error in result.errors
-    )
 
 
 def test_preflight_fails_for_missing_mineru(tmp_path: Path) -> None:

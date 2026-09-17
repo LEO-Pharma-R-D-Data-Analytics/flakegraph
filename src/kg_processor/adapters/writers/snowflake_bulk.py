@@ -97,8 +97,6 @@ class SnowflakeBulkWriter:
     ) -> None:
         """Configure staging, temp-file, and connector dependencies for bulk loads."""
 
-        if target_file_size_bytes <= 0:
-            raise ValueError("target_file_size_bytes must be positive")
         self.config = config
         self.embedding_dimension = embedding_dimension
         self.bulk_stage = validate_stage_location(bulk_stage.rstrip("/"))

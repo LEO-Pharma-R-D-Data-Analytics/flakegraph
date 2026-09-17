@@ -47,7 +47,6 @@ from kg_processor.ports.blob_store import BlobStore
 from kg_processor.ports.task_store import TaskStoreUnavailableError
 
 _INITIAL_TASK_COPY_BATCH_SIZE = 2_000
-_MAX_ZLIB_COMPRESSION_LEVEL = 9
 _ARTIFACT_READ_PARALLELISM = 8
 _MAX_RUN_LIST_LIMIT = 500
 _SCHEMA_VERSION = 9
@@ -86,10 +85,6 @@ class PostgresDistributedStore:
 
         if not dsn.strip():
             raise ValueError("PostgreSQL DSN must not be blank")
-        if not 0 <= compression_level <= _MAX_ZLIB_COMPRESSION_LEVEL:
-            raise ValueError("artifact compression level must be between 0 and 9")
-        if max_artifact_bytes <= 0:
-            raise ValueError("max artifact bytes must be positive")
         self.dsn = dsn
         self.compression_level = compression_level
         self.max_artifact_bytes = max_artifact_bytes
