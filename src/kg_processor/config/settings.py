@@ -312,19 +312,21 @@ class OcrSettings(_SettingsModel):
     snowflake_extract_images: bool = False
     snowflake_page_split: bool = True
 
-    def consumption_model(self) -> str:
+    def consumption_model(self, provider: str | None = None) -> str:
         """Return the name document parsing should be billed under.
 
         Most OCR providers charge one way, so the provider name identifies the
         rate. Snowflake does not: AI_PARSE_DOCUMENT bills Layout at more than
         five times the OCR rate, and a card that cannot tell them apart has to
         pick one and be wrong about the other. The mode therefore travels with
-        the model name into the consumption record.
+        the model name into the consumption record. A fallback policy passes
+        the provider that actually parsed the document.
         """
 
-        if self.provider == "snowflake_cortex":
-            return f"{self.provider}-{self.snowflake_parse_mode.lower()}"
-        return self.provider
+        provider = provider or self.provider
+        if provider == "snowflake_cortex":
+            return f"{provider}-{self.snowflake_parse_mode.lower()}"
+        return provider
 
     @field_validator("provider", mode="before")
     @classmethod

@@ -1308,12 +1308,14 @@ class KgProcessorPipeline:
         parsed = self.ocr.parse(file, ocr_options)
         # Recorded after the call, so a cache hit contributes nothing: it was
         # never billed, and counting it would make re-running an unchanged
-        # corpus look as expensive as the first run.
+        # corpus look as expensive as the first run. The adapter that ran is
+        # what gets billed, not the routing policy that chose it.
+        provider = str(parsed.provider_metadata.get("provider", self.settings.ocr.provider))
         self.consumption.record(
             stage="ocr",
             operation="parse_document",
-            provider=self.settings.ocr.provider,
-            model=self.settings.ocr.consumption_model(),
+            provider=provider,
+            model=self.settings.ocr.consumption_model(provider),
             pages=len(parsed.pages),
             file_id=file.id,
         )

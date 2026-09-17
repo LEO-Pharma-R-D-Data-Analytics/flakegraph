@@ -10,6 +10,7 @@ import pytest
 
 from kg_processor.application.consumption import ConsumptionCollector, locality_for
 from kg_processor.application.metered_llm import MeteredLlmProvider
+from kg_processor.application.pipeline import KgProcessorPipeline
 from kg_processor.config.settings import OcrSettings, Settings
 from kg_processor.domain.consumption import (
     ConsumptionEvent,
@@ -21,6 +22,8 @@ from kg_processor.domain.consumption import (
     price_event,
     summarize,
 )
+from kg_processor.domain.documents import InputFile, ParsedDocument, ParsedPage
+from kg_processor.ports.ocr import OcrOptions
 
 
 def _card() -> RateCard:
@@ -317,6 +320,57 @@ def test_document_parsing_is_priced_per_mode() -> None:
     ocr = card.rate_for("snowflake_cortex", "snowflake_cortex-ocr")
     assert layout is not None and ocr is not None
     assert layout.credits_per_page > ocr.credits_per_page * 5
+
+
+def test_a_fallback_parse_is_billed_to_the_provider_that_ran(tmp_path: Path) -> None:
+    """The routing policy is not a provider; booking it as one hid hosted pages as local."""
+
+    settings = Settings.load(
+        overrides={
+            "files": {"input_path": tmp_path},
+            "ocr": {
+                "provider": "fallback",
+                "fallback_primary_provider": "builtin_text",
+                "fallback_secondary_provider": "mineru_api",
+            },
+            "writer": {"output_path": tmp_path / "out"},
+        }
+    )
+    file = InputFile(
+        id="f",
+        path=tmp_path / "a.pdf",
+        source_uri="a.pdf",
+        checksum="c",
+        mime_type="application/pdf",
+        size_bytes=1,
+    )
+    parsed = ParsedDocument(
+        file_id="f",
+        checksum="c",
+        source_uri="a.pdf",
+        mime_type="application/pdf",
+        pages=[ParsedPage(page_number=1, markdown="x", raw_text="x")],
+        provider_metadata={"provider": "mineru_api", "fallback_ocr": {"selected": "secondary"}},
+    )
+    ocr = SimpleNamespace(parse=lambda _file, _options: parsed)
+    stub = cast(Any, SimpleNamespace())
+    pipeline = KgProcessorPipeline(
+        settings=settings,
+        file_source=stub,
+        ocr=cast(Any, ocr),
+        llm=stub,
+        embeddings=stub,
+        writer=stub,
+    )
+
+    pipeline._parse_file(file, OcrOptions())
+
+    (event,) = pipeline.consumption.events
+    assert (event.provider, event.model, event.locality) == (
+        "mineru_api",
+        "mineru_api",
+        Locality.HOSTED,
+    )
 
 
 def test_the_ocr_settings_carry_the_parse_mode_into_billing() -> None:
