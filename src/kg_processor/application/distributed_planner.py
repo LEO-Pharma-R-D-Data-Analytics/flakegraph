@@ -123,27 +123,6 @@ class DistributedRunPlanner:
         # than serializing every task immediately after inserting a large plan.
         return self.task_store.get_run_summary(effective_run_id)
 
-    def _build_tasks(self, run_id: str, files: list[InputFile]) -> list[TaskDefinition]:
-        """Persist immutable inputs and return the safe initial task graph.
-
-        Extraction windows cannot be known before OCR and chunking. Deferring that
-        fan-out also avoids estimating work from source byte size, which correlates
-        poorly with pages, chunks, and model requests.
-        """
-
-        return list(self._iter_tasks(run_id, files))
-
-    def _iter_tasks(self, run_id: str, files: list[InputFile]) -> Iterator[TaskDefinition]:
-        """Stage sources and yield the initial plan without retaining task rows.
-
-        Ordered executor mapping provides one artifact reference at a time. The
-        PostgreSQL adapter writes each corresponding task directly to ``COPY``, so
-        coordinator memory depends on upload concurrency rather than corpus size.
-        """
-
-        ordered_files = sorted(files, key=lambda item: (item.source_uri, item.id))
-        yield from self._iter_initial_tasks(run_id, ordered_files)
-
     def _iter_initial_tasks(
         self,
         run_id: str,
@@ -188,17 +167,6 @@ class DistributedRunPlanner:
         )
         return iter(files)
 
-    def _store_sources(self, run_id: str, files: list[InputFile]) -> list[ArtifactRef]:
-        """Stage source bytes concurrently while retaining deterministic ordering.
-
-        Source reads and object-store writes are independent, latency-bound work.
-        The bounded ``buffersize`` prevents a large corpus from being read into
-        memory at once, while ordered ``map`` output keeps task construction and
-        its reproducible IDs independent from upload completion timing.
-        """
-
-        return list(self._iter_sources(run_id, files))
-
     def _iter_staged_sources(
         self,
         run_id: str,
@@ -221,21 +189,6 @@ class DistributedRunPlanner:
             uploads = {executor.submit(self._store_source, run_id, file): file for file in files}
             for upload in as_completed(uploads):
                 yield uploads[upload], upload.result()
-
-    def _iter_sources(self, run_id: str, files: list[InputFile]) -> Iterator[ArtifactRef]:
-        """Yield staged source references through a bounded ordered upload pool."""
-
-        if len(files) <= 1:
-            for file in files:
-                yield self._store_source(run_id, file)
-            return
-        workers = _source_staging_workers(files)
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            yield from executor.map(
-                lambda file: self._store_source(run_id, file),
-                files,
-                buffersize=workers,
-            )
 
     def _store_source(self, run_id: str, file: InputFile) -> ArtifactRef:
         """Read and checksum-verify one file before handing its bytes to workers."""

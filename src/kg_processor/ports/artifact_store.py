@@ -31,10 +31,6 @@ class ArtifactStore(Protocol):
         """Load and checksum-verify an artifact or raise when absent or corrupt."""
         ...
 
-    def delete_run_artifacts(self, run_id: str) -> int:
-        """Delete intermediate artifacts for an explicitly selected completed run."""
-        ...
-
 
 @runtime_checkable
 class BatchArtifactReader(Protocol):

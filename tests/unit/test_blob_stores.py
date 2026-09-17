@@ -20,14 +20,10 @@ def test_local_blob_store_round_trips_and_rejects_path_escape(tmp_path: Path) ->
     store.initialize()
 
     uri = store.put("run/entities/part.json", b'{"id": 1}', "application/json")
-    second_uri = store.put("run/entities/part-2.json", b'{"id": 2}', "application/json")
 
     assert store.get(uri) == b'{"id": 1}'
     with pytest.raises(ValueError, match="escapes"):
         store.put("../outside", b"bad", "application/octet-stream")
-    store.delete_many([uri, second_uri])
-    assert not Path(uri.removeprefix("file://")).exists()
-    assert not Path(second_uri.removeprefix("file://")).exists()
 
 
 def test_s3_blob_store_uses_deterministic_path_style_objects(monkeypatch: Any) -> None:
@@ -57,18 +53,10 @@ def test_s3_blob_store_uses_deterministic_path_style_objects(monkeypatch: Any) -
     store.initialize()
 
     uri = store.put("run/chunks/part.parquet", b"parquet", "application/x-parquet")
-    second_uri = store.put("run/chunks/part-2.parquet", b"other", "application/x-parquet")
 
     assert uri == "s3://flakegraph/prefix/run/chunks/part.parquet"
     assert store.get(uri) == b"parquet"
-    store.delete_many([uri, second_uri])
-    assert client.objects == {}
-    assert client.delete_batches == [
-        [
-            "prefix/run/chunks/part.parquet",
-            "prefix/run/chunks/part-2.parquet",
-        ]
-    ]
+    assert client.objects == {("flakegraph", "prefix/run/chunks/part.parquet"): b"parquet"}
     assert client_kwargs["config"].max_pool_connections == 64
 
 
@@ -85,8 +73,6 @@ def test_s3_blob_store_percent_encodes_uri_reserved_key_characters(monkeypatch: 
 
     assert uri == "s3://flakegraph/prefix/run%231/query%3F2.json"
     assert store.get(uri) == b"payload"
-    store.delete(uri)
-    assert client.objects == {}
 
 
 class _MemoryS3Body(BytesIO):
@@ -99,7 +85,6 @@ class _MemoryS3Client:
     def __init__(self) -> None:
         self.buckets: set[str] = set()
         self.objects: dict[tuple[str, str], bytes] = {}
-        self.delete_batches: list[list[str]] = []
 
     def head_bucket(self, *, Bucket: str) -> None:  # noqa: N803 - boto3 API spelling.
         """Return successfully after the test bucket has been initialized."""
@@ -142,17 +127,3 @@ class _MemoryS3Client:
 
         return {"Body": _MemoryS3Body(self.objects[(Bucket, Key)])}
 
-    def delete_object(self, *, Bucket: str, Key: str) -> None:  # noqa: N803
-        """Delete one object idempotently."""
-
-        self.objects.pop((Bucket, Key), None)
-
-    def delete_objects(self, *, Bucket: str, Delete: dict[str, Any]) -> dict[str, Any]:  # noqa: N803
-        """Delete one S3-sized object batch and record its exact keys."""
-
-        keys = [str(item["Key"]) for item in Delete["Objects"]]
-        assert Delete["Quiet"] is True
-        self.delete_batches.append(keys)
-        for key in keys:
-            self.objects.pop((Bucket, key), None)
-        return {"Errors": []}

@@ -17,7 +17,6 @@ import hashlib
 import math
 import os
 from collections.abc import Callable, Iterable, Iterator
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from threading import Lock
 from time import perf_counter
@@ -57,10 +56,6 @@ _GRAPHFRAMES_COORDINATE = "io.graphframes:graphframes-spark4_2.13:0.12.1"
 _TARGET_ROWS_PER_PARTITION = 100_000
 _INPUT_PARTITIONS_PER_SLOT = 8
 _TARGET_PROVIDER_BATCHES_PER_PARTITION = 1
-# Spark already runs one Python task per executor core. Keeping one in-flight call
-# in each task therefore aligns provider concurrency with declared cluster slots;
-# local pipeline parallelism remains independently configurable.
-_SPARK_PROVIDER_CALLS_PER_TASK = 1
 _MAX_PROVIDER_PARTITIONS_PER_SLOT = 256
 # Collecting is permitted only below these intermediate-graph bounds. The choice
 # depends on actual resolution rows, never document count; larger corpora retain
@@ -2897,12 +2892,8 @@ def _adjudicate_partition(
     if not isinstance(llm, StructuredCompletionProvider):
         raise ValueError("Spark entity resolution requires structured LLM completion")
     batches = _row_batches(rows, settings.graph.resolution_adjudication_batch_size)
-    for decisions in _parallel_map_partition(
-        batches,
-        lambda batch: list(_adjudicate_row_batch(batch, settings, llm)),
-        _SPARK_PROVIDER_CALLS_PER_TASK,
-    ):
-        yield from decisions
+    for batch in batches:
+        yield from _adjudicate_row_batch(batch, settings, llm)
 
 
 def _adjudicate_row_batch(rows: list[Any], settings: Settings, llm: Any) -> Any:
@@ -2994,11 +2985,7 @@ def _summarize_community_partition(
         ]
 
     batches = _row_batches(rows, COMMUNITY_BATCH_SIZE)
-    for results in _parallel_map_partition(
-        batches,
-        summarize_batch,
-        _SPARK_PROVIDER_CALLS_PER_TASK,
-    ):
+    for results in map(summarize_batch, batches):
         yield from results
 
 
@@ -3040,11 +3027,7 @@ def _merge_description_partition(
         ]
 
     batches = _row_batches(rows, DESCRIPTION_BATCH_SIZE)
-    for merged_batch in _parallel_map_partition(
-        batches,
-        merge_batch,
-        _SPARK_PROVIDER_CALLS_PER_TASK,
-    ):
+    for merged_batch in map(merge_batch, batches):
         yield from merged_batch
 
 
@@ -3173,50 +3156,6 @@ def _clear_executor_provider_caches() -> None:
 
 
 atexit.register(_clear_executor_provider_caches)
-
-
-def _parallel_map_partition[TInput, TOutput](
-    items: Iterable[TInput],
-    operation: Callable[[TInput], TOutput],
-    parallelism: int,
-) -> Iterator[TOutput]:
-    """Run independent provider calls concurrently with bounded work in flight.
-
-    Spark already spreads partitions across executor cores, while this inner
-    bound exposes multiple in-flight HTTP requests from each partition so model
-    servers can continuously batch them. Completed calls are yielded immediately
-    and replaced before slower calls finish; waiting in submission order would
-    leave provider capacity idle behind a single latency outlier. Every emitted
-    graph row carries its stable identity, so Spark's downstream joins and sorts
-    do not depend on this transport completion order.
-
-    At most ``parallelism`` futures exist at once. This keeps executor memory
-    independent of partition size and avoids consuming a large Spark partition
-    into Python before the provider can process it.
-    """
-
-    if parallelism <= 0:
-        raise ValueError("partition provider parallelism must be positive")
-    if parallelism == 1:
-        for item in items:
-            yield operation(item)
-        return
-    iterator = iter(items)
-    with ThreadPoolExecutor(max_workers=parallelism) as executor:
-        pending: set[Future[TOutput]] = set()
-        for _ in range(parallelism):
-            try:
-                pending.add(executor.submit(operation, next(iterator)))
-            except StopIteration:
-                break
-        while pending:
-            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
-            for future in completed:
-                yield future.result()
-                try:
-                    pending.add(executor.submit(operation, next(iterator)))
-                except StopIteration:
-                    continue
 
 
 def _spark_uri(uri: str) -> str:

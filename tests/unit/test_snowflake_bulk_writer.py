@@ -116,11 +116,6 @@ class MemoryBlobStore:
 
         return self.payloads[uri]
 
-    def delete(self, uri: str) -> None:
-        """Delete a payload idempotently."""
-
-        self.payloads.pop(uri, None)
-
 
 def test_bulk_load_files_write_string_parquet_rows(tmp_path: Path) -> None:
     rows_by_table = build_snowflake_rows(_sample_batch())

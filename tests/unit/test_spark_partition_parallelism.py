@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Event
 
 import pytest
 
@@ -16,7 +15,6 @@ from kg_processor.application.spark_finalization import (
     _effective_shuffle_partitions,
     _executor_embedding_provider,
     _executor_enrichment_llm_provider,
-    _parallel_map_partition,
     _row_batches,
     _spark_application_name,
     _target_output_partitions,
@@ -55,33 +53,6 @@ def test_spark_application_identity_fences_every_durable_attempt() -> None:
     assert first.startswith("flakegraph-")
     assert len(first) == 27
     assert first.replace("-", "").isalnum()
-
-
-def test_parallel_partition_map_refills_capacity_behind_a_slow_request() -> None:
-    """Keep submitting partition work while an earlier provider call is slow."""
-
-    third_started = Event()
-
-    def operation(value: int) -> int:
-        """Make the first call depend on replacement work entering the pool."""
-
-        if value == 0:
-            assert third_started.wait(timeout=2)
-        elif value == 2:
-            third_started.set()
-        return value * 10
-
-    results = list(_parallel_map_partition([0, 1, 2], operation, parallelism=2))
-
-    assert sorted(results) == [0, 10, 20]
-    assert third_started.is_set()
-
-
-def test_parallel_partition_map_rejects_invalid_worker_limit() -> None:
-    """Fail configuration errors before consuming a Spark partition."""
-
-    with pytest.raises(ValueError, match="parallelism must be positive"):
-        list(_parallel_map_partition([1], lambda value: value, parallelism=0))
 
 
 def test_row_batches_streams_a_short_final_batch() -> None:

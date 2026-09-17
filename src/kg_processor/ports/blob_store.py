@@ -21,24 +21,6 @@ class BlobStore(Protocol):
         """Return exact bytes for an object previously written by this store."""
         ...
 
-    def delete(self, uri: str) -> None:
-        """Delete one object idempotently during explicit run retention cleanup."""
-        ...
-
-
-@runtime_checkable
-class BatchBlobDeleter(Protocol):
-    """Optional capability for deleting many immutable payloads efficiently.
-
-    Object stores commonly expose a bounded bulk-delete operation. Retention can
-    use this capability without making it mandatory for simple third-party blob
-    adapters, which continue to work through repeated idempotent ``delete`` calls.
-    """
-
-    def delete_many(self, uris: list[str]) -> None:
-        """Delete every selected object or raise without suppressing store errors."""
-        ...
-
 
 @runtime_checkable
 class BlobDownloader(Protocol):

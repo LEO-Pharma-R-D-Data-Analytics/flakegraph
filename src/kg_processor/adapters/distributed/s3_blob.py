@@ -13,7 +13,6 @@ from botocore.exceptions import ClientError
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
-_S3_DELETE_BATCH_SIZE = 1_000
 _S3_MAX_POOL_CONNECTIONS = 64
 _HTTP_CONFLICT_STATUS = 409
 
@@ -121,35 +120,6 @@ class S3BlobStore:
 
         bucket, key = self._parse_uri(uri)
         self.client.download_fileobj(bucket, key, destination)
-
-    def delete(self, uri: str) -> None:
-        """Delete one object; S3 delete semantics make missing objects harmless."""
-
-        bucket, key = self._parse_uri(uri)
-        self.client.delete_object(Bucket=bucket, Key=key)
-
-    def delete_many(self, uris: list[str]) -> None:
-        """Delete objects through S3's bounded multi-object operation.
-
-        S3 accepts at most 1,000 keys per request. The adapter validates every URI
-        before sending anything, then checks per-object errors because a successful
-        HTTP response can still report individual deletion failures.
-        """
-
-        keys = [self._parse_uri(uri)[1] for uri in uris]
-        for offset in range(0, len(keys), _S3_DELETE_BATCH_SIZE):
-            batch = keys[offset : offset + _S3_DELETE_BATCH_SIZE]
-            response = self.client.delete_objects(
-                Bucket=self.bucket,
-                Delete={"Objects": [{"Key": key} for key in batch], "Quiet": True},
-            )
-            errors = response.get("Errors", [])
-            if errors:
-                first_code = str(errors[0].get("Code", "unknown"))
-                raise RuntimeError(
-                    f"S3 artifact cleanup failed for {len(errors)} object(s); "
-                    f"first error code: {first_code}"
-                )
 
     def _object_key(self, key: str) -> str:
         """Join a validated relative artifact key beneath the configured prefix."""

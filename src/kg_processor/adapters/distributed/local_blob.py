@@ -64,17 +64,6 @@ class LocalBlobStore:
         with self._uri_path(uri).open("rb") as source:
             copyfileobj(source, destination, length=1024 * 1024)
 
-    def delete(self, uri: str) -> None:
-        """Delete one file idempotently without recursively removing directories."""
-
-        self._uri_path(uri).unlink(missing_ok=True)
-
-    def delete_many(self, uris: list[str]) -> None:
-        """Delete a bounded retention batch using the same ownership checks."""
-
-        for uri in uris:
-            self.delete(uri)
-
     def _key_path(self, key: str) -> Path:
         """Resolve a relative object key and prevent traversal outside the root."""
 

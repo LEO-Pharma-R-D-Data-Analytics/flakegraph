@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Barrier, Event
+from threading import Event
 from typing import Any
 
 import pytest
@@ -86,14 +86,6 @@ class MemoryDistributedStore:
         """Record no state because retry transitions are covered by PostgreSQL tests."""
 
         assert self.run is not None and self.run.id == run_id
-
-    def delete_run_artifacts(self, run_id: str) -> int:
-        """Delete and count this run's in-memory artifacts."""
-
-        selected = [key for key, value in self.artifacts.items() if value.ref.run_id == run_id]
-        for artifact_id in selected:
-            del self.artifacts[artifact_id]
-        return len(selected)
 
     def create_run(self, run: RunDefinition) -> None:
         self.run = run
@@ -401,43 +393,6 @@ def test_planner_places_only_snowflake_secret_references_on_final_task(tmp_path:
     assert target["database"] == "DB"
     assert target["password_environment_variable"] == "KG_SNOWFLAKE_PASSWORD"
     assert "must-not-be-persisted" not in serialized
-
-
-def test_planner_stages_sources_concurrently_in_input_order(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Use object-store concurrency without making task order timing-dependent."""
-
-    settings = _settings(tmp_path)
-    store = MemoryDistributedStore()
-    planner = DistributedRunPlanner(settings, LocalFileSource(tmp_path), store, store)
-    rendezvous = Barrier(2, timeout=2)
-    files: list[InputFile] = []
-    for name in ("first.txt", "second.txt"):
-        path = tmp_path / name
-        path.write_text(name, encoding="utf-8")
-        files.extend(LocalFileSource(path).list_files())
-
-    def store_source(run_id: str, file: InputFile) -> ArtifactRef:
-        """Require both staging threads to overlap, then return a stable sentinel."""
-
-        rendezvous.wait()
-        payload = file.path.read_bytes()
-        return ArtifactRef(
-            id=f"artifact-{file.path.stem}",
-            run_id=run_id,
-            kind=ArtifactKind.SOURCE_DOCUMENT,
-            media_type=file.mime_type,
-            checksum=sha256_hex(payload),
-            size_bytes=len(payload),
-        )
-
-    monkeypatch.setattr(planner, "_store_source", store_source)
-
-    refs = planner._store_sources("run-test", files)
-
-    assert [ref.id for ref in refs] == ["artifact-first", "artifact-second"]
 
 
 def test_planner_refills_source_uploads_behind_a_slow_file(

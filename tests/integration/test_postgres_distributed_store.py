@@ -40,13 +40,12 @@ pytestmark = pytest.mark.skipif(
 
 
 class _RecordingBlobStore:
-    """Retain test payloads and record bulk retention calls without external I/O."""
+    """Retain test payloads without external I/O."""
 
     def __init__(self) -> None:
-        """Create an empty object namespace and deletion-call log."""
+        """Create an empty object namespace."""
 
         self.objects: dict[str, bytes] = {}
-        self.deleted_batches: list[list[str]] = []
 
     def initialize(self) -> None:
         """Satisfy the idempotent blob-store initialization contract."""
@@ -64,17 +63,6 @@ class _RecordingBlobStore:
 
         return self.objects[uri]
 
-    def delete(self, uri: str) -> None:
-        """Delete one object idempotently for the fallback blob contract."""
-
-        self.objects.pop(uri, None)
-
-    def delete_many(self, uris: list[str]) -> None:
-        """Record one bounded batch and delete all selected objects."""
-
-        self.deleted_batches.append(list(uris))
-        for uri in uris:
-            self.delete(uri)
 
 
 @pytest.fixture
@@ -171,89 +159,6 @@ def test_postgres_preserves_distinct_source_identities_with_identical_bytes(
 
     assert first.id != second.id
     assert store.get(first.id).payload == store.get(second.id).payload
-
-
-def test_postgres_deletes_external_artifacts_in_bounded_retryable_batches(
-    isolated_postgres_dsn: str,
-) -> None:
-    """Retention must not materialize or delete a corpus-sized object set at once."""
-
-    blob_store = _RecordingBlobStore()
-    store = PostgresDistributedStore(isolated_postgres_dsn, blob_store=blob_store)
-    store.initialize()
-    run_id = f"run_{uuid4().hex}"
-    store.create_run(_run(run_id))
-    for index in range(1_001):
-        store.put(
-            run_id,
-            ArtifactKind.PREPARED_DOCUMENT,
-            f"payload-{index}".encode(),
-            "application/json",
-        )
-    store.cancel_run(run_id)
-
-    assert store.delete_run_artifacts(run_id) == 1_001
-    assert [len(batch) for batch in blob_store.deleted_batches] == [1_000, 1]
-    assert blob_store.objects == {}
-
-
-def test_retention_removes_a_superseded_published_run_and_its_objects(
-    isolated_postgres_dsn: str,
-) -> None:
-    """A run that published must not be permanently undeletable once superseded.
-
-    ``flakegraph_publication`` references artifacts with ON DELETE RESTRICT, so
-    retention clears the outbox record before the payload rows it names.
-    """
-
-    blob_store = _RecordingBlobStore()
-    store = PostgresDistributedStore(isolated_postgres_dsn, blob_store=blob_store)
-    store.initialize()
-    published_run = f"run_{uuid4().hex}"
-    store.create_run(_run(published_run))
-    store.add_tasks(
-        published_run,
-        [
-            _task(published_run, "final", TaskStage.FINALIZE_GRAPH, "graph").model_copy(
-                update={"payload": {"output": {"provider": "snowflake_bulk"}}}
-            )
-        ],
-    )
-    store.activate_run(published_run)
-    claim = store.claim_task("finalizer", {TaskStage.FINALIZE_GRAPH}, timedelta(minutes=1))
-    assert claim is not None
-    manifest = store.put(
-        published_run,
-        ArtifactKind.GRAPH_RESULT,
-        b'{"format":"flakegraph.graph-dataset-manifest/v1"}',
-        "application/vnd.flakegraph.graph-manifest+json",
-    )
-    store.complete_task(claim.task.id, claim.worker_id, [manifest.id])
-    publication = store.claim_publication("publisher", timedelta(minutes=1))
-    assert publication is not None
-    store.publish_claimed(publication.id, publication.worker_id, lambda _lease: None)
-    assert store.get_run(published_run).run.status == RunStatus.SUCCEEDED
-
-    superseding_run = f"run_{uuid4().hex}"
-    store.create_run(_run(superseding_run))
-    store.add_tasks(
-        superseding_run,
-        [_task(superseding_run, "final", TaskStage.FINALIZE_GRAPH, "graph")],
-    )
-    store.activate_run(superseding_run)
-    newer = store.claim_task("finalizer-2", {TaskStage.FINALIZE_GRAPH}, timedelta(minutes=1))
-    assert newer is not None
-    newer_manifest = store.put(
-        superseding_run,
-        ArtifactKind.GRAPH_RESULT,
-        b'{"format":"flakegraph.graph-dataset-manifest/v1","version":2}',
-        "application/vnd.flakegraph.graph-manifest+json",
-    )
-    store.complete_task(newer.task.id, newer.worker_id, [newer_manifest.id])
-
-    assert store.delete_run_artifacts(published_run) == 1
-    assert all(published_run not in uri for uri in blob_store.objects)
-    assert store.get(newer_manifest.id).ref.id == newer_manifest.id
 
 
 def test_postgres_rejects_unknown_artifact_owner_before_external_upload(
@@ -464,7 +369,6 @@ def test_postgres_claims_are_exclusive_and_dependencies_form_a_barrier(
     assert summary.total_tasks == 3
     assert sum(item.count for item in summary.task_counts) == 3
     assert {item.status for item in summary.task_counts} == {TaskStatus.SUCCEEDED}
-    assert store.delete_run_artifacts(run_id) == 2
 
 
 def test_running_task_progress_is_lease_owned_and_bounded(
@@ -1092,8 +996,6 @@ def test_graph_manifest_and_active_version_publish_in_one_transaction(
         "artifact_id": artifact.id,
     }
     assert store.get(artifact.id).payload == payload
-    with pytest.raises(ValueError, match="active graph version"):
-        store.delete_run_artifacts(run_id)
 
 
 def test_multiple_workers_drain_dynamic_pipeline_end_to_end(

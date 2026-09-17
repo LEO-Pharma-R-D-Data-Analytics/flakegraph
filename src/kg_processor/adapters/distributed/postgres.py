@@ -43,18 +43,12 @@ from kg_processor.domain.distributed import (
     TaskStatus,
 )
 from kg_processor.domain.ids import sha256_hex, stable_id
-from kg_processor.ports.blob_store import BatchBlobDeleter, BlobStore
+from kg_processor.ports.blob_store import BlobStore
 from kg_processor.ports.task_store import TaskStoreUnavailableError
 
-_TERMINAL_RUN_STATUSES = {
-    RunStatus.SUCCEEDED.value,
-    RunStatus.FAILED.value,
-    RunStatus.CANCELLED.value,
-}
+_INITIAL_TASK_COPY_BATCH_SIZE = 2_000
 _MAX_ZLIB_COMPRESSION_LEVEL = 9
 _ARTIFACT_READ_PARALLELISM = 8
-_ARTIFACT_DELETE_BATCH_SIZE = 1_000
-_INITIAL_TASK_COPY_BATCH_SIZE = 2_000
 _MAX_RUN_LIST_LIMIT = 500
 _SCHEMA_VERSION = 8
 _EXHAUSTED_TASK_RECOVERY_GRACE_SECONDS = 300
@@ -1899,96 +1893,6 @@ class PostgresDistributedStore:
         if sha256_hex(payload) != str(row["checksum"]):
             raise ValueError(f"artifact {artifact_id} checksum verification failed")
         return StoredArtifact(ref=_artifact_ref(row), payload=payload)
-
-    def delete_run_artifacts(self, run_id: str) -> int:
-        """Delete an inactive terminal run's artifacts in retry-safe batches.
-
-        Every restricting reference to the run's artifacts is removed first, so a
-        surviving reference surfaces as a failed ``DELETE`` rather than as objects
-        that were already destroyed. Each batch deletes its metadata rows and only
-        then its payloads inside one transaction: an object-store or process
-        failure rolls the rows back, leaving metadata discoverable for an
-        idempotent retry. Batches are bounded so a large corpus never creates one
-        multi-million-row transaction.
-        """
-
-        with self._connection() as connection:
-            run = connection.execute(
-                "SELECT status FROM flakegraph_run WHERE id = %s FOR UPDATE",
-                (run_id,),
-            ).fetchone()
-            if run is None:
-                raise KeyError(f"unknown distributed run: {run_id}")
-            run_status = str(run["status"])
-            if run_status not in _TERMINAL_RUN_STATUSES:
-                raise ValueError("artifacts may only be deleted for a terminal run")
-            if run_status == RunStatus.FAILED.value:
-                raise ValueError(
-                    "artifacts for a failed run cannot be deleted because the run remains retryable"
-                )
-            active = connection.execute(
-                """
-                SELECT 1
-                FROM flakegraph_graph_head AS head
-                JOIN flakegraph_graph_version AS version ON version.id = head.version_id
-                WHERE version.run_id = %s
-                """,
-                (run_id,),
-            ).fetchone()
-            if active is not None:
-                raise ValueError("artifacts for the active graph version cannot be deleted")
-            # Both tables reference flakegraph_artifact with ON DELETE RESTRICT.
-            # Superseded version and publication records describe artifacts that
-            # this call discards, so they are cleared before the payload rows.
-            connection.execute(
-                "DELETE FROM flakegraph_graph_version WHERE run_id = %s",
-                (run_id,),
-            )
-            connection.execute(
-                "DELETE FROM flakegraph_publication WHERE run_id = %s",
-                (run_id,),
-            )
-        deleted_count = 0
-        while True:
-            with self._connection() as connection:
-                rows = connection.execute(
-                    """
-                    SELECT id, storage_uri
-                    FROM flakegraph_artifact
-                    WHERE run_id = %s
-                    ORDER BY id
-                    LIMIT %s
-                    """,
-                    (run_id, _ARTIFACT_DELETE_BATCH_SIZE),
-                ).fetchall()
-            if not rows:
-                return deleted_count
-            storage_uris = [
-                str(row["storage_uri"]) for row in rows if row["storage_uri"] is not None
-            ]
-            artifact_ids = [str(row["id"]) for row in rows]
-            with self._connection() as connection:
-                deleted = connection.execute(
-                    """
-                    DELETE FROM flakegraph_artifact
-                    WHERE run_id = %s AND id = ANY(%s)
-                    """,
-                    (run_id, artifact_ids),
-                )
-                batch_count = deleted.rowcount
-                self._delete_blob_batch(storage_uris)
-            deleted_count += batch_count
-
-    def _delete_blob_batch(self, storage_uris: list[str]) -> None:
-        """Use bulk deletion when available and preserve adapter compatibility."""
-
-        if self.blob_store is None or not storage_uris:
-            return
-        if isinstance(self.blob_store, BatchBlobDeleter):
-            self.blob_store.delete_many(storage_uris)
-            return
-        for storage_uri in storage_uris:
-            self.blob_store.delete(storage_uri)
 
     def _owned_task(
         self,
