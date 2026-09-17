@@ -1883,20 +1883,23 @@ class SparkGraphFinalizer:
             )
             .where(
                 (
-                    F.col("lexical_score")
-                    >= F.lit(self.settings.graph.resolution_candidate_threshold)
-                )
-                | (
                     (
-                        F.col("embedding_score")
+                        F.col("lexical_score")
                         >= F.lit(self.settings.graph.resolution_candidate_threshold)
                     )
-                    & (
-                        F.col("lexical_score")
-                        >= F.lit(self.settings.graph.resolution_embedding_lexical_floor)
+                    | (
+                        (
+                            F.col("embedding_score")
+                            >= F.lit(self.settings.graph.resolution_candidate_threshold)
+                        )
+                        & (
+                            F.col("lexical_score")
+                            >= F.lit(self.settings.graph.resolution_embedding_lexical_floor)
+                        )
                     )
+                    | F.col("initialism_candidate")
                 )
-                | F.col("initialism_candidate")
+                & ~_numeric_mismatch(F.col("left_mention.name"), F.col("right_mention.name"))
             )
         )
         candidate_score = F.when(F.col("initialism_candidate"), F.col("embedding_score")).otherwise(
@@ -2843,6 +2846,22 @@ def _adaptive_provider_partitions(
     target = math.ceil(row_count / (provider_batch_size * _TARGET_PROVIDER_BATCHES_PER_PARTITION))
     maximum = execution_slots * _MAX_PROVIDER_PARTITIONS_PER_SLOT
     return min(row_count, max(minimum, min(target, maximum)))
+
+
+def _numeric_mismatch(left_name: Column, right_name: Column) -> Column:
+    """Mirror ``entity_resolution._has_numeric_mismatch`` for a pair of raw names.
+
+    Contract numbers, model generations and version labels differ by one digit
+    yet score above the lexical auto-merge threshold, so a pair whose numeric
+    token sequences differ is neither merged nor sent for adjudication.
+    """
+
+    from pyspark.sql import functions as F
+
+    pattern = r"(\d+(?:[.,]\d+)?)"
+    return F.regexp_extract_all(left_name, F.lit(pattern)) != F.regexp_extract_all(
+        right_name, F.lit(pattern)
+    )
 
 
 def _cosine_score(left: Column, right: Column) -> Column:

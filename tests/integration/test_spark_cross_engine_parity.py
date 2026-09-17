@@ -21,6 +21,7 @@ import pytest
 
 from kg_processor.adapters.distributed.local_blob import LocalBlobStore
 from kg_processor.application.community_reports import structural_rating
+from kg_processor.application.entity_resolution import _has_numeric_mismatch
 from kg_processor.application.graph_dataset import GraphDatasetReader
 from kg_processor.application.graph_merge import normalize_entity_name, normalize_relation_type
 from kg_processor.application.spark_finalization import (
@@ -29,6 +30,7 @@ from kg_processor.application.spark_finalization import (
     SparkGraphFinalizer,
     _normalized_name,
     _normalized_relation_type,
+    _numeric_mismatch,
     _stable_id,
     _structural_rating_column,
 )
@@ -171,6 +173,32 @@ def test_spark_canonical_identity_matches_the_local_rules(spark_session: Any) ->
         assert row.normalized_name == normalize_entity_name(value)
         assert row.relation_label == normalize_relation_type(value)
         assert row.node_id == stable_id("node", _GRAPH_ID, normalize_entity_name(value), "ENTITY")
+
+
+def test_spark_keeps_numerically_distinct_names_apart_like_the_local_rule(
+    spark_session: Any,
+) -> None:
+    """A name pair one digit apart scores above auto-merge; both engines must refuse it."""
+
+    from pyspark.sql import functions as F
+
+    pairs = [
+        ("ISO 27001", "ISO 27002"),
+        ("GPT-4", "GPT-4"),
+        ("Version 2.0", "Version 2,0"),
+        ("Phase 1", "Phase 1 trial"),
+        ("Alpha", "Alpha 1"),
+        ("Beta", "Gamma"),
+    ]
+    frame = spark_session.createDataFrame(pairs, "left string, right string")
+    computed = frame.withColumn(
+        "numeric_mismatch", _numeric_mismatch(F.col("left"), F.col("right"))
+    ).collect()
+
+    for row in computed:
+        left = _mention("l", row.left, "chunk", start_offset=0)
+        right = _mention("r", row.right, "chunk", start_offset=0)
+        assert row.numeric_mismatch == _has_numeric_mismatch(left, right), (row.left, row.right)
 
 
 def test_spark_community_rating_matches_the_local_rule(spark_session: Any) -> None:
