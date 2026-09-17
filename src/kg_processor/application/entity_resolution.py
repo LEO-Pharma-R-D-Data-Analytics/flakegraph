@@ -254,7 +254,8 @@ def resolve_entity_mentions(  # noqa: PLR0912,PLR0915 - branches record distinct
                         **batch_result.provider_metadata,
                     }
                 )
-            for decision in _batch_decisions(batch_result, llm_merge_min_confidence):
+            for adjudicated in _batch_decisions(batch_result, llm_merge_min_confidence):
+                decision = adjudicated
                 if decision.same_entity:
                     if _cluster_initialism_conflict(
                         union_find,
