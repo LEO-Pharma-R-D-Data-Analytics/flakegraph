@@ -53,6 +53,7 @@ from prometheus_client.registry import Collector
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
+from starlette.requests import ClientDisconnect
 
 from kg_processor.serving.priority import ConsumerKeyring, load_keyring
 
@@ -626,9 +627,13 @@ def create_app(
                 return settled
             body = settled
 
-        return await _hold_and_forward(
-            request, route, body, priority, consumer_class, pool_view, config, metrics
-        )
+        try:
+            return await _hold_and_forward(
+                request, route, body, priority, consumer_class, pool_view, config, metrics
+            )
+        except ClientDisconnect:
+            # Nobody is listening; answering keeps a hang-up out of the error log.
+            return Response(status_code=499)
 
     return app
 
@@ -663,7 +668,9 @@ async def _hold_and_forward(
     address: str | None = None
     try:
         await held.enqueue(request_id, priority, consumer_class)
-        address = await _await_slot(held, upstreams, request_id, priority, consumer_class, config)
+        address = await _await_slot(
+            request, held, upstreams, request_id, priority, consumer_class, config
+        )
         metrics.queue_wait.labels(consumer_class).observe(time.perf_counter() - queued_at)
         return await _forward(
             request,
@@ -682,7 +689,7 @@ async def _hold_and_forward(
         # Nothing was dispatched if no replica was claimed, so whatever
         # failed did so while the request sat in the queue.
         outcome = _failure_outcome(exc) if address is not None else OUTCOME_QUEUE_ERROR
-        if isinstance(exc, asyncio.CancelledError):
+        if isinstance(exc, asyncio.CancelledError | ClientDisconnect):
             outcome = OUTCOME_CLIENT_GONE
         metrics.requests.labels(consumer_class, outcome).inc()
         if address is not None:
@@ -692,6 +699,7 @@ async def _hold_and_forward(
 
 
 async def _await_slot(
+    request: Request,
     queue: OcrQueue,
     upstreams: UpstreamPool,
     request_id: str,
@@ -702,10 +710,14 @@ async def _await_slot(
     """Wait until this request is both next in line and has a replica to go to.
 
     The client is held here rather than refused. That is the whole point: a 409
-    reaching a caller with no retry loses the document.
+    reaching a caller with no retry loses the document. A caller that hung up
+    while waiting has no one to parse for, though; its worker will send the
+    document again, so admitting the orphan would only run the parse twice.
     """
 
     while True:
+        if await request.is_disconnected():
+            raise ClientDisconnect
         replicas = await upstreams.refresh()
         if replicas:
             address = await queue.try_admit(request_id, replicas, upstreams.capacity_per_replica)

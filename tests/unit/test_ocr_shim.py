@@ -10,9 +10,11 @@ from typing import Any
 import httpx
 import psycopg
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg_pool import AsyncConnectionPool
+from starlette.requests import ClientDisconnect
 
 from kg_processor.serving import ocr_shim
 from kg_processor.serving.ocr_shim import (
@@ -286,6 +288,38 @@ def test_a_finished_request_frees_its_slot() -> None:
         assert response.status_code == 200
 
     assert queue.released == queue.admitted
+
+
+def test_a_caller_that_hangs_up_while_queued_is_not_parsed_for() -> None:
+    """The worker re-sends after its timeout, so the orphan would only run twice."""
+
+    queue = _RecordingQueue()
+    queue.admit = False
+    with _client(_Pool(), queue) as client:
+        app = client.app
+
+        async def hung_up() -> dict[str, str]:
+            return {"type": "http.disconnect"}
+
+        request = Request({"type": "http", "method": "POST", "headers": [], "app": app}, hung_up)
+        upstreams, metrics = app.state.upstreams, app.state.metrics
+        config = OcrShimConfig(
+            database_url="postgresql://unused",
+            upstream_host="mineru.invalid",
+            poll_interval_seconds=0.01,
+        )
+        with pytest.raises(ClientDisconnect):
+            asyncio.run(
+                ocr_shim._hold_and_forward(
+                    request, "/file_parse", b"", 0, "interactive", upstreams, config, metrics
+                )
+            )
+
+    assert queue.released == [entry[0] for entry in queue.enqueued]
+    assert queue.admitted == []
+    assert _samples(metrics.render().body.decode(), "flakegraph_ocr_requests_total") == {
+        (("consumer_class", "interactive"), ("outcome", "client_gone")): 1
+    }
 
 
 def test_a_parse_longer_than_the_stale_window_stays_counted_as_busy() -> None:
