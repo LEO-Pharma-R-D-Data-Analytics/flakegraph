@@ -280,7 +280,7 @@ def distributed_worker(
     effective_worker_id = (
         worker_id or settings.distributed.worker_id or (f"{socket.gethostname()}-{os.getpid()}")
     )
-    effective_stages = set(stages or map(TaskStage, settings.distributed.worker_stages))
+    effective_stages = set(stages or settings.distributed.worker_stages)
     pipeline = build_distributed_pipeline(
         settings,
         effective_stages,

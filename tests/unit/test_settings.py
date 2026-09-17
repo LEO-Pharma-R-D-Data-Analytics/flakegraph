@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from enum import StrEnum
 from pathlib import Path
 from types import NoneType, UnionType
 from typing import Literal, Union, get_args, get_origin
@@ -249,7 +250,12 @@ def _sample_environment_value(annotation: object) -> tuple[str, object]:
         return first, first
     if get_origin(annotation) is list:
         (item,) = get_args(annotation)
-        items = list(get_args(item))[:2] if get_origin(item) is Literal else ["a", "b"]
+        if get_origin(item) is Literal:
+            items = list(get_args(item))[:2]
+        elif isinstance(item, type) and issubclass(item, StrEnum):
+            items = list(item)[:2]
+        else:
+            items = ["a", "b"]
         return ",".join(items), items
     samples: dict[object, tuple[str, object]] = {
         bool: ("true", True),

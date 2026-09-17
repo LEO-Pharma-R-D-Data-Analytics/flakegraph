@@ -18,34 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from kg_processor.config.provider_registry import ProviderKind, provider_names
 from kg_processor.domain.consumption import RateCard, rate_card_from_mapping
+from kg_processor.domain.distributed import TaskStage
 from kg_processor.ports.llm import DEFAULT_LLM_TIMEOUT_SECONDS
 
 _ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _ENV_PLACEHOLDER_ONLY_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 _MISSING_ENV_PLACEHOLDER = object()
-DistributedStageName = Literal[
-    "prepare_document",
-    "extract_document_context",
-    "extract_entity_window",
-    "compact_entity_inventory",
-    "extract_relation_window",
-    "compact_document",
-    "finalize_graph",
-]
-
-
-def _default_distributed_worker_stages() -> list[DistributedStageName]:
-    """Return every distributed stage for a general-purpose worker process."""
-
-    return [
-        "prepare_document",
-        "extract_document_context",
-        "extract_entity_window",
-        "compact_entity_inventory",
-        "extract_relation_window",
-        "compact_document",
-        "finalize_graph",
-    ]
 
 
 class _SettingsModel(BaseModel):
@@ -95,9 +73,8 @@ class DistributedSettings(_SettingsModel):
 
     database_url: str | None = None
     worker_id: str | None = None
-    worker_stages: list[DistributedStageName] = Field(
-        default_factory=_default_distributed_worker_stages
-    )
+    # A general-purpose worker claims every stage.
+    worker_stages: list[TaskStage] = Field(default_factory=lambda: list(TaskStage))
     # Live workers renew ownership in the background, so this window controls
     # crash detection rather than maximum task duration. Five minutes tolerates
     # brief coordination outages while returning work from a dead node promptly.
@@ -159,9 +136,7 @@ class DistributedSettings(_SettingsModel):
 
     @field_validator("worker_stages")
     @classmethod
-    def worker_stages_must_not_be_empty(
-        cls, value: list[DistributedStageName]
-    ) -> list[DistributedStageName]:
+    def worker_stages_must_not_be_empty(cls, value: list[TaskStage]) -> list[TaskStage]:
         """Ensure a worker can claim at least one kind of useful work."""
 
         if not value:
