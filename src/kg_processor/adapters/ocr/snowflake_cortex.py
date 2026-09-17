@@ -26,7 +26,7 @@ from kg_processor.domain.documents import (
     ParsedPage,
 )
 from kg_processor.domain.ids import stable_id
-from kg_processor.ports.ocr import OcrOptions
+from kg_processor.ports.ocr import OcrOptions, parse_page_range
 
 _SNOWFLAKE_PARSE_SQL = "SELECT AI_PARSE_DOCUMENT(TO_FILE(?, ?), PARSE_JSON(?)::OBJECT, TRUE)"
 _PAGE_ADDRESSABLE_SUFFIXES = {".docx", ".pdf", ".pptx"}
@@ -114,41 +114,17 @@ def _build_parse_options(file: InputFile, options: OcrOptions) -> dict[str, obje
 
 
 def _page_filter_from_range(page_range: str | None) -> list[dict[str, int]] | None:
-    if not page_range or not page_range.strip():
-        return None
+    # AI_PARSE_DOCUMENT takes half-open windows; an open start begins at 0 and
+    # an open end is simply omitted.
     filters: list[dict[str, int]] = []
-    for raw_part in page_range.split(","):
-        part = raw_part.strip()
-        if not part:
-            continue
-        if "-" not in part:
-            page = _parse_page_index(part)
-            filters.append({"start": page, "end": page + 1})
-            continue
-        raw_start, raw_end = part.split("-", 1)
-        start = _parse_page_index(raw_start) if raw_start.strip() else 0
-        entry = {"start": start}
-        if raw_end.strip():
-            end = _parse_page_index(raw_end)
-            if end < start:
-                raise ValueError(
-                    f"Invalid Snowflake page_range '{page_range}': end page is before start page"
-                )
+    for start, end in parse_page_range(
+        page_range, provider="snowflake_cortex", minimum=0, allow_multiple=True, allow_open=True
+    ):
+        entry = {"start": start or 0}
+        if end is not None:
             entry["end"] = end + 1
         filters.append(entry)
     return filters or None
-
-
-def _parse_page_index(value: str) -> int:
-    try:
-        page = int(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid Snowflake page id '{value}'. Page ids are zero-based integers."
-        ) from exc
-    if page < 0:
-        raise ValueError(f"Invalid Snowflake page id '{value}': page ids must be non-negative")
-    return page
 
 
 def _extract_value_or_raise(

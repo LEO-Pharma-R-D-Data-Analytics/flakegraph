@@ -23,7 +23,7 @@ from kg_processor.domain.documents import (
     ParsedPage,
 )
 from kg_processor.domain.ids import stable_id
-from kg_processor.ports.ocr import OcrOptions
+from kg_processor.ports.ocr import OcrOptions, parse_page_range
 
 _BBOX_COORDS = 4
 _SECRET_ENVIRONMENT_PREFIXES = (
@@ -419,32 +419,14 @@ def _mineru_environment(options: OcrOptions) -> dict[str, str] | None:
 def _resolve_page_window(options: OcrOptions) -> tuple[int | None, int | None]:
     if options.start_page_id is not None or options.end_page_id is not None:
         return options.start_page_id, options.end_page_id
-    if not options.page_range:
-        return None, None
-    raw = options.page_range.strip()
-    if not raw:
-        return None, None
-    if "-" not in raw:
-        page_id = _parse_page_id(raw)
-        return page_id, page_id
-    start_raw, end_raw = raw.split("-", 1)
-    start = _parse_page_id(start_raw) if start_raw.strip() else None
-    end = _parse_page_id(end_raw) if end_raw.strip() else None
-    if start is not None and end is not None and end < start:
-        raise ValueError(f"Invalid MinerU page_range '{raw}': end page is before start page")
-    return start, end
-
-
-def _parse_page_id(value: str) -> int:
-    try:
-        page_id = int(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid MinerU page id '{value}'. MinerU page ids are zero-based integers."
-        ) from exc
-    if page_id < 0:
-        raise ValueError(f"Invalid MinerU page id '{value}': page ids must be non-negative")
-    return page_id
+    windows = parse_page_range(
+        options.page_range,
+        provider="mineru_internal",
+        minimum=0,
+        allow_multiple=False,
+        allow_open=True,
+    )
+    return windows[0] if windows else (None, None)
 
 
 def _page(file: InputFile, page_number: int, text: str) -> ParsedPage:

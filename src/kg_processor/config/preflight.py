@@ -24,14 +24,13 @@ from kg_processor.adapters.snowflake import validate_stage_location
 from kg_processor.application.ontology import load_ontology
 from kg_processor.config.provider_registry import ProviderKind, provider_names
 from kg_processor.config.settings import Settings
-from kg_processor.ports.ocr import OCR_SUPPORTED_SUFFIXES
+from kg_processor.ports.ocr import OCR_SUPPORTED_SUFFIXES, PageWindow, parse_page_range
 
 _TESSERACT_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 _SPCS_FILE_SOURCES = {"stage", "snowflake_stage"}
 _SPCS_WRITERS = {"snowflake_direct", "snowflake_bulk"}
 _SYSTEM_COMPUTE_POOL_PREFIX = "SYSTEM_COMPUTE_POOL"
 _SNOWFLAKE_MAX_VECTOR_DIMENSION = 4096
-_PageWindow = tuple[int | None, int | None]
 
 
 class PreflightResult(BaseModel):
@@ -438,13 +437,12 @@ def _validate_ocr_page_range(settings: Settings, result: PreflightResult) -> Non
     if settings.ocr.provider == "builtin_text" and page_range:
         _require_page_range(
             result,
-            lambda: _parse_page_windows(
+            lambda: parse_page_range(
                 page_range,
                 provider="builtin_text",
                 minimum=1,
-                numbering_message="builtin_text page_range uses one-based page numbers",
                 allow_multiple=True,
-                allow_open_ranges=False,
+                allow_open=False,
             ),
             "builtin_text OCR page_range is valid",
         )
@@ -453,13 +451,12 @@ def _validate_ocr_page_range(settings: Settings, result: PreflightResult) -> Non
     if settings.ocr.provider == "tesseract_internal" and page_range:
         windows = _require_page_range(
             result,
-            lambda: _parse_page_windows(
+            lambda: parse_page_range(
                 page_range,
                 provider="tesseract_internal",
                 minimum=1,
-                numbering_message="tesseract_internal page_range uses one-based page numbers",
                 allow_multiple=False,
-                allow_open_ranges=True,
+                allow_open=True,
             ),
             "tesseract_internal OCR page_range is valid",
         )
@@ -474,13 +471,12 @@ def _validate_ocr_page_range(settings: Settings, result: PreflightResult) -> Non
     if settings.ocr.provider == "snowflake_cortex" and page_range:
         _require_page_range(
             result,
-            lambda: _parse_page_windows(
+            lambda: parse_page_range(
                 page_range,
                 provider="snowflake_cortex",
                 minimum=0,
-                numbering_message="snowflake_cortex page_range uses zero-based page ids",
                 allow_multiple=True,
-                allow_open_ranges=True,
+                allow_open=True,
             ),
             "snowflake_cortex OCR page_range is valid",
         )
@@ -511,13 +507,12 @@ def _validate_mineru_page_window(
 
     _require_page_range(
         result,
-        lambda: _parse_page_windows(
+        lambda: parse_page_range(
             page_range,
             provider="mineru_internal",
             minimum=0,
-            numbering_message="mineru_internal page_range uses zero-based page ids",
             allow_multiple=False,
-            allow_open_ranges=True,
+            allow_open=True,
         ),
         "mineru_internal OCR page_range is valid",
     )
@@ -525,7 +520,7 @@ def _validate_mineru_page_window(
 
 def _validate_tesseract_image_page_range(
     settings: Settings,
-    windows: list[_PageWindow],
+    windows: list[PageWindow],
     result: PreflightResult,
 ) -> None:
     # A standalone image represents exactly one OCR page. Tesseract can page
@@ -548,9 +543,9 @@ def _validate_tesseract_image_page_range(
 
 def _require_page_range(
     result: PreflightResult,
-    parser: Callable[[], list[_PageWindow]],
+    parser: Callable[[], list[PageWindow]],
     ok_message: str,
-) -> list[_PageWindow] | None:
+) -> list[PageWindow] | None:
     try:
         windows = parser()
     except ValueError as exc:
@@ -559,77 +554,6 @@ def _require_page_range(
         return None
     result.checks.append(ok_message)
     return windows
-
-
-def _parse_page_windows(
-    page_range: str,
-    *,
-    provider: str,
-    minimum: int,
-    numbering_message: str,
-    allow_multiple: bool,
-    allow_open_ranges: bool,
-) -> list[_PageWindow]:
-    raw = page_range.strip()
-    if not raw:
-        return []
-    if "," in raw and not allow_multiple:
-        raise ValueError(
-            f"Invalid {provider} page_range '{raw}': comma-separated ranges are not supported"
-        )
-
-    windows: list[_PageWindow] = []
-    for part in raw.split(","):
-        token = part.strip()
-        if not token:
-            raise ValueError(f"Invalid {provider} page_range '{raw}': empty range segment")
-        if "-" not in token:
-            page = _parse_page_index(token, provider, minimum, numbering_message)
-            windows.append((page, page))
-            continue
-
-        start_raw, end_raw = token.split("-", 1)
-        if not allow_open_ranges and (not start_raw.strip() or not end_raw.strip()):
-            raise ValueError(
-                f"Invalid {provider} page_range '{raw}': open-ended ranges are not supported"
-            )
-        if not start_raw.strip() and not end_raw.strip():
-            raise ValueError(f"Invalid {provider} page_range '{raw}': empty range segment")
-        start = (
-            _parse_page_index(start_raw.strip(), provider, minimum, numbering_message)
-            if start_raw.strip()
-            else None
-        )
-        end = (
-            _parse_page_index(end_raw.strip(), provider, minimum, numbering_message)
-            if end_raw.strip()
-            else None
-        )
-        if start is not None and end is not None and end < start:
-            raise ValueError(
-                f"Invalid {provider} page_range '{raw}': end page is before start page"
-            )
-        windows.append((start, end))
-    return windows
-
-
-def _parse_page_index(
-    value: str,
-    provider: str,
-    minimum: int,
-    numbering_message: str,
-) -> int:
-    try:
-        page = int(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid {provider} page number '{value}' in page_range. {numbering_message}."
-        ) from exc
-    if page < minimum:
-        raise ValueError(
-            f"Invalid {provider} page number '{value}' in page_range. {numbering_message}."
-        )
-    return page
 
 
 def _validate_local_ocr_file_types(settings: Settings, result: PreflightResult) -> None:

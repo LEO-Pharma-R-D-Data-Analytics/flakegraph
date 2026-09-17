@@ -85,6 +85,72 @@ class OcrOptions(BaseModel):
     snowflake_page_split: bool = True
 
 
+PageWindow = tuple[int | None, int | None]
+
+
+def parse_page_range(
+    text: str | None,
+    *,
+    provider: str,
+    minimum: int,
+    allow_multiple: bool,
+    allow_open: bool,
+) -> list[PageWindow]:
+    """Read ``page_range`` as inclusive windows in the provider's own numbering.
+
+    Every provider takes the same "3", "2-5" or "1-3,7" spelling, but they
+    number pages from zero or one and accept different subsets of it, so the
+    caller says what its provider takes and an error names that provider.
+    An open end is ``None``.
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    if "," in raw and not allow_multiple:
+        raise ValueError(
+            f"Invalid {provider} page_range '{raw}': comma-separated ranges are not supported"
+        )
+    windows: list[PageWindow] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            raise ValueError(f"Invalid {provider} page_range '{raw}': empty range segment")
+        if "-" not in token:
+            page = _page_index(token, raw, provider, minimum)
+            windows.append((page, page))
+            continue
+        start_raw, end_raw = (piece.strip() for piece in token.split("-", 1))
+        if not start_raw and not end_raw:
+            raise ValueError(f"Invalid {provider} page_range '{raw}': empty range segment")
+        if not allow_open and (not start_raw or not end_raw):
+            raise ValueError(
+                f"Invalid {provider} page_range '{raw}': open-ended ranges are not supported"
+            )
+        start = _page_index(start_raw, raw, provider, minimum) if start_raw else None
+        end = _page_index(end_raw, raw, provider, minimum) if end_raw else None
+        if start is not None and end is not None and end < start:
+            raise ValueError(
+                f"Invalid {provider} page_range '{raw}': end page is before start page"
+            )
+        windows.append((start, end))
+    return windows
+
+
+def _page_index(value: str, raw: str, provider: str, minimum: int) -> int:
+    numbering = "one-based page numbers" if minimum == 1 else "zero-based page ids"
+    try:
+        page = int(value)
+    except ValueError:
+        page = minimum - 1
+    if page < minimum:
+        raise ValueError(
+            f"Invalid {provider} page number '{value}' in page_range '{raw}'. "
+            f"{provider} page_range uses {numbering}."
+        )
+    return page
+
+
 class OcrProvider(Protocol):
     """Converts an input file into the canonical parsed-document model."""
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from kg_processor.domain.documents import InputFile, LayoutBlock, ParsedDocument, ParsedPage
 from kg_processor.domain.ids import stable_id
-from kg_processor.ports.ocr import OcrOptions
+from kg_processor.ports.ocr import OcrOptions, parse_page_range
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 _PDF_SUFFIXES = {".pdf"}
@@ -183,30 +183,10 @@ class TesseractInternalOcrProvider:
 
 
 def _parse_page_range(page_range: str | None) -> tuple[int | None, int | None]:
-    if page_range is None or not page_range.strip():
-        return None, None
-    raw = page_range.strip()
-    if "-" not in raw:
-        page = _parse_page_number(raw)
-        return page, page
-    start_raw, end_raw = raw.split("-", 1)
-    start = _parse_page_number(start_raw) if start_raw.strip() else None
-    end = _parse_page_number(end_raw) if end_raw.strip() else None
-    if start is not None and end is not None and end < start:
-        raise ValueError(f"Invalid Tesseract page_range '{raw}': end page is before start page")
-    return start, end
-
-
-def _parse_page_number(value: str) -> int:
-    try:
-        page_number = int(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid Tesseract page number '{value}'. Tesseract page ranges are one-based."
-        ) from exc
-    if page_number <= 0:
-        raise ValueError(f"Invalid Tesseract page number '{value}': pages are one-based")
-    return page_number
+    windows = parse_page_range(
+        page_range, provider="tesseract_internal", minimum=1, allow_multiple=False, allow_open=True
+    )
+    return windows[0] if windows else (None, None)
 
 
 def _validate_image_page_range(page_range: str | None) -> None:

@@ -23,7 +23,7 @@ from pypdf.errors import LimitReachedError
 
 from kg_processor.domain.documents import InputFile, LayoutBlock, ParsedDocument, ParsedPage
 from kg_processor.domain.ids import stable_id
-from kg_processor.ports.ocr import OcrOptions
+from kg_processor.ports.ocr import OcrOptions, parse_page_range
 
 MAX_OFFICE_ENTRY_BYTES = 25 * 1024 * 1024
 MAX_OFFICE_TOTAL_BYTES = 200 * 1024 * 1024
@@ -119,9 +119,7 @@ class BuiltinTextOcrProvider:
                     "password-protected PDFs are not supported by builtin_text OCR"
                 )
             if len(reader.pages) > MAX_PDFIUM_FALLBACK_PAGES:
-                raise ValueError(
-                    f"PDF exceeds the {MAX_PDFIUM_FALLBACK_PAGES} page limit"
-                )
+                raise ValueError(f"PDF exceeds the {MAX_PDFIUM_FALLBACK_PAGES} page limit")
             pages: list[ParsedPage] = []
             total_text_bytes = 0
             for index, page in enumerate(reader.pages, start=1):
@@ -129,8 +127,7 @@ class BuiltinTextOcrProvider:
                 total_text_bytes += len(text.encode("utf-8"))
                 if total_text_bytes > MAX_PDFIUM_FALLBACK_TEXT_BYTES:
                     raise ValueError(
-                        "PDF text exceeds the "
-                        f"{MAX_PDFIUM_FALLBACK_TEXT_BYTES} byte limit"
+                        f"PDF text exceeds the {MAX_PDFIUM_FALLBACK_TEXT_BYTES} byte limit"
                     )
                 pages.append(_page_from_text(file, index, text))
             return pages
@@ -412,35 +409,17 @@ def _select_pages(pages: list[ParsedPage], page_range: str | None) -> list[Parse
 
 def _parse_builtin_page_range(page_range: str) -> set[int]:
     selected: set[int] = set()
-    for part in page_range.split(","):
-        raw_part = part.strip()
-        if not raw_part:
-            raise ValueError(f"Invalid builtin_text page_range '{page_range}'")
-        if "-" in raw_part:
-            start_raw, end_raw = raw_part.split("-", 1)
-            start = _parse_builtin_page_number(start_raw, page_range)
-            end = _parse_builtin_page_number(end_raw, page_range)
-            if end < start:
-                raise ValueError(
-                    f"Invalid builtin_text page_range '{page_range}': end page is before start page"
-                )
-            if end - start >= MAX_PDFIUM_FALLBACK_PAGES:
-                raise ValueError(
-                    f"Invalid builtin_text page_range '{page_range}': range is too large"
-                )
-            selected.update(range(start, end + 1))
-        else:
-            selected.add(_parse_builtin_page_number(raw_part, page_range))
+    for start, end in parse_page_range(
+        page_range, provider="builtin_text", minimum=1, allow_multiple=True, allow_open=False
+    ):
+        if start is None or end is None:
+            # The parser refuses open ends for this provider; this keeps the
+            # bounds typed as integers for the arithmetic below.
+            raise ValueError(f"Invalid builtin_text page_range '{page_range}': open-ended range")
+        if end - start >= MAX_PDFIUM_FALLBACK_PAGES:
+            raise ValueError(f"Invalid builtin_text page_range '{page_range}': range is too large")
+        selected.update(range(start, end + 1))
     return selected
-
-
-def _parse_builtin_page_number(value: str, page_range: str) -> int:
-    if not value.isdigit() or int(value) < 1:
-        raise ValueError(
-            f"Invalid builtin_text page number '{value}' in page_range '{page_range}'. "
-            "builtin_text page ranges are one-based."
-        )
-    return int(value)
 
 
 def _docx_text_member_names(archive: zipfile.ZipFile) -> list[str]:
