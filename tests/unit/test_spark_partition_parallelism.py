@@ -16,7 +16,6 @@ from kg_processor.application.spark_finalization import (
     _executor_embedding_provider,
     _executor_enrichment_llm_provider,
     _spark_application_name,
-    _target_output_partitions,
 )
 from kg_processor.config.settings import Settings
 from kg_processor.ports.llm import DescriptionMergeRequest, DescriptionMergeResult
@@ -97,15 +96,6 @@ def test_explicit_shuffle_partition_override_remains_authoritative() -> None:
     assert _effective_shuffle_partitions(10_000_000, 4, 4, 0) >= 16
     with pytest.raises(ValueError, match="must not be negative"):
         _effective_shuffle_partitions(10, 1, 1, -1)
-
-
-def test_output_partition_policy_coalesces_without_adding_a_shuffle() -> None:
-    """Avoid tiny files while allowing record caps to split oversized partitions."""
-
-    assert _target_output_partitions(49, 16, 250_000) == 1
-    assert _target_output_partitions(250_000, 16, 25_000) == 10
-    assert _target_output_partitions(2_500_000, 16, 25_000) == 16
-    assert _target_output_partitions(0, 16, 25_000) == 1
 
 
 @pytest.mark.parametrize(

@@ -2502,17 +2502,10 @@ class SparkGraphFinalizer:
             try:
                 row_count = frame.count()
                 rows_per_file = _TARGET_OUTPUT_ROWS_PER_FILE[name]
-                current_partitions = frame.rdd.getNumPartitions()
-                target_partitions = _target_output_partitions(
-                    row_count,
-                    current_partitions,
-                    rows_per_file,
-                )
-                published = (
-                    frame.coalesce(target_partitions)
-                    if target_partitions < current_partitions
-                    else frame
-                )
+                # coalesce only ever removes partitions, so a small table lands
+                # in a few files without a publication shuffle, while
+                # maxRecordsPerFile still splits any oversized partition.
+                published = frame.coalesce(max(1, math.ceil(row_count / rows_per_file)))
                 (
                     published.write.mode("overwrite")
                     .option("maxRecordsPerFile", rows_per_file)
@@ -2754,24 +2747,6 @@ def _effective_shuffle_partitions(
     if configured_partitions:
         return configured_partitions
     return _adaptive_partitions(row_count, executor_instances, executor_cores)
-
-
-def _target_output_partitions(
-    row_count: int,
-    current_partitions: int,
-    target_rows_per_file: int,
-) -> int:
-    """Coalesce small outputs while never introducing a publication shuffle.
-
-    ``maxRecordsPerFile`` splits an oversized input partition, so this helper only
-    removes excess partitions. It therefore prevents thousands of tiny Parquet
-    objects without repartitioning already balanced large tables.
-    """
-
-    if row_count < 0 or current_partitions <= 0 or target_rows_per_file <= 0:
-        raise ValueError("output partition inputs must be non-negative and non-zero")
-    desired = max(1, math.ceil(row_count / target_rows_per_file))
-    return min(current_partitions, desired)
 
 
 def _connected_component_rows(
