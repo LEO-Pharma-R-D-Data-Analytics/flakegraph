@@ -6,9 +6,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import streamlit as st
-from flakegraph_app.backends.base import ControlPlaneBackend
+from flakegraph_app.backends.base import ControlPlaneBackend, app_state_root
 from flakegraph_app.models import (
+    ACTIVE_STATUSES,
     ARTIFACTS_UNAVAILABLE_STATUS,
+    SUCCESS_STATUSES,
     ClusterSnapshot,
     RunSnapshot,
     RuntimeMode,
@@ -51,7 +53,7 @@ def render_run_navigation(
     if runtime == RuntimeMode.KUBERNETES:
         # A fleet is rarely one cluster, and machines are added over time, so the
         # target is chosen here rather than fixed in the environment.
-        render_cluster_selector(_state_root(backend))
+        render_cluster_selector(app_state_root(backend, Path.cwd()))
         fleet_label = _fleet_label(cluster, cluster_error)
         if st.button(
             fleet_label,
@@ -441,7 +443,7 @@ def _remove_graph(backend: ControlPlaneBackend, run: RunSnapshot) -> int:
 
     if "delete_graph" in backend.capabilities:
         return sum(backend.delete_graph(run.graph_id).values())
-    backend.forget(run.run_id, _config_path(run))
+    backend.forget(run.run_id, run.config_path)
     return 0
 
 
@@ -640,7 +642,7 @@ def _status_icon(status: str) -> str:
     """Choose familiar Material symbols for graph-run status."""
 
     normalized = status.lower()
-    if normalized in {"succeeded", "completed", "done", "success"}:
+    if normalized in SUCCESS_STATUSES:
         return ":material/hub:"
     if normalized in {"failed", "error"}:
         return ":material/error_outline:"
@@ -656,28 +658,4 @@ def _status_icon(status: str) -> str:
 def _active_status(status: str) -> bool:
     """Return whether removing the run would hide work that is still executing."""
 
-    return status.lower() in {
-        "planning",
-        "pending",
-        "queued",
-        "running",
-        "processing",
-        "claimed",
-        "submitted",
-    }
-
-
-def _config_path(snapshot: RunSnapshot) -> Path | None:
-    """Return the optional generated configuration used by backend run actions."""
-
-    value = str(snapshot.raw.get("config_path") or "")
-    return Path(value) if value else None
-
-
-def _state_root(backend: ControlPlaneBackend) -> Path:
-    """Return the app-owned catalog directory for the active backend."""
-
-    state_root = getattr(backend, "state_root", None)
-    if isinstance(state_root, Path):
-        return state_root
-    return Path(".flakegraph") / "app"
+    return status.lower() in ACTIVE_STATUSES

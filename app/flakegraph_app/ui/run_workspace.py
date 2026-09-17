@@ -8,22 +8,17 @@ from pathlib import Path
 
 import streamlit as st
 from flakegraph_app.backends.base import ControlPlaneBackend
-from flakegraph_app.models import ARTIFACTS_UNAVAILABLE_STATUS, RunSnapshot
+from flakegraph_app.models import (
+    ACTIVE_STATUSES,
+    ARTIFACTS_UNAVAILABLE_STATUS,
+    SUCCESS_STATUSES,
+    RunSnapshot,
+)
 from flakegraph_app.ui.consumption import render_consumption
 from flakegraph_app.ui.graph_explorer import render_graph_dataset
 from flakegraph_app.ui.shared import concise_error, render_run_snapshot
 from flakegraph_app.ui.theme import page_heading
 
-_SUCCESS_STATUSES = {"succeeded", "completed", "done", "success"}
-_ACTIVE_STATUSES = {
-    "pending",
-    "planning",
-    "queued",
-    "running",
-    "processing",
-    "claimed",
-    "submitted",
-}
 _RUN_GRAPH_CACHE_LIMIT = 4
 
 
@@ -33,7 +28,7 @@ def render_run_workspace(
 ) -> None:
     """Show live progress for active work and the graph explorer after success."""
 
-    config_path = _config_path(listed_snapshot)
+    config_path = listed_snapshot.config_path
     snapshot = listed_snapshot
     if _requires_status_refresh(listed_snapshot.status):
         try:
@@ -45,10 +40,10 @@ def render_run_workspace(
             )
 
     normalized = snapshot.status.lower()
-    if normalized in _SUCCESS_STATUSES:
+    if normalized in SUCCESS_STATUSES:
         _render_completed_run(backend, snapshot, config_path)
         return
-    if normalized in _ACTIVE_STATUSES:
+    if normalized in ACTIVE_STATUSES:
         _render_active_run(backend, snapshot, config_path)
         return
     if normalized == ARTIFACTS_UNAVAILABLE_STATUS:
@@ -189,7 +184,7 @@ def _render_active_run(
             )
         else:
             st.session_state[snapshot_key] = current
-        if current.status.lower() not in _ACTIVE_STATUSES:
+        if current.status.lower() not in ACTIVE_STATUSES:
             st.rerun()
         render_run_snapshot(current)
         _render_live_consumption(current)
@@ -200,7 +195,7 @@ def _render_active_run(
         if command_columns[0].button(
             "Cancel",
             icon=":material/stop_circle:",
-            disabled=(not status_available or current.status.lower() not in _ACTIVE_STATUSES),
+            disabled=(not status_available or current.status.lower() not in ACTIVE_STATUSES),
             help=(
                 "Stop queued work and request cancellation of active tasks. Completed "
                 "artifacts remain available for diagnostics and safe retries."
@@ -262,7 +257,7 @@ def _needs_recovery(snapshot: RunSnapshot) -> bool:
     return (
         isinstance(diagnostics, dict)
         and diagnostics.get("state") == "attention_required"
-        and snapshot.status.lower() in _ACTIVE_STATUSES
+        and snapshot.status.lower() in ACTIVE_STATUSES
     )
 
 
@@ -442,13 +437,6 @@ def _render_graph_rename_form(
             st.rerun()
 
 
-def _config_path(snapshot: RunSnapshot) -> Path | None:
-    """Recover the generated profile used for status, cancellation, and export."""
-
-    value = str(snapshot.raw.get("config_path") or "")
-    return Path(value) if value else None
-
-
 def _requires_status_refresh(status: str) -> bool:
     """Return whether a listed run can still change without a fresh status read.
 
@@ -458,7 +446,7 @@ def _requires_status_refresh(status: str) -> bool:
     unfamiliar states still receive the full status contract automatically.
     """
 
-    return status.lower() not in _SUCCESS_STATUSES
+    return status.lower() not in SUCCESS_STATUSES
 
 
 def _cache_graph_dataset(cache: object, key: str, dataset: object) -> None:

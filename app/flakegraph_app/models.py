@@ -58,6 +58,12 @@ RUN_STAGE_ORDER: tuple[str, ...] = DISTRIBUTED_STAGE_ORDER + PIPELINE_STAGE_ORDE
 # lives beside the stage vocabularies because a backend decides it and the
 # navigation and workspace renderers both have to recognise it.
 ARTIFACTS_UNAVAILABLE_STATUS = "unavailable"
+# The spellings each runtime reports for a run that has finished well, and
+# for one still executing. Removing or cancelling an active run hides work.
+SUCCESS_STATUSES = frozenset({"succeeded", "completed", "done", "success"})
+ACTIVE_STATUSES = frozenset(
+    {"pending", "planning", "queued", "running", "processing", "claimed", "submitted"}
+)
 
 
 class RuntimeMode(StrEnum):
@@ -254,6 +260,13 @@ class RunSnapshot:
         """Return the human-readable name while preserving the stable graph ID."""
 
         return self.graph_name or self.graph_id
+
+    @property
+    def config_path(self) -> Path | None:
+        """Return the generated profile that status, cancellation and export act on."""
+
+        value = str(self.raw.get("config_path") or "")
+        return Path(value) if value else None
 
 
 @dataclass(frozen=True)
