@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 import yaml
 from flakegraph_app.ui import authentication
+from helm import FULLNAME, fails, one, render
 
 _CHART = Path("deploy/helm/flakegraph")
 _AUTH_PROXY_TEMPLATE = _CHART / "templates/auth-proxy.yaml"
@@ -210,6 +211,22 @@ def test_only_the_ingress_controller_may_reach_the_header_trusting_application()
     # which is a worse default than leaving the restriction to the operator.
     assert values["enabled"] is False
     assert values["from"], "a default peer must be shown, even while disabled"
+
+
+def test_the_gate_is_refused_without_the_policy_that_makes_it_sound() -> None:
+    """Enabling the gate without restricting who may reach the application is refused."""
+
+    refusal = fails(("ingress.enabled=true", "ingress.authProxy.enabled=true"))
+    assert "ingress.authProxy.enabled needs controlPlane.networkPolicy.enabled" in refusal
+
+    rendered = render(
+        (
+            "ingress.enabled=true",
+            "ingress.authProxy.enabled=true",
+            "controlPlane.networkPolicy.enabled=true",
+        )
+    )
+    assert one(rendered, "NetworkPolicy", f"{FULLNAME}-app")
 
 
 def _load_chart_values() -> dict:

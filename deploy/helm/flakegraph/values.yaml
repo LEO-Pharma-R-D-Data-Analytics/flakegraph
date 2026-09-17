@@ -607,7 +607,9 @@ controlPlane:
   # Off by default because the correct peer is site-specific, and a policy
   # naming the wrong one makes the application unreachable rather than
   # unprotected. Turn it on, and name your ingress controller, wherever the
-  # cluster runs workloads that are not part of this release.
+  # cluster runs workloads that are not part of this release. The chart
+  # refuses to render ingress.authProxy without it: a gate whose header
+  # anyone can forge is not a gate.
   networkPolicy:
     enabled: false
     # Standard NetworkPolicy peers. Both selectors inside one entry must match.

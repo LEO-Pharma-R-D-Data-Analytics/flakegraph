@@ -618,7 +618,9 @@ makes trusting it sound: enable it, name the ingress controller as the only
 permitted peer, and confirm by forging the header from a pod that should not be
 able to reach the application at all. It is off by default because the correct
 peer is site-specific and a policy naming the wrong one leaves the application
-unreachable rather than unprotected.
+unreachable rather than unprotected — but the chart refuses to render the gate
+without it, since a gate whose header anyone in the cluster can forge is not a
+gate.
 
 ### Callers that are programs
 
