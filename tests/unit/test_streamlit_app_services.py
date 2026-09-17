@@ -57,7 +57,6 @@ from flakegraph_app.models import (
     GraphDataset,
     IngestionRequest,
     OutputDestination,
-    ProgressEvent,
     ProviderSelection,
     RunSnapshot,
     RuntimeMode,
@@ -66,7 +65,7 @@ from flakegraph_app.models import (
     StorageKind,
     WorkloadStatus,
 )
-from flakegraph_app.progress import aggregate_stages, read_jsonl_events
+from flakegraph_app.progress import read_jsonl_events
 from flakegraph_app.providers import (
     EMBEDDING_PROVIDERS,
     LLM_PROVIDERS,
@@ -382,7 +381,7 @@ def test_generated_config_maps_provider_specific_ocr_fields(tmp_path: Path) -> N
     }
 
 
-def test_progress_reader_tails_logs_and_aggregates_stage_state(
+def test_progress_reader_tails_logs_without_reading_them_whole(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -414,13 +413,10 @@ def test_progress_reader_tails_logs_and_aggregates_stage_state(
     )
 
     events = read_jsonl_events(path, limit=50)
-    stages = aggregate_stages(events)
 
     assert len(events) == 1
-    assert stages[0].stage == "ocr"
-    assert stages[0].completed == 1
-    assert stages[0].total == 2
-    assert stages[0].elapsed_ms == 1250
+    assert events[0].stage == "ocr"
+    assert events[0].elapsed_ms == 1250
 
 
 def test_base_configuration_cache_returns_isolated_copies(
@@ -448,46 +444,6 @@ def test_base_configuration_cache_returns_isolated_copies(
 
     assert second["llm"]["provider"] == "ollama"
     assert calls == 1
-
-
-def test_progress_stages_follow_the_processing_pipeline_order() -> None:
-    """Present completion events in pipeline order even when logs arrive unsorted."""
-
-    events = [
-        ProgressEvent("2026-01-01T00:00:03Z", "write", "completed"),
-        ProgressEvent("2026-01-01T00:00:01Z", "ocr", "completed", file_id="file-1"),
-        ProgressEvent("2026-01-01T00:00:02Z", "graph_extraction", "completed"),
-    ]
-
-    stages = aggregate_stages(events)
-
-    assert [stage.stage for stage in stages] == ["ocr", "graph_extraction", "write"]
-
-
-def test_progress_uses_discovery_and_batch_counters() -> None:
-    """Expose meaningful totals for stages that do not emit one event per document."""
-
-    stages = aggregate_stages(
-        [
-            ProgressEvent(
-                "2026-01-01T00:00:01Z",
-                "file_source",
-                "completed",
-                counts={"files_seen": 10},
-            ),
-            ProgressEvent(
-                "2026-01-01T00:00:02Z",
-                "graph_extraction",
-                "progress",
-                counts={"batches_completed": 8, "batches_total": 24},
-            ),
-        ]
-    )
-
-    assert [(stage.stage, stage.completed, stage.total) for stage in stages] == [
-        ("file_source", 10, 10),
-        ("graph_extraction", 8, 24),
-    ]
 
 
 def test_graph_filters_preserve_endpoint_integrity_and_community_selection() -> None:

@@ -21,7 +21,6 @@ GRAPH_REVIEW_ROW_LIMITS = {
     "KG_COMMUNITY": 1_000,
     "KG_EVIDENCE": 5_000,
 }
-GRAPH_COUNTED_TABLES = ("KG_DOCUMENT", "KG_CHUNK")
 # Every table that records something about one graph. Removing a graph has to
 # clear all of them, or rows survive a deletion with nothing in the application
 # still pointing at them. Written out rather than derived because the deployed

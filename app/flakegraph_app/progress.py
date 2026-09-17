@@ -6,8 +6,7 @@ import json
 import os
 import threading
 import uuid
-from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -354,63 +353,3 @@ def progress_event(raw: Mapping[str, Any]) -> ProgressEvent:
         counts=dict(raw.get("counts") or {}),
         metadata=dict(raw.get("metadata") or {}),
     )
-
-
-def aggregate_stages(events: Iterable[ProgressEvent]) -> list[StageProgress]:
-    """Collapse event history into one deterministic row per observed stage."""
-
-    latest: dict[str, ProgressEvent] = {}
-    elapsed: dict[str, int] = defaultdict(int)
-    completed_files: dict[str, set[str]] = defaultdict(set)
-    completed_counts: dict[str, int] = {}
-    totals: dict[str, int] = {}
-    for event in events:
-        latest[event.stage] = event
-        if event.elapsed_ms is not None and event.status in {"completed", "succeeded", "done"}:
-            elapsed[event.stage] += event.elapsed_ms
-        if event.file_id and event.status in {"completed", "succeeded", "done"}:
-            completed_files[event.stage].add(event.file_id)
-        for completed_key, total_key in (
-            ("batches_completed", "batches_total"),
-            ("reports_completed", "reports_total"),
-        ):
-            completed_value = event.counts.get(completed_key)
-            total_value = event.counts.get(total_key)
-            if isinstance(completed_value, int):
-                completed_counts[event.stage] = completed_value
-            if isinstance(total_value, int):
-                totals[event.stage] = total_value
-        files_seen = event.counts.get("files_seen")
-        if event.stage == "file_source" and isinstance(files_seen, int):
-            totals[event.stage] = files_seen
-            if event.status in {"completed", "succeeded", "done"}:
-                completed_counts[event.stage] = files_seen
-        for key in ("files_total", "documents_total", "total"):
-            value = event.counts.get(key)
-            if isinstance(value, int):
-                totals[event.stage] = value
-                break
-
-    order = {stage: index for index, stage in enumerate(PIPELINE_STAGE_ORDER)}
-    return [
-        StageProgress(
-            stage=stage,
-            status=event.status,
-            completed=(
-                totals[stage]
-                if (
-                    event.status in {"completed", "succeeded", "done"}
-                    and not event.file_id
-                    and stage in totals
-                )
-                else max(len(completed_files[stage]), completed_counts.get(stage, 0))
-            ),
-            total=totals.get(stage),
-            elapsed_ms=elapsed[stage],
-            message=event.message,
-        )
-        for stage, event in sorted(
-            latest.items(),
-            key=lambda item: (order.get(item[0], len(order)), item[0]),
-        )
-    ]

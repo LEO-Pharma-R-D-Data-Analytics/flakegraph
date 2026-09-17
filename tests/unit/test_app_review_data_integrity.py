@@ -99,6 +99,42 @@ def test_remote_downloads_are_namespaced_so_no_two_objects_share_a_file(
         assert root.resolve() in path.resolve().parents, key
 
 
+def test_local_progress_stages_follow_the_pipeline_order(tmp_path: Path) -> None:
+    """Present stage rows in pipeline order even when the log arrives unsorted."""
+
+    events_path = tmp_path / "events.jsonl"
+    records = [
+        _progress_record("write", "completed"),
+        _progress_record("ocr", "completed", file_id="file-1"),
+        _progress_record("graph_extraction", "completed"),
+    ]
+    events_path.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+
+    stages = read_local_progress(events_path).stages
+
+    assert [stage.stage for stage in stages] == ["ocr", "graph_extraction", "write"]
+
+
+def test_local_progress_uses_discovery_and_batch_counters(tmp_path: Path) -> None:
+    """Expose meaningful totals for stages that do not emit one event per document."""
+
+    events_path = tmp_path / "events.jsonl"
+    records = [
+        _progress_record("file_source", "completed", counts={"files_seen": 10}),
+        _progress_record(
+            "graph_extraction", "progress", counts={"batches_completed": 8, "batches_total": 24}
+        ),
+    ]
+    events_path.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+
+    stages = read_local_progress(events_path).stages
+
+    assert [(stage.stage, stage.completed, stage.total) for stage in stages] == [
+        ("file_source", 10, 10),
+        ("graph_extraction", 8, 24),
+    ]
+
+
 def test_local_progress_checkpoint_keeps_counts_beyond_recent_tail(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     records = [_progress_record("file_source", "completed", counts={"files_seen": 6})]
