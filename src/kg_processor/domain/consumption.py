@@ -85,8 +85,6 @@ def _first_int(payload: Mapping[str, Any], names: tuple[str, ...]) -> int:
     return 0
 
 
-
-
 class Locality(StrEnum):
     """Where the work ran, which decides whether it was billed or avoided."""
 
@@ -271,23 +269,3 @@ def group_by(
     for event in events:
         grouped.setdefault(str(getattr(event, key, "") or "unknown"), []).append(event)
     return {name: summarize(items, card) for name, items in sorted(grouped.items())}
-
-
-def rate_card_from_mapping(payload: Mapping[str, object] | None) -> RateCard:
-    """Build a rate card from configuration, tolerating partial entries."""
-
-    if not payload:
-        return RateCard()
-    raw_rates = payload.get("rates")
-    rates: dict[str, Rate] = {}
-    if isinstance(raw_rates, Mapping):
-        for key, value in raw_rates.items():
-            if isinstance(value, Mapping):
-                rates[str(key)] = Rate.model_validate(value)
-    reference = payload.get("local_reference")
-    credit = payload.get("usd_per_credit")
-    return RateCard(
-        rates=rates,
-        local_reference=str(reference) if isinstance(reference, str) else None,
-        usd_per_credit=float(credit) if isinstance(credit, int | float) else 0.0,
-    )

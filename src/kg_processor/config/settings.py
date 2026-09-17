@@ -17,7 +17,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from kg_processor.config.provider_registry import ProviderKind, provider_names
-from kg_processor.domain.consumption import RateCard, rate_card_from_mapping
+from kg_processor.domain.consumption import RateCard
 from kg_processor.domain.distributed import TaskStage
 from kg_processor.ports.llm import DEFAULT_LLM_TIMEOUT_SECONDS
 
@@ -434,12 +434,10 @@ class ConsumptionSettings(_SettingsModel):
     def rate_card(self) -> RateCard:
         """Build the domain rate card this configuration describes."""
 
-        return rate_card_from_mapping(
-            {
-                "rates": self.rates,
-                "local_reference": self.local_reference,
-                "usd_per_credit": self.usd_per_credit,
-            }
+        return RateCard(
+            rates=self.rates,
+            local_reference=self.local_reference,
+            usd_per_credit=self.usd_per_credit,
         )
 
 
