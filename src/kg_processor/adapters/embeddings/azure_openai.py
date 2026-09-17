@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import httpx
 
-from kg_processor.adapters.embeddings.openai_compatible import (
-    _EMBEDDING_TIMEOUT_SECONDS,
-    OpenAICompatibleEmbeddingProvider,
-)
-from kg_processor.ports.embeddings import EmbedOptions
+from kg_processor.adapters.embeddings.openai_compatible import OpenAICompatibleEmbeddingProvider
+from kg_processor.ports.embeddings import EMBEDDING_TIMEOUT_SECONDS, EmbedOptions
 
 
 class AzureOpenAIEmbeddingProvider(OpenAICompatibleEmbeddingProvider):
@@ -37,7 +34,7 @@ class AzureOpenAIEmbeddingProvider(OpenAICompatibleEmbeddingProvider):
             ),
             headers={"api-key": self.api_key},
             json=payload,
-            timeout=_EMBEDDING_TIMEOUT_SECONDS,
+            timeout=EMBEDDING_TIMEOUT_SECONDS,
         )
 
     def _uses_dimensions_parameter(

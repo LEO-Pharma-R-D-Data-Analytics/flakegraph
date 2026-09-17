@@ -11,6 +11,11 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
+# One batch of short texts through a hosted embedding model. Shared by every
+# adapter so a stalled provider blocks a chunking worker for the same length of
+# time whichever one is configured.
+EMBEDDING_TIMEOUT_SECONDS = 120
+
 
 class EmbedOptions(BaseModel):
     """Provider-neutral embedding model, dimension, and batching options."""

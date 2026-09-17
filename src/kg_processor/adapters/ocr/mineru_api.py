@@ -28,23 +28,19 @@ from kg_processor.domain.documents import (
 from kg_processor.domain.ids import stable_id
 from kg_processor.ports.ocr import OcrOptions
 
+# A parse response carries markdown, layout blocks and inline assets for one
+# document; anything past this is a broken or hostile upstream, not a document.
+_MAX_RESPONSE_BYTES = 100 * 1024 * 1024
+
 
 class MineruApiOcrProvider:
     """Calls an external MinerU-compatible `/file_parse` service."""
 
-    def __init__(
-        self,
-        base_url: str,
-        api_key: str | None = None,
-        max_response_bytes: int = 100 * 1024 * 1024,
-    ) -> None:
+    def __init__(self, base_url: str, api_key: str | None = None) -> None:
         """Normalize service configuration and create a lazy HTTP client pool."""
 
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        if max_response_bytes < 0:
-            raise ValueError("MinerU API response limit must be non-negative")
-        self.max_response_bytes = max_response_bytes
         self._client = httpx.Client()
 
     def parse(self, file: InputFile, options: OcrOptions) -> ParsedDocument:
@@ -66,7 +62,7 @@ class MineruApiOcrProvider:
             ) as response,
         ):
             response.raise_for_status()
-            payload = _json_payload(response, self.max_response_bytes)
+            payload = _json_payload(response, _MAX_RESPONSE_BYTES)
         result = _select_result(payload)
         _raise_if_failed(result, file.source_uri)
         pages = _require_text(file, _pages_from_result(file, result))

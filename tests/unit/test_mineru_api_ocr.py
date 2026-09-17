@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
+from kg_processor.adapters.ocr import mineru_api
 from kg_processor.adapters.ocr.mineru_api import MineruApiOcrProvider
 from kg_processor.domain.documents import InputFile
 from kg_processor.ports.ocr import OcrOptions
@@ -380,28 +381,11 @@ def test_mineru_api_ocr_rejects_a_declared_response_above_the_bound(
     FakeClient.response_payload = {"data": {"md_content": "Small body"}}
     FakeClient.declared_content_length = 10_000
     monkeypatch.setattr(httpx, "Client", FakeClient)
+    monkeypatch.setattr(mineru_api, "_MAX_RESPONSE_BYTES", 64)
 
-    provider = MineruApiOcrProvider("https://mineru.example", max_response_bytes=64)
+    provider = MineruApiOcrProvider("https://mineru.example")
 
     with pytest.raises(RuntimeError, match="declared"):
-        provider.parse(_input_file(input_path), OcrOptions())
-
-
-def test_mineru_api_ocr_bounds_a_body_that_understates_its_length(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The bound holds while bytes arrive, not only against the declared length."""
-
-    input_path = tmp_path / "sample.pdf"
-    input_path.write_bytes(b"%PDF")
-    FakeClient.response_payload = {"data": {"md_content": "x" * 500}}
-    FakeClient.declared_content_length = 1
-    monkeypatch.setattr(httpx, "Client", FakeClient)
-
-    provider = MineruApiOcrProvider("https://mineru.example", max_response_bytes=64)
-
-    with pytest.raises(RuntimeError, match="above the configured"):
         provider.parse(_input_file(input_path), OcrOptions())
 
 

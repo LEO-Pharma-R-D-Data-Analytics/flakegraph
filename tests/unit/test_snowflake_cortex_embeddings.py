@@ -7,7 +7,7 @@ import pytest
 
 from kg_processor.adapters.embeddings.snowflake_cortex import SnowflakeCortexEmbeddingProvider
 from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
-from kg_processor.ports.embeddings import EmbedOptions
+from kg_processor.ports.embeddings import EMBEDDING_TIMEOUT_SECONDS, EmbedOptions
 
 
 class FakeCursor:
@@ -156,18 +156,14 @@ def test_snowflake_cortex_embeddings_bound_every_batch_statement() -> None:
     def factory(**_kwargs: object) -> FakeConnection:
         return connection
 
-    provider = SnowflakeCortexEmbeddingProvider(
-        _config(),
-        connector_factory=factory,
-        timeout_seconds=45,
-    )
+    provider = SnowflakeCortexEmbeddingProvider(_config(), connector_factory=factory)
 
     provider.embed(
         ["one", "two", "three"],
         EmbedOptions(model="embed", dimension=1, batch_size=2),
     )
 
-    assert connection.cursor_instance.timeouts == [45, 45]
+    assert connection.cursor_instance.timeouts == [EMBEDDING_TIMEOUT_SECONDS] * 2
 
 
 def test_snowflake_cortex_embeddings_reject_missing_batch_rows() -> None:

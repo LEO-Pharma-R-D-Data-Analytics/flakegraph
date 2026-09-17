@@ -12,13 +12,9 @@ from kg_processor.adapters.snowflake import (
     SnowflakeConnectionConfig,
     quote_sql_string,
 )
-from kg_processor.ports.embeddings import EmbedOptions
+from kg_processor.ports.embeddings import EMBEDDING_TIMEOUT_SECONDS, EmbedOptions
 
 _INDEXED_VECTOR_COLUMNS = 2
-# One batch of short texts through a hosted embedding model. The bound matches
-# the HTTP embedding adapters so a stalled provider blocks a chunking worker for
-# the same length of time whichever provider is configured.
-DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 120
 
 
 class SnowflakeCortexEmbeddingProvider:
@@ -28,13 +24,9 @@ class SnowflakeCortexEmbeddingProvider:
         self,
         config: SnowflakeConnectionConfig,
         connector_factory: ConnectorFactory | None = None,
-        timeout_seconds: int = DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
     ) -> None:
-        """Configure the session and the per-batch statement timeout."""
-
         self.config = config
         self.connector_factory = connector_factory
-        self.timeout_seconds = timeout_seconds
         self._connections = ReusableSnowflakeConnections(config, connector_factory)
 
     def close(self) -> None:
@@ -66,7 +58,7 @@ class SnowflakeCortexEmbeddingProvider:
                 cast(Any, cursor).execute(
                     _embed_batch_sql(options.model),
                     [json.dumps(batch)],
-                    timeout=self.timeout_seconds,
+                    timeout=EMBEDDING_TIMEOUT_SECONDS,
                 )
                 rows = cursor.fetchall()
                 if len(rows) != len(batch):

@@ -6,11 +6,9 @@ import httpx
 
 from kg_processor.adapters.embeddings.openai_common import parse_embedding_vectors
 from kg_processor.adapters.llm.openai_common import send_with_http_retry
-from kg_processor.ports.embeddings import EmbedOptions
+from kg_processor.ports.embeddings import EMBEDDING_TIMEOUT_SECONDS, EmbedOptions
 
 _DIMENSIONS_PARAMETER = "dimensions"
-# Embedding batches carry no timeout of their own on the port.
-_EMBEDDING_TIMEOUT_SECONDS = 120
 _REJECTED_REQUEST_STATUSES = {400, 422}
 
 
@@ -90,7 +88,7 @@ class OpenAICompatibleEmbeddingProvider:
             f"{self.endpoint}/embeddings",
             headers={"Authorization": f"Bearer {self.api_key}"},
             json=payload,
-            timeout=_EMBEDDING_TIMEOUT_SECONDS,
+            timeout=EMBEDDING_TIMEOUT_SECONDS,
         )
 
 
