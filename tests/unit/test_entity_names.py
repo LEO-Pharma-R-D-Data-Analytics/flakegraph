@@ -185,7 +185,9 @@ def test_any_category_definition_is_rejected_not_only_this_entitys_own() -> None
     """
 
     ontology = _ontology()
-    other = next(item.description for item in ontology.entity_types if item.name != "MARTIAL_ART")
+    other = next(
+        item.description for item in ontology.entity_types if item.name != "MARTIAL_ART"
+    )
     chunk = _chunk("karate moved from Okinawa into mainland Japan")
     payload = _entity_payload(
         name="karate",

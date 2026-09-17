@@ -23,7 +23,9 @@ def _force_theme(monkeypatch: pytest.MonkeyPatch, value: object) -> list[str]:
         "flakegraph_app.ui.theme.st.html", lambda markup: emitted.append(str(markup))
     )
     context = (
-        SimpleNamespace() if value is None else SimpleNamespace(theme=SimpleNamespace(type=value))
+        SimpleNamespace()
+        if value is None
+        else SimpleNamespace(theme=SimpleNamespace(type=value))
     )
     monkeypatch.setattr("flakegraph_app.ui.theme.st.context", context, raising=False)
     return emitted
@@ -60,7 +62,9 @@ def test_dark_host_gets_readable_ink(monkeypatch: pytest.MonkeyPatch) -> None:
     assert f"--fg-ink: {theme._DARK_PALETTE['fg-ink']};" in css
     # The light value may still appear as the base layer, but the dark override
     # must come after it so it wins the cascade.
-    assert css.rindex(theme._DARK_PALETTE["fg-ink"]) > css.rindex(theme._LIGHT_PALETTE["fg-ink"])
+    assert css.rindex(theme._DARK_PALETTE["fg-ink"]) > css.rindex(
+        theme._LIGHT_PALETTE["fg-ink"]
+    )
 
 
 def test_light_host_does_not_get_a_dark_media_override(

@@ -302,9 +302,13 @@ def evaluate_graph_artifacts(output_path: Path, gold_path: Path) -> dict[str, An
         "hard_quality_checks": quality.ok,
     }
     if gold.evaluation_scope.entity_coverage == "exhaustive":
-        acceptance["entity_precision"] = entity_metrics["precision"] >= thresholds.entity_precision
+        acceptance["entity_precision"] = (
+            entity_metrics["precision"] >= thresholds.entity_precision
+        )
     if gold.evaluation_scope.relation_coverage == "exhaustive":
-        acceptance["triple_precision"] = triple_metrics["precision"] >= thresholds.triple_precision
+        acceptance["triple_precision"] = (
+            triple_metrics["precision"] >= thresholds.triple_precision
+        )
     return {
         "gold_name": gold.name,
         "output_path": str(output_path),

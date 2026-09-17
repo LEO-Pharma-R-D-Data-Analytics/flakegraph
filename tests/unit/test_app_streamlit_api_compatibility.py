@@ -64,7 +64,7 @@ def _unsupported_calls() -> list[str]:
                 continue
             try:
                 signature = inspect.signature(target)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
             if any(p.kind == p.VAR_KEYWORD for p in signature.parameters.values()):
                 continue

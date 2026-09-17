@@ -135,7 +135,9 @@ class SnowflakeStageFileSource:
                 cursor.close()
             downloaded = sorted(Path(directory).glob("*"))
             if not downloaded:
-                raise FileNotFoundError(f"Snowflake GET returned no file for {source_uri}")
+                raise FileNotFoundError(
+                    f"Snowflake GET returned no file for {source_uri}"
+                )
             return sha256_file(_restore_original_bytes(downloaded[0]))
 
 
@@ -188,7 +190,9 @@ def _input_file_from_list_row(stage: str, row: object) -> InputFile:
     raw_name = str(values[0])
     size_bytes = int(values[1] or 0)
     listed_checksum = str(values[2] or "") if len(values) >= _LIST_ROW_CHECKSUM_COLUMNS else ""
-    last_modified = str(values[3] or "") if len(values) >= _LIST_ROW_LAST_MODIFIED_COLUMNS else ""
+    last_modified = (
+        str(values[3] or "") if len(values) >= _LIST_ROW_LAST_MODIFIED_COLUMNS else ""
+    )
     checksum = listed_checksum or stable_id(
         "stage_file_checksum",
         raw_name,

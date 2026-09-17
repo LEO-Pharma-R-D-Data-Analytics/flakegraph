@@ -961,7 +961,8 @@ def build_count_job_files_by_status_statement() -> str:
     """Return SQL that summarizes one job's queue by status."""
 
     return (
-        "SELECT STATUS, COUNT(*) FROM KG_JOB_FILE WHERE JOB_ID = ? AND GRAPH_ID = ? GROUP BY STATUS"
+        "SELECT STATUS, COUNT(*) FROM KG_JOB_FILE "
+        "WHERE JOB_ID = ? AND GRAPH_ID = ? GROUP BY STATUS"
     )
 
 

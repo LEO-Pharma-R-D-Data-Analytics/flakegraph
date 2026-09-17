@@ -363,7 +363,9 @@ def test_mineru_api_ocr_raises_for_a_rejected_upload(
     monkeypatch.setattr(httpx, "Client", FakeClient)
 
     with pytest.raises(httpx.HTTPStatusError):
-        MineruApiOcrProvider("https://mineru.example").parse(_input_file(input_path), OcrOptions())
+        MineruApiOcrProvider("https://mineru.example").parse(
+            _input_file(input_path), OcrOptions()
+        )
 
 
 def test_mineru_api_ocr_rejects_a_declared_response_above_the_bound(

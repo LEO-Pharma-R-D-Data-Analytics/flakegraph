@@ -243,7 +243,7 @@ def _read_json_file(path: Path) -> dict[str, Any]:
         return {}
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, UnicodeError, ValueError:
+    except (OSError, UnicodeError, ValueError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
 

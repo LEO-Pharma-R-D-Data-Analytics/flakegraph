@@ -26,11 +26,8 @@ def test_worker_counts_replace_file_derived_zero() -> None:
 
     updated = _with_live_stage_progress(
         stages,
-        {
-            "stage": "graph_extraction",
-            "status": "progress",
-            "counts": {"batches_completed": 20, "batches_total": 21},
-        },
+        {"stage": "graph_extraction", "status": "progress",
+         "counts": {"batches_completed": 20, "batches_total": 21}},
     )
 
     assert (updated[0].completed, updated[0].total) == (20, 21)
@@ -47,11 +44,8 @@ def test_file_counts_survive_when_the_worker_reports_nothing() -> None:
 def test_a_stage_the_file_rows_have_not_seen_is_still_shown() -> None:
     updated = _with_live_stage_progress(
         [StageProgress("ocr", "completed", 10, 10)],
-        {
-            "stage": "community_detection",
-            "status": "progress",
-            "counts": {"reports_completed": 4, "reports_total": 12},
-        },
+        {"stage": "community_detection", "status": "progress",
+         "counts": {"reports_completed": 4, "reports_total": 12}},
     )
 
     assert [s.stage for s in updated] == ["ocr", "community_detection"]
