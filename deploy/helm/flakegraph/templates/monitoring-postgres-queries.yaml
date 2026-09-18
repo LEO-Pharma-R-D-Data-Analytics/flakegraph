@@ -38,12 +38,23 @@ data:
   # and an alert cannot tell from a scrape failure.
   queries.yaml: |
     flakegraph_tasks:
+      # Every stage, status and band is spelled out: a queue with nothing
+      # running must read as zero running, not as a series that is missing.
       query: |
-        SELECT stage, status,
-               CASE WHEN priority >= 1000 THEN 'interactive' ELSE 'bulk' END AS priority_band,
-               count(*)::float AS count
-        FROM flakegraph_task
-        GROUP BY 1, 2, 3
+        SELECT stage, status, priority_band, COALESCE(counted.count, 0)::float AS count
+        FROM unnest(ARRAY[{{ $stageList }}]) AS stages(stage)
+        CROSS JOIN unnest(ARRAY['queued', 'running', 'succeeded', 'failed', 'cancelled']) AS statuses(status)
+        CROSS JOIN unnest(ARRAY['interactive', 'bulk']) AS bands(priority_band)
+        LEFT JOIN (
+            SELECT stage AS counted_stage, status AS counted_status,
+                   CASE WHEN priority >= 1000 THEN 'interactive' ELSE 'bulk' END AS counted_band,
+                   count(*) AS count
+            FROM flakegraph_task
+            GROUP BY 1, 2, 3
+        ) AS counted
+          ON counted.counted_stage = stages.stage
+         AND counted.counted_status = statuses.status
+         AND counted.counted_band = bands.priority_band
       primary: true
       # A full pass over the task table, which a large run makes millions of
       # rows. Cached so a fifteen-second scrape does not become a fifteen-second
@@ -195,8 +206,10 @@ data:
             description: Ready tasks, active leases, and pending publications a worker could take
     flakegraph_runs:
       query: |
-        SELECT status, count(*)::float AS count
-        FROM flakegraph_run
+        SELECT statuses.status, count(run.id)::float AS count
+        FROM unnest(ARRAY['planning', 'queued', 'running', 'succeeded', 'failed', 'cancelled']) AS statuses(status)
+        LEFT JOIN flakegraph_run AS run
+          ON run.status = statuses.status
         GROUP BY 1
       primary: true
       target_databases: [{{ $database | quote }}]
