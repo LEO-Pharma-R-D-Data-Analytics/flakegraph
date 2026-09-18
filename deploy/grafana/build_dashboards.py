@@ -465,7 +465,10 @@ def variable(
     """Return a Prometheus ``label_values`` template variable.
 
     Multi-value variables include All; a single-value one takes ``current`` as
-    its default so a fresh Grafana opens on the right namespace.
+    its default so a fresh Grafana opens on the right namespace. All is spelled
+    as a match-anything regex rather than the option list, because a list
+    Grafana has not populated yet (a class nobody has used, a dashboard opened
+    before the first scrape) would otherwise expand to a filter nothing matches.
     """
 
     selected = (
@@ -484,6 +487,7 @@ def variable(
         "sort": 1,
         "multi": multi,
         "includeAll": multi,
+        **({"allValue": ".*"} if multi else {}),
         "current": selected,
         "options": [],
     }
