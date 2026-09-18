@@ -191,7 +191,10 @@ export function IngestionForm({
   }, [promotionApplied, runtime, workspace.data?.pendingPromotion]);
 
   const request = useMemo((): IngestionRequest | null => {
-    const workspacePath = `${session.data?.repositoryRoot ?? ""}/.flakegraph/app/graphs/${graphId}`;
+    // Graph artifacts live under the control plane's own state, the one place
+    // it can write on a read-only image; locally that is the checkout's
+    // .flakegraph/app, as before.
+    const workspacePath = `${session.data?.stateRoot ?? ""}/graphs/${graphId}`;
     const source = sourcePayload();
     if (!source) {
       return null;
@@ -275,6 +278,7 @@ export function IngestionForm({
     ontologyTypes,
     snowflake,
     session.data?.repositoryRoot,
+    session.data?.stateRoot,
     jobId,
     graphId,
     capabilities,

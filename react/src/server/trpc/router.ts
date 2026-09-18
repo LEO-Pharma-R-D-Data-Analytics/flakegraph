@@ -62,6 +62,7 @@ export const appRouter = router({
         snowflakeHosted: appEnv().snowflakeHosted,
         availableRuntimes: availableRuntimes(),
         repositoryRoot: appEnv().repositoryRoot,
+        stateRoot: appEnv().stateRoot,
         role: workspace.role,
         suggestionMode: workspace.suggestionMode,
         lastSuccessRuntime: workspace.lastSuccessRuntime,
