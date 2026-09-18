@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 from typing import Any
@@ -110,6 +111,34 @@ def test_the_hook_rewrites_the_responses_route_too(hook: types.ModuleType) -> No
         "user",
     ]
     assert result["instructions"] == "You are terse."
+
+
+def test_a_cut_off_tool_call_is_kept_readable_on_both_routes(hook: types.ModuleType) -> None:
+    """An engine restart mid-answer leaves the harness with a prefix of the arguments."""
+
+    cut_off = '{"cmd": "ls -la /very/long'
+    responses = {
+        "input": [
+            {"type": "function_call", "call_id": "c1", "name": "shell", "arguments": cut_off},
+            {"type": "function_call", "call_id": "c2", "name": "shell", "arguments": '{"a": 1}'},
+            {"type": "function_call", "call_id": "c3", "name": "shell", "arguments": ""},
+        ]
+    }
+    chat = {
+        "messages": [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c1", "function": {"name": "shell", "arguments": cut_off}}],
+            }
+        ]
+    }
+
+    asyncio.run(hook.instance.async_pre_call_hook(None, None, responses, "aresponses"))
+    asyncio.run(hook.instance.async_pre_call_hook(None, None, chat, "acompletion"))
+
+    wrapped = json.dumps({"partial_arguments": cut_off})
+    assert [item["arguments"] for item in responses["input"]] == [wrapped, '{"a": 1}', ""]
+    assert chat["messages"][0]["tool_calls"][0]["function"]["arguments"] == wrapped
 
 
 def test_a_bare_string_input_is_left_alone(hook: types.ModuleType) -> None:
