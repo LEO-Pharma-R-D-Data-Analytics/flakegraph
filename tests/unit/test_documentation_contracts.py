@@ -11,7 +11,7 @@ def test_readme_keeps_quick_start_paths_current_and_direct() -> None:
 
     assert "TODO" not in readme
     assert "# FlakeGraph" in readme
-    assert "app/assets/flakegraph-logo.png" in readme
+    assert "react/public/flakegraph-logo.png" in readme
     assert "docs/assets/flakegraph-pipeline.svg" in readme
     assert "docs/algorithm.md" in readme
     assert "turns documents into evidence-backed knowledge graphs" in readme
@@ -21,15 +21,14 @@ def test_readme_keeps_quick_start_paths_current_and_direct() -> None:
     assert "https://docs.vllm.ai/en/latest/getting_started/installation.html" in readme
     assert "data/martial_arts/files" in readme
     assert 'uv tool install --python 3.13 "mineru[pipeline]==3.4.4"' in readme
-    assert "uv sync --extra app --extra local-embeddings" in readme
-    assert "uv run streamlit run app/streamlit_app.py" in readme
+    assert "uv sync --extra local-embeddings" in readme
+    assert "cd react && bun install && bun run dev" in readme
     assert "The CLI remains available for headless and" in readme
 
     required_paths = [
         "configs/local-mineru-oss.yaml",
         "deploy/vllm/serve-qwen38.sh",
-        "app/README.md",
-        "app/streamlit_app.py",
+        "react/README.md",
         "configs/README.md",
         "configs/snowflake-cortex.yaml",
         "data/martial_arts/files/martial-arts-overview.pdf",

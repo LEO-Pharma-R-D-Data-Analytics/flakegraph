@@ -9,7 +9,7 @@ FlakeGraph can run locally without Snowflake. Snowflake mode uses the same
 pipeline with Snowflake stages, Cortex functions, Snowflake tables, and
 Snowpark Container Services.
 
-The optional [Streamlit application](../app/README.md) provides stage upload and
+The optional [console](../react/README.md) provides stage upload and
 listing, queue submission, per-run SPCS launch, live `KG_JOB_FILE` progress, and
 graph exploration through the active Snowpark session. It is a control plane;
 the launched SPCS worker remains responsible for OCR, extraction, embedding,

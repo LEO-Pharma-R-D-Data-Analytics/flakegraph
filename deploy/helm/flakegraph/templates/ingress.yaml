@@ -4,7 +4,7 @@
 {{- /*
 Every routed service is a host under one domain rather than a path under one
 host, because the applications behind them assume they are mounted at the root:
-Streamlit serves /_stcore, LiteLLM serves /ui and /sso/callback. Rewriting those
+the console serves /_next and /api, LiteLLM serves /ui and /sso/callback. Rewriting those
 prefixes is a source of breakage that a hostname avoids entirely, and an OIDC
 redirect URI has to be a stable absolute URL in any case.
 

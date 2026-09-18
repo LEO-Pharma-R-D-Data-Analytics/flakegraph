@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app/assets/flakegraph-logo.png" alt="FlakeGraph" width="620">
+  <img src="react/public/flakegraph-logo.png" alt="FlakeGraph" width="620">
 </p>
 
 # FlakeGraph
@@ -46,16 +46,16 @@ unset KG_INPUT_PATH KG_LLM_ENDPOINT KG_LLM_MODEL KG_LLM_API_KEY
 # MinerU supports Python 3.10-3.13, so install its CLI in an isolated tool
 # environment instead of constraining FlakeGraph's Python 3.14 dependencies.
 uv tool install --python 3.13 "mineru[pipeline]==3.4.4"
-uv sync --extra app --extra local-embeddings
-uv run streamlit run app/streamlit_app.py
+uv sync --extra local-embeddings
+cd react && bun install && bun run dev
 ```
 
-Open the displayed URL, upload documents or select a source, run preflight, and
-start ingestion. Submitted graphs appear in the sidebar like a conversation
+Open http://localhost:3000, upload documents or select a source, run preflight,
+and start ingestion. Submitted graphs appear in the sidebar like a conversation
 history, with search and storage filters. Select local artifacts or a remote
 Snowflake schema as the output independently from where processing runs. Active
 graphs show OCR, extraction, finalization, and writes; completed graphs open the
-entity, relation, community, and evidence explorer directly.
+entity, relation, community, and evidence explorer directly, and take questions.
 
 The pinned checkpoint holds about 22 GB of weights before any KV cache. What is
 left over decides how many requests the server can run at once, and the sequence
@@ -72,7 +72,7 @@ It exits non-zero when the limit is unsafe. On a smaller device, lower
 `VLLM_MAX_NUM_SEQS` until it passes, then pass the same value to the launcher.
 Select `data/martial_arts/files` in the app to process the complete public sample
 corpus. Graph views contain source text and evidence, so handle them with the
-same care as the input documents. See [Application](app/README.md) for local,
+same care as the input documents. See [the console](react/README.md) for local,
 Kubernetes, and Snowflake behavior. The CLI remains available for headless and
 automated runs.
 
@@ -160,7 +160,7 @@ src/kg_processor/
   adapters/     provider and persistence implementations
   config/       typed settings, provider registry, and preflight checks
 
-app/            Streamlit control plane and runtime backends
+react/          Next.js console: the control plane for every runtime
 configs/        reusable provider profiles and ontologies
 data/           self-contained public benchmark datasets
 deploy/         container launchers and Kubernetes Helm chart
@@ -184,7 +184,7 @@ The martial-arts dataset includes a gold graph and published measurements. See
 ## Documentation
 
 - [How FlakeGraph builds a graph](docs/algorithm.md)
-- [Streamlit application](app/README.md)
+- [The console](react/README.md)
 - [Architecture](docs/architecture.md)
 - [Configuration profiles](configs/README.md)
 - [What a graph consumed, and what it cost](docs/consumption.md)

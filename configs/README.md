@@ -24,7 +24,7 @@ only for a documented model or corpus constraint.
 
 | Profile | Purpose |
 | --- | --- |
-| `app-defaults.yaml` | Domain-neutral Streamlit and Kubernetes defaults with adaptive OCR, vLLM, local embeddings, and the general ontology |
+| `app-defaults.yaml` | Domain-neutral console and Kubernetes defaults with adaptive OCR, vLLM, local embeddings, and the general ontology |
 | `local-mineru-oss.yaml` | Local MinerU OCR, OpenAI-compatible LLM, sentence-transformers, and local output |
 | `local-mineru-openai.yaml` | Local MinerU with OpenAI-compatible LLM and embedding endpoints |
 | `local-mineru-api.yaml` | Hosted MinerU API with OpenAI-compatible LLM and embeddings |

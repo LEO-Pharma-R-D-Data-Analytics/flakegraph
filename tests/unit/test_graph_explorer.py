@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-from flakegraph_app.explorer import _community_membership
-from flakegraph_app.graph_store import variant_sequence
 
 from kg_processor.adapters.explorer import StaticHtmlGraphExplorer
 from kg_processor.adapters.writers.local_artifacts import LocalArtifactsWriter
@@ -275,24 +272,3 @@ def _explorer_batch() -> GraphWriteBatch:
             },
         },
     )
-
-
-def test_community_membership_survives_snowflake_array_encoding() -> None:
-    """Local artifacts store lists; Snowflake returns its ARRAY columns as JSON text.
-
-    Consumers that assume one shape misreport the other: len() counts characters
-    instead of members, and an isinstance check drops every row, which silently
-    empties the explorer's community filter for a Snowflake-backed graph.
-    """
-
-    members = ["node_a", "node_b", "node_c"]
-    as_list = [{"id": "c1", "member_node_ids": members}]
-    as_json = [{"id": "c1", "member_node_ids": json.dumps(members)}]
-
-    assert variant_sequence(members) == members
-    assert variant_sequence(json.dumps(members)) == members
-    assert variant_sequence(None) == []
-    assert variant_sequence("not json") == []
-
-    assert _community_membership(as_json) == _community_membership(as_list)
-    assert len(variant_sequence(as_json[0]["member_node_ids"])) == len(members)

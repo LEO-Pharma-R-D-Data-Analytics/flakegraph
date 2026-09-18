@@ -741,7 +741,7 @@ ingress:
     # itself applies to every host behind the gate at once, because it matches a
     # path with no idea which service is serving it. Exempting `^/health$` for
     # the parsing shim also exempted it for the control plane, where that path
-    # is not a health check at all: Streamlit answers it with the application
+    # is not a health check at all: the console answers it with the application
     # shell, unauthenticated.
     #
     # Prefer routing to a rule of its own over exempting a path here, the way

@@ -8,7 +8,7 @@ allowing each deployment to choose its own services.
 
 ```mermaid
 flowchart TD
-    interfaces["CLI and Streamlit control plane"] --> application["Application services"]
+    interfaces["CLI and console"] --> application["Application services"]
     application --> domain["Domain models and rules"]
     application --> ports["Provider ports"]
     adapters["Provider adapters"] --> ports
@@ -26,7 +26,7 @@ flowchart TD
 | `config/` | Typed settings, provider discovery, validation, and preflight checks |
 | `factories.py` | The composition root that maps configuration to adapters |
 | `serving/` | HTTP services that put a priority-aware enforcement floor in front of a shared fleet |
-| `app/` | Python 3.11-compatible Streamlit control plane with local, Kubernetes, and Snowflake backends |
+| `react/` | Next.js console: the control plane, with local, Kubernetes, and Snowflake runtime modules that drive the CLI |
 
 Domain and port modules do not import application or adapter modules. Provider
 SDKs are imported only by adapters and the composition root.
@@ -124,7 +124,7 @@ flowchart TD
     destination --> remoteOutput["Canonical Snowflake KG tables"]
     snowflake --> cortex["Cortex providers"]
     snowflake --> tables["KG_* tables and stages"]
-    control["Streamlit application"] --> local
+    control["Console"] --> local
     control --> fleet
     control --> snowflake
     localOutput --> control
@@ -133,7 +133,7 @@ flowchart TD
     tables --> control
 ```
 
-The Streamlit application does not implement a second pipeline. Local and fleet
+The console does not implement a second pipeline. Local and fleet
 backends call the stable CLI contracts; the Snowflake backend uses the active
 Snowpark session and canonical job/graph tables. This keeps the UI independently
 deployable on Snowflake's Python runtime while the processing image retains its
