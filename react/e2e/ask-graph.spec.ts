@@ -339,6 +339,9 @@ test.describe("ask console", () => {
     await page.getByRole("tab", { name: "Stream ask" }).click();
     await expect(page.getByTestId("sdk-ask-stream-example")).toContainText("/api/ask");
     await expect(page.getByTestId("sdk-ask-stream-example")).toContainText("application/x-ndjson");
+    await page.getByRole("button", { name: "TypeScript", exact: true }).click();
+    await expect(page.getByTestId("sdk-ask-stream-example")).toContainText("DefaultChatTransport");
+    await expect(page.getByTestId("sdk-ask-stream-example")).toContainText("application/x-ndjson");
     const docs = await page.request.get("/api/docs");
     const catalog = await docs.json();
     expect(catalog.ask).toContain("/api/ask");

@@ -14,11 +14,13 @@ import { PageHeader } from "@/components/console/page-header";
 import {
   CONTROL_PLANE_API,
   CONTROL_PLANE_PROCEDURES,
-  askGraphExample,
-  askStreamExample,
-  getRunExample,
-  listRunsExample,
-  pythonClientExample,
+  EXAMPLE_LANGUAGES,
+  askGraphExamples,
+  askStreamExamples,
+  getRunExamples,
+  listRunsExamples,
+  type ExampleLanguage,
+  type TaskExamples,
 } from "@/lib/control-plane-api";
 
 export function SdkKeysPage() {
@@ -26,6 +28,7 @@ export function SdkKeysPage() {
   const [name, setName] = useState("ci-eval");
   const [secret, setSecret] = useState<string | null>(null);
   const [revokeId, setRevokeId] = useState<string | null>(null);
+  const [exampleLanguage, setExampleLanguage] = useState<ExampleLanguage>("curl");
   const create = trpc.workspace.createKey.useMutation({
     onSuccess: async (result) => {
       setSecret(result.secret);
@@ -44,7 +47,6 @@ export function SdkKeysPage() {
   });
   const keys = workspace.data?.apiKeys ?? [];
   const origin = typeof window === "undefined" ? "http://127.0.0.1:3000" : window.location.origin;
-  const listExample = listRunsExample(origin);
   const docsUrl = `${origin}${CONTROL_PLANE_API.docsPath}`;
 
   return (
@@ -229,41 +231,41 @@ export function SdkKeysPage() {
               <TabsTrigger value="status">Check a run</TabsTrigger>
               <TabsTrigger value="ask">Ask a graph</TabsTrigger>
               <TabsTrigger value="stream">Stream ask</TabsTrigger>
-              <TabsTrigger value="python">Python</TabsTrigger>
             </TabsList>
             <TabsContent value="list">
               <ExampleBlock
                 why="CI and dashboards call this to see which graphs exist on the catalog and whether the latest job succeeded."
-                code={listExample}
+                examples={listRunsExamples(origin)}
+                language={exampleLanguage}
+                onLanguageChange={setExampleLanguage}
                 testId="sdk-key-example"
               />
             </TabsContent>
             <TabsContent value="status">
               <ExampleBlock
                 why="Poll runs.get until status is succeeded, failed, or cancelled. runs.documents is the per-file progress the workspace uses."
-                code={getRunExample(origin)}
+                examples={getRunExamples(origin)}
+                language={exampleLanguage}
+                onLanguageChange={setExampleLanguage}
                 testId="sdk-status-example"
               />
             </TabsContent>
             <TabsContent value="ask">
               <ExampleBlock
                 why="Eval jobs that only need the final JSON answer can still call graphs.ask. Prefer POST /api/ask when you want tokens and tool status."
-                code={askGraphExample(origin)}
+                examples={askGraphExamples(origin)}
+                language={exampleLanguage}
+                onLanguageChange={setExampleLanguage}
                 testId="sdk-ask-example"
               />
             </TabsContent>
             <TabsContent value="stream">
               <ExampleBlock
-                why="Agents, eval harnesses, and other TypeScript consumers should stream POST /api/ask. format=ndjson emits status, tool, text, citation, and done events."
-                code={askStreamExample(origin)}
+                why="Agents, eval harnesses, and scripts should stream POST /api/ask. format=ndjson emits status, tool, text, citation, and done events."
+                examples={askStreamExamples(origin)}
+                language={exampleLanguage}
+                onLanguageChange={setExampleLanguage}
                 testId="sdk-ask-stream-example"
-              />
-            </TabsContent>
-            <TabsContent value="python">
-              <ExampleBlock
-                why="Same HTTP API from Python’s standard library. No FlakeGraph pip package is required."
-                code={pythonClientExample(origin)}
-                testId="sdk-python-example"
               />
             </TabsContent>
           </Tabs>
@@ -307,19 +309,42 @@ export function SdkKeysPage() {
 
 function ExampleBlock({
   why,
-  code,
+  examples,
+  language,
+  onLanguageChange,
   testId,
 }: {
   why: string;
-  code: string;
+  examples: TaskExamples;
+  language: ExampleLanguage;
+  onLanguageChange: (language: ExampleLanguage) => void;
   testId: string;
 }) {
+  const code = examples[language];
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">{why}</p>
-      <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs" data-testid={testId}>
-        {code}
-      </pre>
+      <div className="overflow-hidden rounded-md border border-border bg-muted/40">
+        <div className="flex items-center justify-end gap-1 border-b border-border px-2 py-1">
+          <div className="flex gap-1" role="group" aria-label="Example language" data-testid="sdk-example-language">
+            {EXAMPLE_LANGUAGES.map((item) => (
+              <Button
+                key={item.id}
+                size="sm"
+                variant={language === item.id ? "secondary" : "ghost"}
+                className="h-7 px-2 text-xs"
+                aria-pressed={language === item.id}
+                onClick={() => onLanguageChange(item.id)}
+              >
+                {item.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+        <pre className="overflow-x-auto p-3 font-mono text-xs" data-testid={testId}>
+          {code}
+        </pre>
+      </div>
       <Button
         size="sm"
         variant="outline"
