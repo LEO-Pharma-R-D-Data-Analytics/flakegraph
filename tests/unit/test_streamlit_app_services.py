@@ -1961,6 +1961,10 @@ def test_kubernetes_artifact_export_resolves_finalizer_storage_contract(
         8333,
     )
     assert _cluster_service("https://objects.example.com") is None
+    # A pod reaches the Service by name; forwarding it to loopback would need
+    # pods/portforward, which the control plane deliberately does not hold.
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+    assert _cluster_service(environment["KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL"]) is None
 
 
 def test_kubernetes_database_url_comes_from_deployed_worker_contract(

@@ -1977,7 +1977,8 @@ def _resolve_environment_entry(
 def _cluster_service(endpoint: str) -> tuple[str, str, int] | None:
     """Return an internal Service target encoded in a Kubernetes DNS endpoint."""
 
-    if not endpoint:
+    if not endpoint or running_inside_the_cluster():
+        # In-cluster the Service resolves directly, exactly as for the database.
         return None
     parsed = urlparse(endpoint)
     host = parsed.hostname or ""
