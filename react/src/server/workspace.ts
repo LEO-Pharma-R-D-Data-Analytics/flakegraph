@@ -44,6 +44,8 @@ export interface HitlItem {
   id: string;
   graphId: string;
   edgeId: string;
+  /** The triple as a reviewer reads it: source, relation, target. */
+  triple?: { source: string; relation: string; target: string };
   quote: string;
   confidence: number;
   decision: ReviewDecision | null;
@@ -301,7 +303,9 @@ export async function recordIdentityIncident(input: {
 export function sampleHighConfidenceReviews(
   graphId: string,
   edges: ReadonlyArray<Record<string, unknown>>,
+  nodes: ReadonlyArray<Record<string, unknown>> = [],
 ): HitlItem[] {
+  const nameById = new Map(nodes.map((node) => [String(node.id ?? ""), String(node.name ?? node.id ?? "")]));
   const high = edges.filter((edge) => {
     const confidence = Number(edge.confidence ?? 0);
     return Number.isFinite(confidence) && confidence >= 0.9;
@@ -312,10 +316,20 @@ export function sampleHighConfidenceReviews(
     id: `review_${randomId()}`,
     graphId,
     edgeId: String(edge.id ?? "edge"),
+    triple: {
+      source: endName(edge.source_node_id ?? edge.source, nameById),
+      relation: String(edge.relation_type ?? edge.relationType ?? "related_to"),
+      target: endName(edge.target_node_id ?? edge.target, nameById),
+    },
     quote: String(edge.description ?? edge.quote ?? "High-confidence triple sampled for silent OCR drift."),
     confidence: Number(edge.confidence ?? 0.9),
     decision: null,
   }));
+}
+
+function endName(id: unknown, nameById: Map<string, string>): string {
+  const key = String(id ?? "");
+  return nameById.get(key) ?? key;
 }
 
 export async function enqueueReviews(items: HitlItem[]): Promise<WorkspaceState> {

@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { GuideCard } from "@/components/console/guide-card";
 import { PageHeader } from "@/components/console/page-header";
-import { OntologyPanel } from "@/components/console/workspace-panels";
+import { FleetOntologyCard, OntologyPanel } from "@/components/console/workspace-panels";
 import { SnowflakeGrantsCard } from "@/components/console/operator-tools";
 import {
   DEFAULT_PROVIDER_PARALLELISM,
@@ -32,6 +32,7 @@ import {
   providerSelection,
   selectionFromOption,
 } from "@/server/providers";
+import { fleetOntologyTerms } from "@/lib/fleet-ontology";
 import { useStorageItem, writeStorage } from "@/lib/browser-storage";
 import { readLastIngestion, useLastIngestion, writeLastIngestion, type LastIngestionDraft } from "@/lib/last-ingestion";
 import { cn } from "@/lib/utils";
@@ -382,10 +383,13 @@ export function IngestionForm({
       if (payload.jobId) {
         setUploadJobId(payload.jobId);
       }
+      // The server's count, not the input's: the input is cleared while the
+      // upload is in flight, which empties the FileList it handed us.
+      const count = payload.count ?? 0;
       toast.success(
         uploadJobId
-          ? `Added ${files.length} file(s) to the same upload folder`
-          : `Uploaded ${files.length} file(s)`,
+          ? `Added ${count} file${count === 1 ? "" : "s"} to the same upload folder`
+          : `Uploaded ${count} file${count === 1 ? "" : "s"}`,
       );
     } finally {
       setUploading(false);
@@ -793,7 +797,11 @@ export function IngestionForm({
 
       {runtime === "snowflake" ? <SnowflakeGrantsCard /> : null}
 
-      {suggestionMode !== "off" ? <OntologyPanel onApply={setOntologyTypes} /> : null}
+      {fleetProfile ? (
+        <FleetOntologyCard {...fleetOntologyTerms(fleetProfile)} />
+      ) : suggestionMode !== "off" ? (
+        <OntologyPanel onApply={setOntologyTypes} />
+      ) : null}
       {ontologyTypes.length ? <p className="text-sm text-muted-foreground">Using types: {ontologyTypes.join(", ")}</p> : null}
 
       {envChanged && !envConfirmed ? (

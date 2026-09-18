@@ -28,7 +28,6 @@ import {
   pinTarget,
   promotePerspective,
   promotionPlan,
-  proposeOntology,
   publishVersion,
   recordEstimate,
   recordIdentityIncident,
@@ -42,6 +41,7 @@ import {
   upsertPerspective,
 } from "../workspace";
 import { ontologyCoverage, type GoldGraph } from "../gold";
+import { proposeOntologyForIntent } from "../ontology";
 import type { FleetProfile } from "../fleet";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -197,7 +197,7 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const gold = await loadMartialArtsGold();
         const goldTypes = [...new Set((gold?.entities ?? []).map((entity) => entity.type.toUpperCase()))];
-        const proposal = proposeOntology(input.intent, goldTypes);
+        const proposal = await proposeOntologyForIntent(input.intent, goldTypes);
         return {
           ...proposal,
           coverage: gold ? ontologyCoverage(proposal.types, gold) : null,
@@ -335,7 +335,7 @@ export const appRouter = router({
     sampleReviews: publicProcedure.input(runIdInput).mutation(async ({ ctx, input }) => {
       const snapshot = await runEffect(ctx.controlPlane.getRun(input.runId));
       const dataset = await runEffect(ctx.controlPlane.loadRunGraph(snapshot));
-      return enqueueReviews(sampleHighConfidenceReviews(snapshot.graphId, dataset.edges));
+      return enqueueReviews(sampleHighConfidenceReviews(snapshot.graphId, dataset.edges, dataset.nodes));
     }),
   }),
   workspace: router({

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Markdown } from "@/components/ui/markdown";
 import { PROGRESS_LABELS, type QueryMode, type SearchProgressUpdate } from "@/server/ask/types";
 
 type AskUIMessage = UIMessage<never, { status: SearchProgressUpdate }>;
@@ -162,7 +163,7 @@ export function AskPanel({
         {error ? <p className="text-sm text-destructive">{error.message}</p> : null}
         {answerText ? (
           <div className="space-y-2 text-sm" data-testid="ask-answer">
-            <p className="whitespace-pre-wrap">{answerText}</p>
+            <Markdown>{answerText}</Markdown>
             {perspectiveId ? <p className="text-muted-foreground">Answer scoped to the selected perspective.</p> : null}
             {consumption ? (
               <p className="text-muted-foreground" data-testid="query-consumption">

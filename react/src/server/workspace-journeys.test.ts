@@ -112,4 +112,16 @@ describe("HITL sample", () => {
     expect(sampled.length).toBeGreaterThan(0);
     expect(sampled.length).toBeLessThanOrEqual(3);
   });
+
+  it("names the triple a reviewer is asked about", () => {
+    const [item] = sampleHighConfidenceReviews(
+      "g",
+      [{ id: "r1", source_node_id: "n1", target_node_id: "n2", relation_type: "developed_by", confidence: 0.95 }],
+      [
+        { id: "n1", name: "Judo" },
+        { id: "n2", name: "Jigoro Kano" },
+      ],
+    );
+    expect(item?.triple).toEqual({ source: "Judo", relation: "developed_by", target: "Jigoro Kano" });
+  });
 });

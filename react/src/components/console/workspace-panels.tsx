@@ -107,9 +107,19 @@ export function ReviewPanel({
       {visible.map((item) => (
         <Card key={item.id}>
           <CardHeader>
-            <CardTitle className="text-base">{item.edgeId}</CardTitle>
+            <CardTitle className="text-base">
+              {item.triple ? (
+                <>
+                  {item.triple.source} <span className="font-normal text-muted-foreground">—{item.triple.relation}→</span>{" "}
+                  {item.triple.target}
+                </>
+              ) : (
+                item.edgeId
+              )}
+            </CardTitle>
             <CardDescription>
               {item.quote || "Low-confidence triple"} · confidence {(item.confidence ?? 0).toFixed(2)}
+              {item.triple ? ` · ${item.edgeId}` : ""}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2">
@@ -225,6 +235,8 @@ export function OntologyPanel({ onApply }: { onApply: (types: string[]) => void 
   const propose = trpc.ingestion.ontology.useMutation({
     onError: (error) => toast.error(error.message),
   });
+  const proposal = propose.data;
+  const describe = (name: string) => proposal?.descriptions[name];
   return (
     <Card>
       <CardHeader>
@@ -233,27 +245,89 @@ export function OntologyPanel({ onApply }: { onApply: (types: string[]) => void 
       </CardHeader>
       <CardContent className="space-y-3">
         <Textarea aria-label="Graph intent" value={intent} onChange={(event) => setIntent(event.target.value)} rows={3} />
-        <Button onClick={() => propose.mutate({ intent })} disabled={intent.trim().length < 8}>
-          Propose ontology
+        <Button onClick={() => propose.mutate({ intent })} disabled={intent.trim().length < 8 || propose.isPending}>
+          {propose.isPending ? "Proposing…" : "Propose ontology"}
         </Button>
-        {propose.data ? (
-          <div className="space-y-2 text-sm">
-            <p>{propose.data.warning}</p>
-            <p>Types: {propose.data.types.join(", ")}</p>
-            <p>Relations: {propose.data.relations.join(", ")}</p>
-            {propose.data.coverage ? (
-              <p data-testid="ontology-coverage">
-                Gold coverage {propose.data.coverage.covered.length}/{propose.data.coverage.goldTypes.length}. Missing{" "}
-                {propose.data.coverage.missing.join(", ") || "none"}.
+        {proposal ? (
+          <div className="space-y-2 text-sm" data-testid="ontology-proposal">
+            <p>{proposal.warning}</p>
+            {proposal.source === "heuristic" ? (
+              <p className="text-muted-foreground">
+                No model is configured for the console, so these are the nouns of your description.
               </p>
             ) : null}
-            <Button size="sm" variant="secondary" onClick={() => onApply(propose.data.types)}>
+            <TermList label="Types" names={proposal.types} describe={describe} />
+            <TermList label="Relations" names={proposal.relations} describe={describe} />
+            {proposal.coverage ? (
+              <p data-testid="ontology-coverage">
+                Gold coverage {proposal.coverage.covered.length}/{proposal.coverage.goldTypes.length}. Missing{" "}
+                {proposal.coverage.missing.join(", ") || "none"}.
+              </p>
+            ) : null}
+            <Button size="sm" variant="secondary" onClick={() => onApply(proposal.types)}>
               Use these types
             </Button>
           </div>
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+/** The ontology a fleet's workers extract with; a run there cannot choose its own. */
+export function FleetOntologyCard({
+  entityTypes,
+  relationTypes,
+}: {
+  entityTypes: Array<{ name: string; description: string }>;
+  relationTypes: Array<{ name: string; description: string }>;
+}) {
+  const describe = (name: string) =>
+    [...entityTypes, ...relationTypes].find((term) => term.name === name)?.description || undefined;
+  return (
+    <Card data-testid="fleet-ontology">
+      <CardHeader>
+        <CardTitle>What the fleet extracts</CardTitle>
+        <CardDescription>
+          The workers share one ontology, and it is part of what makes a run theirs to claim, so every graph built
+          here uses these types. Change the fleet&apos;s profile to change them.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <TermList label="Types" names={entityTypes.map((term) => term.name)} describe={describe} />
+        <TermList label="Relations" names={relationTypes.map((term) => term.name)} describe={describe} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function TermList({
+  label,
+  names,
+  describe,
+}: {
+  label: string;
+  names: string[];
+  describe: (name: string) => string | undefined;
+}) {
+  if (names.length === 0) {
+    return null;
+  }
+  return (
+    <div>
+      <p className="font-medium">{label}</p>
+      <ul className="mt-1 flex flex-wrap gap-1.5">
+        {names.map((name) => (
+          <li
+            key={name}
+            className="rounded-md border border-border bg-muted/40 px-2 py-0.5 font-mono text-xs"
+            title={describe(name)}
+          >
+            {name}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
