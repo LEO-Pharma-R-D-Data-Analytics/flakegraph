@@ -647,11 +647,16 @@ def _source_controls(  # noqa: PLR0912, PLR0915 - each branch is one source-spec
         available.append(SourceKind.S3)
     if "snowflake_stage" in backend.capabilities:
         available.append(SourceKind.SNOWFLAKE_STAGE)
+    # Every source widget is keyed and seeded: a sidebar action (a removal
+    # dialog, bulk selection) reruns the page in a way that drops the state of
+    # unkeyed widgets, and a half-filled bucket form is not something to type
+    # twice.
+    state = cast(_SessionState, st.session_state)
     source_kind = (
         st.segmented_control(
             "Input source",
             available,
-            default=available[0],
+            key=seeded_widget(state, "ingest_source_kind", available[0]),
             format_func=lambda value: value.value,
             help=(
                 "Choose where source documents are discovered. Processing and output "
@@ -752,7 +757,7 @@ def _source_controls(  # noqa: PLR0912, PLR0915 - each branch is one source-spec
         )
         path = st.text_input(
             "File or directory",
-            value=default_input_path,
+            key=seeded_widget(state, "ingest_local_path", default_input_path),
             help=("Defaults to FLAKEGRAPH_APP_INPUT_PATH when that environment variable is set."),
         )
         source = {"kind": "local", "path": path}
@@ -760,16 +765,18 @@ def _source_controls(  # noqa: PLR0912, PLR0915 - each branch is one source-spec
         columns = st.columns(2)
         account_url = columns[0].text_input(
             "Account URL",
+            key=seeded_widget(state, "ingest_azure_account_url", ""),
             placeholder="https://account.blob.core.windows.net",
             help="Azure Storage account URL containing the source container.",
         )
         container = columns[1].text_input(
             "Container",
+            key=seeded_widget(state, "ingest_azure_container", ""),
             help="Blob container to scan for supported documents.",
         )
         prefix = st.text_input(
             "Prefix",
-            value="",
+            key=seeded_widget(state, "ingest_azure_prefix", ""),
             help="Optional virtual folder prefix used to limit document discovery.",
         )
         source = {
@@ -782,21 +789,23 @@ def _source_controls(  # noqa: PLR0912, PLR0915 - each branch is one source-spec
         columns = st.columns(2)
         bucket = columns[0].text_input(
             "Bucket",
+            key=seeded_widget(state, "ingest_s3_bucket", ""),
             help="S3 or S3-compatible bucket containing source documents.",
         )
         prefix = columns[1].text_input(
             "Prefix",
-            value="",
+            key=seeded_widget(state, "ingest_s3_prefix", ""),
             help="Optional object-key prefix used to limit document discovery.",
         )
         endpoint = st.text_input(
             "Endpoint",
+            key=seeded_widget(state, "ingest_s3_endpoint", ""),
             placeholder="Optional for MinIO or another S3-compatible store",
             help="Leave empty for AWS S3; set for MinIO or another compatible service.",
         )
         region = st.text_input(
             "Region",
-            value="",
+            key=seeded_widget(state, "ingest_s3_region", ""),
             help="Optional cloud region used to address the bucket.",
         )
         source = {
