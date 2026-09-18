@@ -1,4 +1,5 @@
 import { nHopNodeIds } from "@/lib/graph-geometry";
+import { communityMemberIds } from "../graph-filter";
 import type { GraphDataset } from "../protocol/schema";
 import {
   ACCESSIBLE_RELATIONS_LIMIT,
@@ -538,7 +539,7 @@ function toCommunityHit(
   nameById: Map<string, string>,
   terms: string[],
 ): CommunityHit {
-  const memberIds = asStringArray(community.members ?? community.member_ids ?? community.nodes);
+  const memberIds = communityMemberIds(community);
   const memberNames = memberIds.map((id) => nameById.get(id) ?? "").join(" ");
   const title = asString(community.title ?? community.name ?? community.id);
   const summary = asString(community.summary ?? community.report);

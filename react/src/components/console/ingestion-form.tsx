@@ -32,7 +32,8 @@ import {
   providerSelection,
   selectionFromOption,
 } from "@/server/providers";
-import { readLastIngestion, writeLastIngestion } from "@/lib/last-ingestion";
+import { useStorageItem, writeStorage } from "@/lib/browser-storage";
+import { readLastIngestion, useLastIngestion, writeLastIngestion, type LastIngestionDraft } from "@/lib/last-ingestion";
 import { cn } from "@/lib/utils";
 
 interface IngestionFormProps {
@@ -95,7 +96,6 @@ export function IngestionForm({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [preview, setPreview] = useState<string>("");
   const [dismissedClone, setDismissedClone] = useState(false);
-  const [envConfirmed, setEnvConfirmed] = useState(false);
   const [promotionApplied, setPromotionApplied] = useState(false);
   const [ontologyTypes, setOntologyTypes] = useState<string[]>([]);
   const [snowflake, setSnowflake] = useState({
@@ -139,56 +139,50 @@ export function IngestionForm({
     { enabled: sourceKind === "local_path" || sourceKind === "upload" ? Boolean(resolvedPath()) : false },
   );
 
-  const [lastDraft, setLastDraft] = useState<ReturnType<typeof readLastIngestion>>(null);
+  const lastDraft = useLastIngestion(runtime);
   const lastSucceeded = (runs.data ?? []).find((run) => isSuccessStatus(run.status));
-  const [autoFilled, setAutoFilled] = useState(false);
-
-  useEffect(() => {
-    setLastDraft(readLastIngestion(runtime));
-    setAutoFilled(false);
-  }, [runtime]);
-
-  useEffect(() => {
-    if (suggestionMode !== "auto-fill" || autoFilled || !lastDraft) {
-      return;
-    }
+  // A draft is copied into the fields once per runtime: when the workspace
+  // asks for it, or when the previous page left a clone waiting. Both are
+  // derived while rendering rather than from an effect, so the form never
+  // paints its empty state first.
+  const cloneWaiting = useStorageItem("session", "flakegraph.pending-clone") === "1";
+  const [clonedFor, setClonedFor] = useState<string | null>(null);
+  if (lastDraft && (suggestionMode === "auto-fill" || cloneWaiting) && clonedFor !== runtime) {
+    setClonedFor(runtime);
     applyClone(lastDraft);
-    setAutoFilled(true);
-  }, [autoFilled, lastDraft, suggestionMode]);
-
+  }
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
+    if (cloneWaiting && (clonedFor === runtime || !lastDraft)) {
+      writeStorage("session", "flakegraph.pending-clone", null);
     }
-    setEnvConfirmed(sessionStorage.getItem("flakegraph.runtime-ack") === runtime);
-  }, [runtime, lastSuccessRuntime]);
+  }, [cloneWaiting, clonedFor, lastDraft, runtime]);
+
+  const envConfirmed = useStorageItem("session", "flakegraph.runtime-ack") === runtime;
 
   function confirmEnvironment() {
-    if (typeof window !== "undefined") {
-      sessionStorage.setItem("flakegraph.runtime-ack", runtime);
-    }
-    setEnvConfirmed(true);
+    writeStorage("session", "flakegraph.runtime-ack", runtime);
   }
 
-  useEffect(() => {
-    const pending = workspace.data?.pendingPromotion;
-    if (!pending || pending.toRuntime !== runtime || promotionApplied) {
-      return;
-    }
-    setGraphName(pending.graphName);
-    setGraphId(pending.keepGraphId ? pending.graphId : cryptoRandom("graph"));
-    if (pending.toRuntime === "snowflake") {
+  const pendingPromotion = workspace.data?.pendingPromotion;
+  if (pendingPromotion && pendingPromotion.toRuntime === runtime && !promotionApplied) {
+    setPromotionApplied(true);
+    setGraphName(pendingPromotion.graphName);
+    setGraphId(pendingPromotion.keepGraphId ? pendingPromotion.graphId : cryptoRandom("graph"));
+    if (pendingPromotion.toRuntime === "snowflake") {
       setSourceMode("files");
       setSourceKind("snowflake_stage");
-      setStage({ stage: `app/<user>/${pending.graphId}`, prefix: pending.graphId });
-    } else if (pending.toRuntime === "kubernetes") {
+      setStage({ stage: `app/<user>/${pendingPromotion.graphId}`, prefix: pendingPromotion.graphId });
+    } else if (pendingPromotion.toRuntime === "kubernetes") {
       setSourceMode("files");
       setSourceKind("s3");
-      setS3({ bucket: "flakegraph-corpus", prefix: pending.graphId, endpointUrl: "", region: "" });
+      setS3({ bucket: "flakegraph-corpus", prefix: pendingPromotion.graphId, endpointUrl: "", region: "" });
     }
-    setPromotionApplied(true);
-    toast.success("Promotion remaps applied. Submit stays a human click.");
-  }, [promotionApplied, runtime, workspace.data?.pendingPromotion]);
+  }
+  useEffect(() => {
+    if (promotionApplied) {
+      toast.success("Promotion remaps applied. Submit stays a human click.");
+    }
+  }, [promotionApplied]);
 
   const request = useMemo((): IngestionRequest | null => {
     // Graph artifacts live under the control plane's own state, the one place
@@ -284,14 +278,15 @@ export function IngestionForm({
     capabilities,
   ]);
 
-  useEffect(() => {
+  // A runtime with different capabilities changes what the form may hold:
+  // the output moves to the runtime's own storage, and a local folder or the
+  // sample pack is no longer a source.
+  const [capabilitiesSeen, setCapabilitiesSeen] = useState(capabilities);
+  if (capabilitiesSeen !== capabilities) {
+    setCapabilitiesSeen(capabilities);
     setOutputKind(capabilities.has("spcs") ? "snowflake" : "local_files");
-  }, [capabilities]);
-
-  useEffect(() => {
-    if (capabilities.has("local")) {
-      return;
-    }
+  }
+  if (!capabilities.has("local")) {
     if (sourceMode === "sample") {
       setSourceMode("files");
     }
@@ -299,7 +294,7 @@ export function IngestionForm({
       setSourceKind(defaultSourceKind(capabilities));
       setSourcePath("");
     }
-  }, [capabilities, sourceKind, sourceMode]);
+  }
 
   function resolvedPath() {
     return sourceKind === "upload" ? uploadPath ?? "" : sourcePath;
@@ -331,7 +326,7 @@ export function IngestionForm({
     }
   }
 
-  function applyClone(draft: NonNullable<ReturnType<typeof readLastIngestion>>) {
+  function applyClone(draft: LastIngestionDraft) {
     setGraphName(draft.graphName);
     const kind = (draft.sourceKind as SourceKind) || "local_path";
     setSourceKind(kind);
@@ -416,6 +411,7 @@ export function IngestionForm({
       return;
     }
     try {
+      setPreflightRanFor(preflightInputs);
       const result = await preflight.mutateAsync(request);
       if (result.ok) {
         toast.success("Preflight passed. The run is ready to submit.");
@@ -446,6 +442,7 @@ export function IngestionForm({
         toast.error("PII hits must be quarantined or acknowledged before embed.");
         return;
       }
+      setPreflightRanFor(preflightInputs);
       const result = await preflight.mutateAsync(request);
       if (!result.ok) {
         toast.error(result.errors.join("; ") || "Fix preflight errors before submitting");
@@ -505,23 +502,20 @@ export function IngestionForm({
   const incompleteSource = !request;
   const startBlocked = grantsBlocked || emptyLocalListing || listingFailed || envBlocked || incompleteSource;
 
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    if (sessionStorage.getItem("flakegraph.pending-clone") !== "1") {
-      return;
-    }
-    sessionStorage.removeItem("flakegraph.pending-clone");
-    const draft = readLastIngestion(runtime);
-    if (draft) {
-      applyClone(draft);
-    }
-  }, [runtime]);
-
-  useEffect(() => {
-    preflight.reset();
-  }, [embedding.provider, llm.provider, ocr.provider, parallelism, runtime, sourceKind, sourcePath, uploadPath]);
+  // A preflight verdict describes the inputs it ran against; once any of them
+  // changes it is no longer shown, and the next check starts fresh.
+  const preflightInputs = JSON.stringify([
+    embedding.provider,
+    llm.provider,
+    ocr.provider,
+    parallelism,
+    runtime,
+    sourceKind,
+    sourcePath,
+    uploadPath,
+  ]);
+  const [preflightRanFor, setPreflightRanFor] = useState<string | null>(null);
+  const preflightVerdict = preflightRanFor === preflightInputs ? preflight.data : undefined;
 
   const canUseSamplePack = capabilities.has("local");
   const sourceKindSelect = (
@@ -858,11 +852,11 @@ export function IngestionForm({
         ) : null}
       </div>
 
-      {preflight.data ? (
-        <Alert variant={preflight.data.ok ? "success" : "destructive"}>
-          {preflight.data.ok
+      {preflightVerdict ? (
+        <Alert variant={preflightVerdict.ok ? "success" : "destructive"}>
+          {preflightVerdict.ok
             ? "Preflight passed. The run is ready to submit."
-            : preflight.data.errors.join(" ")}
+            : preflightVerdict.errors.join(" ")}
         </Alert>
       ) : null}
 

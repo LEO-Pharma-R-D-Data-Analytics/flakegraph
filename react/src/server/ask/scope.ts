@@ -1,6 +1,5 @@
-import { filterGraph } from "../graph-filter";
+import { communityMemberIds, filterGraph } from "../graph-filter";
 import type { GraphDataset } from "../protocol/schema";
-import { asStringArray } from "./score";
 import { documentIdOf, edgeEnds, nodeName } from "./retrieve";
 import type { AskScope } from "./types";
 
@@ -39,7 +38,7 @@ export function scopeDataset(dataset: GraphDataset, scope?: AskScope): GraphData
     communities: scope.communityIds?.length
       ? next.communities.filter((community) => scope.communityIds!.includes(String(community.id ?? "")))
       : next.communities.filter((community) => {
-          const members = asStringArray(community.members ?? community.member_ids ?? community.nodes);
+          const members = communityMemberIds(community);
           return members.some((id) => nodeIds.has(id));
         }),
   };
@@ -122,7 +121,7 @@ function restrictToDocuments(dataset: GraphDataset, documentIds: string[]): Grap
     return nodeIds.has(ends.source) && nodeIds.has(ends.target) && (relationIds.size === 0 || relationIds.has(id));
   });
   const communities = dataset.communities.filter((community) => {
-    const members = asStringArray(community.members ?? community.member_ids ?? community.nodes);
+    const members = communityMemberIds(community);
     return members.some((id) => nodeIds.has(id));
   });
   return { ...dataset, documents, evidence, chunks, nodes, edges, communities };

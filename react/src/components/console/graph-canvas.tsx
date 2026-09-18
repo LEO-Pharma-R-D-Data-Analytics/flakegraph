@@ -89,8 +89,6 @@ export function GraphCanvas({
   const hoverIdRef = useRef<string | null>(null);
   const fittedSignatureRef = useRef("");
   const [size, setSize] = useState({ width: 900, height: compact ? 280 : 520 });
-  const sizeRef = useRef(size);
-  sizeRef.current = size;
   const [camera, setCamera] = useState<GraphCamera>({ x: 0, y: 0, scale: 1 });
   const [hoverId, setHoverId] = useState<string | null>(null);
 
@@ -227,10 +225,10 @@ export function GraphCanvas({
     if (!canvas) {
       return;
     }
+    const { width, height } = size;
     const onNativeWheel = (event: WheelEvent) => {
       event.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      const { width, height } = sizeRef.current;
       const x = ((event.clientX - rect.left) / rect.width) * width;
       const y = ((event.clientY - rect.top) / rect.height) * height;
       stopAnimation();
@@ -238,7 +236,7 @@ export function GraphCanvas({
     };
     canvas.addEventListener("wheel", onNativeWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onNativeWheel);
-  }, [applyCamera, stopAnimation]);
+  }, [applyCamera, size, stopAnimation]);
 
   const hitTest = useCallback(
     (clientX: number, clientY: number): Hit | null => {

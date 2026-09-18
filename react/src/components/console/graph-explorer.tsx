@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/components/providers";
 import { graphCounts } from "@/server/protocol/schema";
@@ -65,9 +65,12 @@ export function GraphExplorer({
   onPin?: (targetId: string, kind: "node" | "edge") => void;
 }) {
   const [search, setSearch] = useState(initialSearch);
-  useEffect(() => {
+  // A jump from the palette replaces whatever was typed.
+  const [seededWith, setSeededWith] = useState(initialSearch);
+  if (seededWith !== initialSearch) {
+    setSeededWith(initialSearch);
     setSearch(initialSearch);
-  }, [initialSearch]);
+  }
   const [nodeTypes, setNodeTypes] = useState<string[]>([]);
   const [relationTypes, setRelationTypes] = useState<string[]>([]);
   const [communityIds, setCommunityIds] = useState<string[]>([]);

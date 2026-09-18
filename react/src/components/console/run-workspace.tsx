@@ -155,13 +155,20 @@ export function RunWorkspace({
   const [exploreSeed, setExploreSeed] = useState("");
   const [workspaceTab, setWorkspaceTab] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!jumpSearch) {
-      return;
-    }
+  // A jump lands in the explorer with its search; the shell is told once the
+  // jump has been taken so it does not fire again on the next graph.
+  const [jumpTaken, setJumpTaken] = useState("");
+  if (jumpSearch && jumpTaken !== jumpSearch) {
+    setJumpTaken(jumpSearch);
     setExploreSeed(jumpSearch);
     setWorkspaceTab("explore");
-    onJumpConsumed?.();
+  } else if (!jumpSearch && jumpTaken) {
+    setJumpTaken("");
+  }
+  useEffect(() => {
+    if (jumpSearch) {
+      onJumpConsumed?.();
+    }
   }, [jumpSearch, onJumpConsumed]);
 
   if (run.isLoading) {

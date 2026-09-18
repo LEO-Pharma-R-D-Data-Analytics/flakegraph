@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/components/providers";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert } from "@/components/ui/alert";
 import { PageHeader } from "@/components/console/page-header";
+import { useStorageItem, writeStorage } from "@/lib/browser-storage";
 import { AskPanel } from "@/components/console/ask-panel";
 
 export { AskPanel };
@@ -145,9 +146,12 @@ export function WatchPanel({
 }) {
   const workspace = trpc.workspace.get.useQuery();
   const [prefix, setPrefix] = useState(sourcePath);
-  useEffect(() => {
+  // The field follows the graph's own source until it is edited.
+  const [prefixFrom, setPrefixFrom] = useState(sourcePath);
+  if (prefixFrom !== sourcePath) {
+    setPrefixFrom(sourcePath);
     setPrefix(sourcePath);
-  }, [sourcePath]);
+  }
   const toggle = trpc.workspace.toggleWatch.useMutation({ onSuccess: () => void workspace.refetch() });
   const apply = trpc.workspace.applyWatch.useMutation({
     onSuccess: async (state) => {
@@ -314,10 +318,7 @@ export function WelcomeBack({
 }) {
   const runs = trpc.runs.list.useQuery({ limit: 40 });
   const workspace = trpc.workspace.get.useQuery();
-  const [dismissed, setDismissed] = useState(false);
-  useEffect(() => {
-    setDismissed(sessionStorage.getItem("flakegraph.welcome-dismissed") === "1");
-  }, []);
+  const dismissed = useStorageItem("session", "flakegraph.welcome-dismissed") === "1";
   if (!identified || suggestionMode === "off" || dismissed) {
     return null;
   }
@@ -359,8 +360,7 @@ export function WelcomeBack({
           size="sm"
           variant="ghost"
           onClick={() => {
-            sessionStorage.setItem("flakegraph.welcome-dismissed", "1");
-            setDismissed(true);
+            writeStorage("session", "flakegraph.welcome-dismissed", "1");
           }}
         >
           Dismiss

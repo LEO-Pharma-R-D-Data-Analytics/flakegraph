@@ -85,9 +85,13 @@ export function CommandPalette({
   }, [analyst, canFleet, graph.data?.nodes, onFleet, onJumpEntity, onKeys, onNewGraph, onSelectRun, onStaff, query, role, runId, runs.data, workspace.data?.perspectives]);
   const visible = actions.slice(0, 20);
 
-  useEffect(() => {
+  // The highlighted row belongs to the list it was chosen in: a new query or
+  // a reopened palette starts at the top.
+  const [activeList, setActiveList] = useState({ query, open });
+  if (activeList.query !== query || activeList.open !== open) {
+    setActiveList({ query, open });
     setActive(0);
-  }, [query, open]);
+  }
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

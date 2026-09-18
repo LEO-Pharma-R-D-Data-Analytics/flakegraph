@@ -9,7 +9,7 @@ async function confirmEnvironmentIfNeeded(page: Page) {
   }
 }
 
-async function useYourFiles(page: Page) {
+async function chooseYourFiles(page: Page) {
   const yours = page.getByRole("button", { name: "Your files", exact: true });
   if (await yours.isVisible() && (await yours.getAttribute("aria-pressed")) !== "true") {
     await yours.click();
@@ -26,7 +26,7 @@ async function useSamplePack(page: Page, name: "Martial arts" | "Deep learning p
 }
 
 async function openMoreSources(page: Page) {
-  await useYourFiles(page);
+  await chooseYourFiles(page);
   const summary = page.locator("summary").filter({ hasText: /folder path or object storage/i });
   await expect(summary).toBeVisible();
   const details = page.locator("details").filter({ has: summary });

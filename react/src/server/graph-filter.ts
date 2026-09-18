@@ -61,7 +61,7 @@ export function filterGraph(dataset: GraphDataset, filters: GraphFilters = {}): 
     return true;
   });
   const visible = new Set(nodes.map((node) => String(node.id ?? "")));
-  let edges = dataset.edges.filter((edge) => {
+  const edges = dataset.edges.filter((edge) => {
     const source = String(edge.source_node_id ?? edge.source ?? "");
     const target = String(edge.target_node_id ?? edge.target ?? "");
     const relation = String(edge.relation_type ?? edge.relationType ?? "");
@@ -133,7 +133,7 @@ export function communityMembership(communities: readonly Record<string, unknown
   const membership = new Map<string, Set<string>>();
   for (const community of communities) {
     const id = String(community.id ?? "");
-    const members = variantSequence(community.members ?? community.member_ids ?? community.nodes);
+    const members = communityMemberIds(community);
     for (const member of members) {
       const set = membership.get(member) ?? new Set<string>();
       set.add(id);
@@ -141,6 +141,17 @@ export function communityMembership(communities: readonly Record<string, unknown
     }
   }
   return membership;
+}
+
+/**
+ * The entities a community row names, whichever of the pipeline's parquet
+ * column (`member_node_ids`), the gold format's `members`, or an older
+ * export's `member_ids`/`nodes` carries them.
+ */
+export function communityMemberIds(community: Record<string, unknown>): string[] {
+  return variantSequence(
+    community.member_node_ids ?? community.members ?? community.member_ids ?? community.nodes,
+  );
 }
 
 export function variantSequence(value: unknown): string[] {

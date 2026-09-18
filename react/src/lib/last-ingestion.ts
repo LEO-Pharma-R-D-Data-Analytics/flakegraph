@@ -1,3 +1,6 @@
+import { useMemo } from "react";
+import { readStorage, useStorageItem, writeStorage } from "./browser-storage";
+
 const STORAGE_KEY = "flakegraph.last-ingestion";
 
 export interface LastIngestionDraft {
@@ -11,24 +14,31 @@ export interface LastIngestionDraft {
   savedAt: string;
 }
 
-export function readLastIngestion(runtime: string): LastIngestionDraft | null {
-  if (typeof window === "undefined") {
+function storageKey(runtime: string): string {
+  return `${STORAGE_KEY}.${runtime}`;
+}
+
+function parseDraft(raw: string | null): LastIngestionDraft | null {
+  if (!raw) {
     return null;
   }
   try {
-    const raw = window.localStorage.getItem(`${STORAGE_KEY}.${runtime}`);
-    if (!raw) {
-      return null;
-    }
     return JSON.parse(raw) as LastIngestionDraft;
   } catch {
     return null;
   }
 }
 
+export function readLastIngestion(runtime: string): LastIngestionDraft | null {
+  return parseDraft(readStorage("local", storageKey(runtime)));
+}
+
+/** The last submitted draft for a runtime, kept current as it is rewritten. */
+export function useLastIngestion(runtime: string): LastIngestionDraft | null {
+  const raw = useStorageItem("local", storageKey(runtime));
+  return useMemo(() => parseDraft(raw), [raw]);
+}
+
 export function writeLastIngestion(draft: LastIngestionDraft): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.setItem(`${STORAGE_KEY}.${draft.runtime}`, JSON.stringify(draft));
+  writeStorage("local", storageKey(draft.runtime), JSON.stringify(draft));
 }

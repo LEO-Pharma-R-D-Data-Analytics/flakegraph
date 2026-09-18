@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { decodeSchema, IngestionRequest } from "./protocol/schema";
 import { redactedConfig, sensitiveConfigKey } from "./config";
 import { accumulateSummary, makeProgressRecord, progressEvent, readLocalProgress } from "./progress";
-import { filterGraph, graphFacets } from "./graph-filter";
+import { communityMemberIds, filterGraph, graphFacets } from "./graph-filter";
 import { goldToDataset, compareToGold } from "./gold";
 import { administrableGraphPredicate, mayReadStagePath, viewerStagePrefix, visibleGraphPredicate } from "./identity";
 import { writeRunRecord, renameGraph, listRunRecords, hideRun } from "./catalog";
@@ -112,6 +112,16 @@ describe("graph filters", () => {
     const connected = filterGraph(dataset, { includeIsolates: false });
     expect(connected.nodes.every((node) => ["judo", "kano", "tokyo"].includes(String(node.id)))).toBe(true);
     expect(connected.totalNodes).toBe(connected.nodes.length);
+  });
+
+  it("reads community members from the pipeline's parquet column", () => {
+    const exported = {
+      ...dataset,
+      communities: [{ id: "c1", title: "Founders", member_node_ids: ["kano", "tokyo"] }],
+    };
+    expect(communityMemberIds(exported.communities[0]!)).toEqual(["kano", "tokyo"]);
+    const scoped = filterGraph(exported, { communityIds: ["c1"] });
+    expect(scoped.nodes.map((node) => node.id)).toEqual(["kano", "tokyo"]);
   });
 
   it("keeps the best-connected entities when a limit applies", () => {

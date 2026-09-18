@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Boxes, ChevronRight, KeyRound, Plus, Search, Server, ShieldAlert, Trash2 } from "lucide-react";
 import { trpc } from "@/components/providers";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +20,7 @@ import {
   type RuntimeMode,
   type RunSnapshot,
 } from "@/server/protocol/schema";
+import { useClientValue } from "@/lib/browser-storage";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { catalogEmptyCopy, statusSentence } from "@/lib/status-sentence";
 import { toast } from "sonner";
@@ -59,7 +60,6 @@ export function Sidebar(props: SidebarProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const [pendingForget, setPendingForget] = useState<string | null>(null);
   const [confirmBulkForget, setConfirmBulkForget] = useState(false);
-  const [jumpKeys, setJumpKeys] = useState("⌘K");
   const utils = trpc.useUtils();
   const runs = trpc.runs.list.useQuery({ limit: 100 }, { refetchInterval: 4_000 });
   const forget = trpc.runs.forget.useMutation({
@@ -96,9 +96,7 @@ export function Sidebar(props: SidebarProps) {
   const analyst = props.role === "analyst";
   const workspace = trpc.workspace.get.useQuery();
 
-  useEffect(() => {
-    setJumpKeys(/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl+K");
-  }, []);
+  const jumpKeys = useClientValue(() => (/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl+K"), "Ctrl+K");
 
   const filtered = useMemo(() => {
     const rows = runs.data ?? [];
