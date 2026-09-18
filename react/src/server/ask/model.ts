@@ -21,9 +21,14 @@ export interface AskModel {
 }
 
 let cached: AskModel | null | undefined;
+// Whether the resolved model answered a probe. A local engine is assumed
+// from its address alone, and one that is not running would otherwise be
+// "configured" and fail every call; the probe settles it once per process.
+let probed: Promise<void> | null = null;
 
 export function resetAskModel(): void {
   cached = undefined;
+  probed = null;
 }
 
 export function resolveAskModel(): AskModel | null {
@@ -32,6 +37,41 @@ export function resolveAskModel(): AskModel | null {
   }
   cached = loadAskModel();
   return cached;
+}
+
+/**
+ * Resolve the model and confirm a local engine is actually there.
+ *
+ * Every request entry point awaits this before the synchronous readers run;
+ * a hosted provider is taken at its word, an Ollama address is asked for its
+ * model list with a short timeout and dropped when it does not answer.
+ */
+export async function probeAskModel(): Promise<AskModel | null> {
+  const model = resolveAskModel();
+  if (!model || model.provider !== "ollama") {
+    return model;
+  }
+  probed ??= (async () => {
+    const base = ollamaBaseUrl();
+    try {
+      const response = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(OLLAMA_PROBE_TIMEOUT_MS) });
+      if (!response.ok) {
+        cached = null;
+      }
+    } catch {
+      cached = null;
+    }
+  })();
+  await probed;
+  return cached ?? null;
+}
+
+const OLLAMA_PROBE_TIMEOUT_MS = 1_500;
+
+function ollamaBaseUrl(): string {
+  const env = { ...loadOptionalSecretFile(), ...process.env };
+  const base = first(env, ["FLAKEGRAPH_ASK_OLLAMA_BASE_URL", "OLLAMA_HOST"]) ?? DEFAULT_OLLAMA_BASE_URL;
+  return base.replace(/\/$/, "").replace(/\/v1$/, "");
 }
 
 export function askModelConfigured(): boolean {

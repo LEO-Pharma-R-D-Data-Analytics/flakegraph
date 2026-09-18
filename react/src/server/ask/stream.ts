@@ -12,12 +12,14 @@ import { AskModelMissingError, createAskAgent } from "./agent";
 import { AskHttpError, isAbortError } from "./errors";
 import { answerFromGrounding, emptyGrounding, groundingFromToolOutput, mergeGrounding } from "./grounding";
 import { loadAskRunGraph, perspectiveScope } from "./load";
-import { resolveAskModel } from "./model";
+import { probeAskModel, resolveAskModel } from "./model";
 import { encodeAskEvent } from "./protocol";
 import { acceptFormat, clampTopK, extractQuestion, parseDocumentIds, parseMode, toUiUserMessage } from "./request";
+import { lexicalAsk } from "./lexical";
 import { mergeAskScope, isScoped } from "./scope";
 import { ASK_TOOL_NAMES } from "./tools";
 import type {
+  AskAnswer,
   AskRequestBody,
   AskScope,
   AskStreamEvent,
@@ -48,8 +50,14 @@ export async function handleAskRequest(request: Request): Promise<Response> {
       await perspectiveScope(body.perspectiveId, loaded.snapshot.graphId),
       documentIds ? { documentIds } : undefined,
     );
-    if (!resolveAskModel()) {
-      throw new AskModelMissingError();
+    // Without a language model the graph still answers with its own text:
+    // matching entities, relations and quotes. Both stream shapes carry it.
+    const model = await probeAskModel();
+    if (!model) {
+      const answer = lexicalAsk(loaded.dataset, question, mode === "global" ? "global" : "local", scope);
+      return format === "ndjson"
+        ? lexicalNdjsonResponse(answer)
+        : lexicalUiResponse(answer);
     }
     if (format === "ndjson") {
       return streamAskNdjson({
@@ -156,6 +164,49 @@ function streamAskUi(args: {
     },
   });
   return createUIMessageStreamResponse({ stream });
+}
+
+const LEXICAL_NOTE =
+  "\n\n_No language model is configured for this console, so this is the graph's own text: the entities, relations and quotes that match, without a written answer._";
+
+/** The lexical answer as the console's message stream: one tool result and one text. */
+function lexicalUiResponse(answer: AskAnswer): Response {
+  const toolCallId = "lexical";
+  const stream = createUIMessageStream({
+    execute: ({ writer }) => {
+      writer.write({ type: "tool-input-available", toolCallId, toolName: "searchGraph", input: { query: answer.question, mode: answer.mode } });
+      writer.write({
+        type: "tool-output-available",
+        toolCallId,
+        output: {
+          mode: answer.mode,
+          citations: answer.citations,
+          entityIds: answer.entityIds,
+          relationIds: answer.relationIds,
+          communityIds: answer.communityIds,
+          counts: { entities: answer.entityIds.length, evidence: answer.citations.length },
+        },
+      });
+      writer.write({ type: "text-start", id: "answer" });
+      writer.write({ type: "text-delta", id: "answer", delta: `${answer.summary}${LEXICAL_NOTE}` });
+      writer.write({ type: "text-end", id: "answer" });
+    },
+  });
+  return createUIMessageStreamResponse({ stream });
+}
+
+/** The lexical answer as the programmatic stream: status, citations, text, done. */
+function lexicalNdjsonResponse(answer: AskAnswer): Response {
+  const encoder = new TextEncoder();
+  const events: AskStreamEvent[] = [
+    { type: "status", phase: "answering", message: PROGRESS_LABELS.answering, detail: "lexical" },
+    ...answer.citations.map((citation): AskStreamEvent => ({ type: "citation", citation })),
+    { type: "text", delta: answer.summary },
+    { type: "done", answer },
+  ];
+  return new Response(encoder.encode(events.map(encodeAskEvent).join("")), {
+    headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" },
+  });
 }
 
 function streamAskNdjson(args: {

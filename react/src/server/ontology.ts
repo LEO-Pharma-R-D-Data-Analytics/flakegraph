@@ -2,7 +2,7 @@ import "server-only";
 
 import { generateText, Output } from "ai";
 import { z } from "zod";
-import { resolveAskModel } from "./ask/model";
+import { probeAskModel } from "./ask/model";
 import { proposeOntology as heuristicProposal, type OntologyProposal } from "./workspace";
 
 const ProposalSchema = z.object({
@@ -52,7 +52,7 @@ export async function proposeOntologyForIntent(
   intent: string,
   goldTypes: readonly string[] = [],
 ): Promise<OntologyProposalResult> {
-  const model = resolveAskModel();
+  const model = await probeAskModel();
   if (model) {
     try {
       const result = await generateText({

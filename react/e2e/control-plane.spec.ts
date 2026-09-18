@@ -672,9 +672,15 @@ test.describe("remaining report journeys", () => {
     await expect(page.getByTestId("status-sentence")).toContainText("leftover leases");
   });
 
-  test("scans a sample pack for PII before embed", async ({ page }) => {
+  test("scans a sample pack for PII before embed", async ({ page, request }) => {
+    // The seed writes the pack under the server's state root, wherever that is.
+    const session = await request.get(
+      "/api/trpc/auth.session?batch=1&input=%7B%220%22%3A%7B%22json%22%3Anull%7D%7D",
+      { headers: { "x-flakegraph-runtime": "local" } },
+    );
+    const [{ result }] = (await session.json()) as [{ result: { data: { json: { stateRoot: string } } } }];
     await page.goto("/?runtime=local&page=new");
-    await useFolderPath(page, "/tmp/flakegraph-browser-demo/pii-pack");
+    await useFolderPath(page, `${result.data.json.stateRoot}/pii-pack`);
     await page.getByRole("button", { name: "Scan for PII" }).click();
     await expect(page.getByText(/PII email/i)).toBeVisible();
   });

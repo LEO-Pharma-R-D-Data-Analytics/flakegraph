@@ -35,12 +35,17 @@ pnpm seed
 ## Tests
 
 ```bash
-pnpm test        # Vitest: schemas, catalog, progress, runtimes
-pnpm test:e2e    # Playwright operator flows against a local fake worker
+bun run test        # Vitest: schemas, catalog, progress, runtimes
+bun run test:e2e    # Playwright operator flows against a local fake worker
 ```
 
 End-to-end tests start the Next.js app with `FLAKEGRAPH_STUB_RUNTIMES=1` and a
-fake `flakegraph` CLI so they do not need a GPU or live Snowflake account.
+fake `flakegraph` CLI so they do not need a GPU or live Snowflake account. The
+Ask journeys that need a language model run against whatever the checkout
+provides (hosted credentials the e2e server finds, or a local Ollama that
+answers a probe) and skip otherwise; `FLAKEGRAPH_ASK_NO_MODEL=1` runs the suite
+the way CI does, with no model, where the Ask tab answers from the graph's own
+text.
 
 ## Environment
 

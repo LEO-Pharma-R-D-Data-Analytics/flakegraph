@@ -4,7 +4,7 @@ import { ASK_STREAM_TIMEOUT_MS } from "./constants";
 import { createAskAgent } from "./agent";
 import { answerFromGrounding, groundingFromGenerateSteps } from "./grounding";
 import { lexicalAsk } from "./lexical";
-import { resolveAskModel } from "./model";
+import { probeAskModel } from "./model";
 import { mergeAskScope, isScoped } from "./scope";
 import type { AskAnswer, AskScope, QueryMode } from "./types";
 import type { GraphDataset } from "../protocol/schema";
@@ -22,7 +22,7 @@ export async function completeAsk(args: {
     args.scope,
     args.documentIds?.length ? { documentIds: args.documentIds } : undefined,
   );
-  const model = resolveAskModel();
+  const model = await probeAskModel();
   if (!model) {
     return lexicalAsk(args.dataset, args.question, args.mode === "global" ? "global" : "local", scope);
   }

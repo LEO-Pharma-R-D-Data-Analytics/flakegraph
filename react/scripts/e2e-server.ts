@@ -11,7 +11,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repo = path.resolve(root, "..");
 const stateRoot = process.env.FLAKEGRAPH_APP_STATE_ROOT ?? path.join(tmpdir(), "flakegraph-e2e");
 
-applyAskSecrets(root, repo);
+// FLAKEGRAPH_ASK_NO_MODEL runs the journeys the way CI does: no hosted
+// credentials picked up from a developer checkout, and no local engine.
+if (process.env.FLAKEGRAPH_ASK_NO_MODEL === "1") {
+  process.env.FLAKEGRAPH_ASK_DISABLE_OLLAMA = "1";
+  process.env.FLAKEGRAPH_ASK_IGNORE_HUB_SECRETS = "1";
+} else {
+  applyAskSecrets(root, repo);
+}
 
 if (!process.env.FLAKEGRAPH_KEEP_STATE) {
   await rm(stateRoot, { recursive: true, force: true });
