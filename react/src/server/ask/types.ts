@@ -32,6 +32,8 @@ export interface AskScope {
 export interface AskCitation {
   quote: string;
   documentId: string;
+  /** The document as a reader knows it - its filename - when the graph records one. */
+  documentName?: string;
   entityId: string | null;
   entityName: string | null;
 }

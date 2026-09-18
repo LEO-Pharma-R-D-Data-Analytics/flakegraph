@@ -32,6 +32,7 @@ import {
   type LayoutMode,
 } from "@/lib/graph-geometry";
 import { cn } from "@/lib/utils";
+import { documentNameIndex, evidenceDocumentId, evidenceEntityId, evidenceRelationId } from "@/lib/evidence";
 
 /** The overview draws only the best-connected core; a focus widens the cap. */
 const OVERVIEW_NODE_LIMIT = 400;
@@ -100,6 +101,7 @@ export function GraphExplorer({
     : perspectives;
   const facets = useMemo(() => graphFacets(dataset), [dataset]);
   const membership = useMemo(() => communityMembership(dataset.communities ?? []), [dataset.communities]);
+  const documentNames = useMemo(() => documentNameIndex(dataset.documents ?? []), [dataset.documents]);
   const filters: GraphFilters = useMemo(
     () => ({
       search,
@@ -647,13 +649,15 @@ export function GraphExplorer({
                     size="sm"
                     variant="ghost"
                     onClick={() => {
-                      const evidence = dataset.evidence.find((row) => {
-                        const quote = String(row.quote ?? "").toLowerCase();
-                        const name = String(selectedNode.name ?? "").toLowerCase();
-                        return name && quote.includes(name);
-                      });
+                      const evidence =
+                        dataset.evidence.find((row) => evidenceEntityId(row) === String(selectedNode.id)) ??
+                        dataset.evidence.find((row) => {
+                          const quote = String(row.quote ?? "").toLowerCase();
+                          const name = String(selectedNode.name ?? "").toLowerCase();
+                          return name && quote.includes(name);
+                        });
                       const quote = String(evidence?.quote ?? selectedNode.description ?? selectedNode.name ?? "");
-                      const documentId = String(evidence?.document_id ?? "");
+                      const documentId = evidence ? documentNames.get(evidenceDocumentId(evidence)) ?? evidenceDocumentId(evidence) : "";
                       void navigator.clipboard.writeText(`${documentId} · ${quote}`.trim());
                       toast.success("Copied citation");
                     }}
@@ -690,12 +694,11 @@ export function GraphExplorer({
                     size="sm"
                     variant="ghost"
                     onClick={() => {
-                      const evidence = dataset.evidence.find((row) => {
-                        const relationId = String(row.relation_id ?? "");
-                        return relationId === String(selectedEdge.id);
-                      });
+                      const evidence = dataset.evidence.find(
+                        (row) => evidenceRelationId(row) === String(selectedEdge.id),
+                      );
                       const quote = String(evidence?.quote ?? selectedEdge.description ?? selectedEdge.relation_type ?? "");
-                      const documentId = String(evidence?.document_id ?? "");
+                      const documentId = evidence ? documentNames.get(evidenceDocumentId(evidence)) ?? evidenceDocumentId(evidence) : "";
                       void navigator.clipboard.writeText(`${documentId} · ${quote}`.trim());
                       toast.success("Copied citation");
                     }}

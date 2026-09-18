@@ -1,3 +1,4 @@
+import { evidenceEntityId, evidenceRelationId } from "@/lib/evidence";
 import { communityMemberIds, filterGraph } from "../graph-filter";
 import type { GraphDataset } from "../protocol/schema";
 import { documentIdOf, edgeEnds, nodeName } from "./retrieve";
@@ -27,12 +28,12 @@ export function scopeDataset(dataset: GraphDataset, scope?: AskScope): GraphData
     nodes: next.nodes.filter((node) => nodeIds.has(String(node.id ?? ""))),
     edges: next.edges.filter((edge) => edgeIds.has(String(edge.id ?? ""))),
     evidence: next.evidence.filter((row) => {
-      const relationId = String(row.relation_id ?? "");
-      const entityId = String(row.entity_id ?? row.node_id ?? "");
+      const relationId = evidenceRelationId(row) ?? "";
+      const entityId = evidenceEntityId(row) ?? "";
       return (!relationId || edgeIds.has(relationId)) && (!entityId || nodeIds.has(entityId));
     }),
     chunks: next.chunks.filter((row) => {
-      const entityId = String(row.entity_id ?? row.node_id ?? "");
+      const entityId = evidenceEntityId(row) ?? "";
       return !entityId || nodeIds.has(entityId);
     }),
     communities: scope.communityIds?.length
@@ -87,8 +88,8 @@ function restrictToDocuments(dataset: GraphDataset, documentIds: string[]): Grap
   const relationIds = new Set<string>();
   const entityIds = new Set<string>();
   for (const row of [...evidence, ...chunks]) {
-    const relationId = String(row.relation_id ?? "");
-    const entityId = String(row.entity_id ?? row.node_id ?? "");
+    const relationId = evidenceRelationId(row) ?? "";
+    const entityId = evidenceEntityId(row) ?? "";
     if (relationId) {
       relationIds.add(relationId);
     }

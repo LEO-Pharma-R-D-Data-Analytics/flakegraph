@@ -1,4 +1,5 @@
 import { nHopNodeIds } from "@/lib/graph-geometry";
+import { documentDisplayName, evidenceDocumentId, evidenceEntityId, evidenceRelationId } from "@/lib/evidence";
 import { communityMemberIds } from "../graph-filter";
 import type { GraphDataset } from "../protocol/schema";
 import {
@@ -170,28 +171,28 @@ export function searchEvidence(
   const nameById = entityNameIndex(dataset);
   const fromEvidence = dataset.evidence.map((row, index) => {
     const quote = asString(row.quote ?? row.sentence ?? row.content);
-    const entityId = asString(row.entity_id ?? row.node_id) || null;
+    const entityId = evidenceEntityId(row);
     return {
       id: asString(row.id) || `evidence_${index}`,
       quote,
-      documentId: asString(row.document_id ?? row.file_id ?? row.documentId),
+      documentId: evidenceDocumentId(row),
       entityId,
       entityName: entityId ? nameById.get(entityId) ?? null : null,
-      relationId: asString(row.relation_id) || null,
+      relationId: evidenceRelationId(row),
       score: scoreHaystack(quote, terms),
       distance: 0,
     };
   });
   const fromChunks = dataset.chunks.map((row, index) => {
     const quote = asString(row.content ?? row.text ?? row.quote);
-    const entityId = asString(row.entity_id ?? row.node_id) || null;
+    const entityId = evidenceEntityId(row);
     return {
       id: asString(row.id) || `chunk_${index}`,
       quote,
-      documentId: asString(row.document_id ?? row.file_id ?? row.documentId),
+      documentId: evidenceDocumentId(row),
       entityId,
       entityName: entityId ? nameById.get(entityId) ?? null : null,
-      relationId: asString(row.relation_id) || null,
+      relationId: evidenceRelationId(row),
       score: scoreHaystack(quote, terms),
       distance: 0,
     };
@@ -289,8 +290,8 @@ export function evidenceForEntities(
   return dataset.evidence
     .map((row, index) => {
       const quote = asString(row.quote ?? row.sentence ?? row.content);
-      const entityId = asString(row.entity_id ?? row.node_id) || null;
-      const relationId = asString(row.relation_id) || null;
+      const entityId = evidenceEntityId(row);
+      const relationId = evidenceRelationId(row);
       const haystack = quote.toLowerCase();
       const mentions = names.some((name) => name && haystack.includes(name));
       const relatedEntity = entityId ? allowed.has(entityId) : false;
@@ -462,8 +463,8 @@ export function listGraphDocuments(dataset: GraphDataset): GraphDocument[] {
     }
     byId.set(id, {
       id,
-      title: asString(document.title ?? document.name ?? document.path ?? id),
-      path: asString(document.path),
+      title: documentDisplayName(document),
+      path: asString(document.path ?? document.source_uri),
       quoteCount: quoteCount.get(id) ?? 0,
     });
   }
@@ -531,7 +532,7 @@ export function evidenceForRelation(
 }
 
 export function documentIdOf(row: Record<string, unknown>): string {
-  return asString(row.document_id ?? row.file_id ?? row.documentId);
+  return evidenceDocumentId(row);
 }
 
 function toCommunityHit(
@@ -580,14 +581,14 @@ function quoteHit(
   nameById: Map<string, string>,
 ): EvidenceHit {
   const quote = asString(row.quote ?? row.sentence ?? row.content ?? row.text);
-  const entityId = asString(row.entity_id ?? row.node_id) || null;
+  const entityId = evidenceEntityId(row);
   return {
     id: asString(row.id) || `${prefix}_${index}`,
     quote,
     documentId: documentIdOf(row),
     entityId,
     entityName: entityId ? nameById.get(entityId) ?? null : null,
-    relationId: asString(row.relation_id) || null,
+    relationId: evidenceRelationId(row),
     score: 1,
     distance: 0.5,
   };

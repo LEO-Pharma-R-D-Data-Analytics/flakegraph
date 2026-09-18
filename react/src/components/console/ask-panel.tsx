@@ -184,7 +184,8 @@ export function AskPanel({
                       className="text-left underline"
                       onClick={() => onOpenEntity?.(citation.entityName || citation.quote.slice(0, 48))}
                     >
-                      <span className="font-medium">{citation.documentId || "document"}:</span> {citation.quote}
+                      <span className="font-medium">{citation.documentName || citation.documentId || "document"}:</span>{" "}
+                      {citation.quote}
                     </button>
                   </li>
                 ))}
@@ -244,15 +245,18 @@ function toolParts(messages: AskUIMessage[]): Array<{ id: string; name: string; 
 function citationsFromTools(tools: Array<{ output?: unknown }>): Array<{
   quote: string;
   documentId: string;
+  documentName?: string;
   entityName: string | null;
 }> {
-  const citations: Array<{ quote: string; documentId: string; entityName: string | null }> = [];
+  const citations: Array<{ quote: string; documentId: string; documentName?: string; entityName: string | null }> = [];
   const seen = new Set<string>();
   for (const tool of tools) {
     if (!tool.output || typeof tool.output !== "object") {
       continue;
     }
-    const output = tool.output as { citations?: Array<{ quote?: string; documentId?: string; entityName?: string | null }> };
+    const output = tool.output as {
+      citations?: Array<{ quote?: string; documentId?: string; documentName?: string; entityName?: string | null }>;
+    };
     for (const citation of output.citations ?? []) {
       const quote = citation.quote?.trim();
       if (!quote) {
@@ -266,6 +270,7 @@ function citationsFromTools(tools: Array<{ output?: unknown }>): Array<{
       citations.push({
         quote,
         documentId: citation.documentId ?? "",
+        ...(citation.documentName ? { documentName: citation.documentName } : {}),
         entityName: citation.entityName ?? null,
       });
     }

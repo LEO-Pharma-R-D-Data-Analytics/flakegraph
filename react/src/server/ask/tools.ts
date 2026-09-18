@@ -1,4 +1,5 @@
 import { tool } from "ai";
+import { documentNameIndex } from "@/lib/evidence";
 import { z } from "zod";
 import type { GraphDataset } from "../protocol/schema";
 import {
@@ -51,6 +52,11 @@ export const ASK_TOOL_NAMES = [
 ] as const;
 
 export function createAskTools(session: AskToolSession) {
+  const documentNames = documentNameIndex(session.dataset.documents);
+  const named = <T extends { documentId: string }>(citation: T): T & { documentName?: string } => {
+    const documentName = documentNames.get(citation.documentId);
+    return documentName ? { ...citation, documentName } : citation;
+  };
   return {
     searchGraph: tool({
       description: `Search this knowledge graph at the right retrieval level.
@@ -124,7 +130,7 @@ If the user names a document, pass its exact document id from listDocuments. Omi
           entityIds: formatted.entityIds,
           relationIds: formatted.relationIds,
           communityIds: formatted.communityIds,
-          citations: formatted.citations,
+          citations: formatted.citations.map(named),
           counts: {
             entities: entityIds.length,
             contributingEntities: result.contributingEntities.length,
@@ -231,12 +237,14 @@ If the user names a document, pass its exact document id from listDocuments. Omi
           return structuredObservation("GRAPH_EMPTY_RESULT", { query, tool: "searchEvidence" });
         }
         return {
-          citations: hits.map((hit) => ({
-            quote: hit.quote,
-            documentId: hit.documentId,
-            entityId: hit.entityId,
-            entityName: hit.entityName,
-          })),
+          citations: hits.map((hit) =>
+            named({
+              quote: hit.quote,
+              documentId: hit.documentId,
+              entityId: hit.entityId,
+              entityName: hit.entityName,
+            }),
+          ),
         };
       },
     }),
@@ -307,12 +315,14 @@ Use this for summaries or walkthroughs of a single document when searchGraph is 
         }
         return {
           documentId,
-          citations: hits.map((hit) => ({
-            quote: hit.quote,
-            documentId: hit.documentId,
-            entityId: hit.entityId,
-            entityName: hit.entityName,
-          })),
+          citations: hits.map((hit) =>
+            named({
+              quote: hit.quote,
+              documentId: hit.documentId,
+              entityId: hit.entityId,
+              entityName: hit.entityName,
+            }),
+          ),
         };
       },
     }),
@@ -332,12 +342,14 @@ Use this for summaries or walkthroughs of a single document when searchGraph is 
         }
         return {
           entityId,
-          citations: hits.map((hit) => ({
-            quote: hit.quote,
-            documentId: hit.documentId,
-            entityId: hit.entityId,
-            entityName: hit.entityName,
-          })),
+          citations: hits.map((hit) =>
+            named({
+              quote: hit.quote,
+              documentId: hit.documentId,
+              entityId: hit.entityId,
+              entityName: hit.entityName,
+            }),
+          ),
         };
       },
     }),
@@ -357,12 +369,14 @@ Use this for summaries or walkthroughs of a single document when searchGraph is 
         }
         return {
           relationId,
-          citations: hits.map((hit) => ({
-            quote: hit.quote,
-            documentId: hit.documentId,
-            entityId: hit.entityId,
-            entityName: hit.entityName,
-          })),
+          citations: hits.map((hit) =>
+            named({
+              quote: hit.quote,
+              documentId: hit.documentId,
+              entityId: hit.entityId,
+              entityName: hit.entityName,
+            }),
+          ),
         };
       },
     }),
