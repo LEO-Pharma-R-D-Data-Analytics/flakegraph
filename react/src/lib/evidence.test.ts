@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { documentNameIndex, evidenceDocumentId, evidenceEntityId, evidenceRelationId } from "./evidence";
+import { documentNameIndex, entityDocumentIndex, evidenceDocumentId, evidenceEntityId, evidenceRelationId } from "./evidence";
 
 describe("evidence rows", () => {
   it("reads the pipeline's subject columns and the gold format's explicit ones alike", () => {
@@ -20,5 +20,18 @@ describe("evidence rows", () => {
     expect(names.get("s3_file_1")).toBe("Hinton-1981.pdf");
     expect(names.get("d2")).toBe("judo.md");
     expect(names.get("d3")).toBe("d3");
+  });
+
+  it("grounds an entity on its first quote's file, else on the chunk it came from", () => {
+    const index = entityDocumentIndex({
+      nodes: [
+        { id: "node_a", source_chunk_ids: ["chunk_1"] },
+        { id: "node_b", source_chunk_ids: ["chunk_2"] },
+      ],
+      evidence: [{ subject_id: "node_a", subject_kind: "node", file_id: "file_quoted" }],
+      chunks: [{ id: "chunk_2", file_id: "file_chunked" }],
+    });
+    expect(index.get("node_a")).toBe("file_quoted");
+    expect(index.get("node_b")).toBe("file_chunked");
   });
 });

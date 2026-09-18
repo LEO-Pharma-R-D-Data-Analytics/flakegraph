@@ -58,3 +58,45 @@ export function documentDisplayName(document: Record<string, unknown>): string {
   }
   return String(document.id ?? document.file_id ?? "");
 }
+
+/**
+ * Entity id → the document that grounds it: the file of its first evidence
+ * quote, else the file of the first chunk it was extracted from.
+ */
+export function entityDocumentIndex(dataset: {
+  nodes: readonly Record<string, unknown>[];
+  evidence: readonly Record<string, unknown>[];
+  chunks: readonly Record<string, unknown>[];
+}): Map<string, string> {
+  const documents = new Map<string, string>();
+  for (const row of dataset.evidence) {
+    const entityId = evidenceEntityId(row);
+    const documentId = evidenceDocumentId(row);
+    if (entityId && documentId && !documents.has(entityId)) {
+      documents.set(entityId, documentId);
+    }
+  }
+  const chunkDocument = new Map<string, string>();
+  for (const chunk of dataset.chunks) {
+    const id = chunk.id == null ? "" : String(chunk.id);
+    const documentId = evidenceDocumentId(chunk);
+    if (id && documentId) {
+      chunkDocument.set(id, documentId);
+    }
+  }
+  for (const node of dataset.nodes) {
+    const id = node.id == null ? "" : String(node.id);
+    if (!id || documents.has(id)) {
+      continue;
+    }
+    const chunkIds = Array.isArray(node.source_chunk_ids) ? node.source_chunk_ids : [];
+    for (const chunkId of chunkIds) {
+      const documentId = chunkDocument.get(String(chunkId));
+      if (documentId) {
+        documents.set(id, documentId);
+        break;
+      }
+    }
+  }
+  return documents;
+}

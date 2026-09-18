@@ -1,5 +1,5 @@
 import { tool } from "ai";
-import { documentNameIndex } from "@/lib/evidence";
+import { documentNameIndex, entityDocumentIndex } from "@/lib/evidence";
 import { z } from "zod";
 import type { GraphDataset } from "../protocol/schema";
 import {
@@ -53,9 +53,17 @@ export const ASK_TOOL_NAMES = [
 
 export function createAskTools(session: AskToolSession) {
   const documentNames = documentNameIndex(session.dataset.documents);
-  const named = <T extends { documentId: string }>(citation: T): T & { documentName?: string } => {
-    const documentName = documentNames.get(citation.documentId);
-    return documentName ? { ...citation, documentName } : citation;
+  const entityDocuments = entityDocumentIndex(session.dataset);
+  // A citation names its document by file; one quoting an entity's own
+  // description, which no single quote grounds, names the document the
+  // entity was extracted from.
+  const named = <T extends { documentId: string; entityId?: string | null }>(
+    citation: T,
+  ): T & { documentName?: string } => {
+    const documentId =
+      citation.documentId || (citation.entityId ? (entityDocuments.get(citation.entityId) ?? "") : "");
+    const documentName = documentNames.get(documentId);
+    return { ...citation, documentId, ...(documentName ? { documentName } : {}) };
   };
   return {
     searchGraph: tool({
