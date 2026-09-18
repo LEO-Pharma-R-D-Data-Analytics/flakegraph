@@ -122,7 +122,7 @@ class TaskStore(Protocol):
         ...
 
     def retry_run(self, run_id: str) -> None:
-        """Requeue terminally failed tasks after an operator corrects their cause."""
+        """Requeue a failed run's failed tasks, or a cancelled run's cancelled ones."""
         ...
 
     def get_run(self, run_id: str) -> RunSnapshot:

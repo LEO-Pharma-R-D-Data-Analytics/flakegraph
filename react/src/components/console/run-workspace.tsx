@@ -623,6 +623,31 @@ function guideForRun(options: {
       />
     );
   }
+  if (options.status === "cancelled") {
+    return (
+      <GuideCard
+        title={options.canRetry ? "Resume this run where it stopped" : "This run was cancelled"}
+        why={
+          options.canRetry
+            ? "Work that finished before the cancellation is kept; only what was stopped is queued again."
+            : "Clone the config, or forget this graph from the catalog."
+        }
+        actions={[
+          ...(options.canRetry ? [{ label: "Resume run", onClick: options.onRetry }] : []),
+          { label: "New graph from this config", onClick: () => void options.onCloneConfig?.(), variant: "secondary" as const },
+          ...(options.onForget
+            ? [
+                {
+                  label: options.forgetLabel ?? "Forget this graph",
+                  onClick: options.onForget,
+                  variant: "outline" as const,
+                },
+              ]
+            : []),
+        ]}
+      />
+    );
+  }
   if (options.status === "cancelling") {
     return (
       <GuideCard

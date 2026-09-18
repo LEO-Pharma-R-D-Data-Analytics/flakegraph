@@ -1391,11 +1391,13 @@ class PostgresDistributedStore:
             )
 
     def retry_run(self, run_id: str) -> None:
-        """Reset failed tasks and reactivate a failed run after operator intervention.
+        """Requeue a failed run's failed work, or a cancelled run's cancelled work.
 
-        Successful prerequisites and immutable outputs are preserved. Attempt counts
-        reset only for terminally failed tasks, creating a fresh bounded retry budget
-        after the underlying configuration or provider problem has been corrected.
+        Successful prerequisites and immutable outputs are preserved either way.
+        Attempt counts reset only for the tasks being requeued, creating a fresh
+        bounded retry budget after the underlying configuration or provider
+        problem has been corrected, or after an operator changes their mind about
+        a cancellation.
         """
 
         with self._connection() as connection:
@@ -1405,9 +1407,16 @@ class PostgresDistributedStore:
             ).fetchone()
             if run is None:
                 raise KeyError(f"unknown distributed run: {run_id}")
-            if str(run["status"]) != RunStatus.FAILED.value:
-                raise ValueError("only a failed distributed run can be retried")
-            failed = connection.execute(
+            status = str(run["status"])
+            if status == RunStatus.FAILED.value:
+                stopped_task = TaskStatus.FAILED.value
+                stopped_publication = PublicationStatus.FAILED.value
+            elif status == RunStatus.CANCELLED.value:
+                stopped_task = TaskStatus.CANCELLED.value
+                stopped_publication = PublicationStatus.CANCELLED.value
+            else:
+                raise ValueError("only a failed or cancelled distributed run can be retried")
+            requeued = connection.execute(
                 """
                 UPDATE flakegraph_task
                 SET status = %s,
@@ -1423,9 +1432,9 @@ class PostgresDistributedStore:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE run_id = %s AND status = %s
                 """,
-                (TaskStatus.QUEUED.value, run_id, TaskStatus.FAILED.value),
+                (TaskStatus.QUEUED.value, run_id, stopped_task),
             )
-            publication_only_retry = failed.rowcount == 0
+            publication_only_retry = requeued.rowcount == 0
             if publication_only_retry:
                 publications = connection.execute(
                     """
@@ -1440,12 +1449,12 @@ class PostgresDistributedStore:
                     (
                         PublicationStatus.QUEUED.value,
                         run_id,
-                        PublicationStatus.FAILED.value,
+                        stopped_publication,
                     ),
                 )
                 if publications.rowcount == 0:
                     raise ValueError(
-                        "failed run does not contain a terminally failed task or publication"
+                        f"{status} run does not contain a {stopped_task} task or publication"
                     )
             connection.execute(
                 """

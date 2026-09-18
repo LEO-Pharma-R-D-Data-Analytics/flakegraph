@@ -65,16 +65,16 @@ export function documentStatusesFromTasks(tasks: readonly DocumentTask[]): Docum
       continue;
     }
     if (rows.some((row) => row.stage === "compact_document" && row.status === "succeeded")) {
-      statuses.push(status("indexed", "Indexed"));
+      statuses.push(status("indexed", "Extracted and compacted into the graph"));
       continue;
     }
     const running = rows.find((row) => row.status === "running");
     if (running) {
-      statuses.push(status("running", `${titleStage(running.stage)} in progress`));
+      statuses.push(status("running", titleStage(running.stage)));
       continue;
     }
     if (rows.some((row) => row.stage === "prepare_document" && row.status === "succeeded")) {
-      statuses.push(status("scanned", "Parsed; extraction pending"));
+      statuses.push(status("scanned", "Extraction pending"));
       continue;
     }
     statuses.push(status("queued", "Waiting for a worker"));

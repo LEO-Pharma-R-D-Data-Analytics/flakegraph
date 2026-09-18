@@ -597,6 +597,56 @@ def test_postgres_retries_then_fails_run_after_attempt_budget(
     assert retried_summary.task_counts[0].progress is None
 
 
+def test_a_cancelled_run_resumes_where_it_stopped(isolated_postgres_dsn: str) -> None:
+    """Retrying a cancelled run requeues only what the cancellation stopped."""
+
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    store.create_run(_run(run_id))
+    prepare = _task(run_id, "prepare", TaskStage.PREPARE_DOCUMENT, "file")
+    extract = _task(
+        run_id,
+        "extract",
+        TaskStage.EXTRACT_DOCUMENT_CONTEXT,
+        "file",
+        dependency_ids=[prepare.id],
+    )
+    store.add_tasks(run_id, [prepare, extract])
+    store.activate_run(run_id)
+    prepared = store.claim_task("worker-1", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
+    assert prepared is not None
+    store.complete_task(prepared.task.id, prepared.worker_id, [])
+    running = store.claim_task(
+        "worker-2", {TaskStage.EXTRACT_DOCUMENT_CONTEXT}, timedelta(minutes=1)
+    )
+    assert running is not None
+
+    store.cancel_run(run_id)
+    cancelled = store.get_run(run_id)
+    assert cancelled.run.status == RunStatus.CANCELLED
+    assert {task.task.id: task.status for task in cancelled.tasks} == {
+        prepare.id: TaskStatus.SUCCEEDED,
+        extract.id: TaskStatus.CANCELLED,
+    }
+
+    store.retry_run(run_id)
+
+    resumed = store.get_run(run_id)
+    assert resumed.run.status == RunStatus.QUEUED
+    assert {task.task.id: task.status for task in resumed.tasks} == {
+        prepare.id: TaskStatus.SUCCEEDED,
+        extract.id: TaskStatus.QUEUED,
+    }
+    # The prerequisite stays done, so the resumed task is claimable at once.
+    reclaimed = store.claim_task(
+        "worker-3", {TaskStage.EXTRACT_DOCUMENT_CONTEXT}, timedelta(minutes=1)
+    )
+    assert reclaimed is not None and reclaimed.task.id == extract.id and reclaimed.attempt == 1
+
+    with pytest.raises(ValueError, match="failed or cancelled"):
+        store.retry_run(run_id)
+
+
 def test_postgres_bounds_abandoned_reclaims_and_fails_after_recovery_window(
     isolated_postgres_dsn: str,
 ) -> None:

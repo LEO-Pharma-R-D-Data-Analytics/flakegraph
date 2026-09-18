@@ -37,7 +37,7 @@ describe("documentStatusesFromTasks", () => {
     ]);
     expect(statuses.find((item) => item.fileId === "f3")?.detail).toBe("RuntimeError: mineru_api returned HTTP 400");
     expect(statuses.find((item) => item.fileId === "f6")?.detail).toBe("no windows (attempt 2)");
-    expect(statuses.find((item) => item.fileId === "f2")?.detail).toBe("Extract document context in progress");
+    expect(statuses.find((item) => item.fileId === "f2")?.detail).toBe("Extract document context");
   });
 
   it("marks quarantined files whatever the runtime reported", () => {

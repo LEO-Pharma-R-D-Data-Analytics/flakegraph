@@ -37,9 +37,12 @@ export function statusSentence(
         ? `Queued · ${options.pendingReason}`
         : `Queued · waiting for a worker`;
     }
-    const stageLabel = stage ? humanize(stage.stage) : "pipeline";
-    const stageStatus = stage?.status ? humanize(stage.status) : status;
-    return `${stageStatus} · ${stageLabel} · ${docs}`;
+    // A listing carries no stages; the sentence then names the run's own
+    // status rather than a stage it cannot see.
+    if (!stage) {
+      return `${humanize(status)} · ${docs}`;
+    }
+    return `${humanize(stage.status || status)} · ${humanize(stage.stage)} · ${docs}`;
   }
   if (status === "interrupted") {
     return `Interrupted · process gone, last progress frozen at ${docs}`;

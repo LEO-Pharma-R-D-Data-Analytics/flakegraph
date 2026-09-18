@@ -1344,14 +1344,19 @@ def test_the_front_door_compresses_what_it_sends_the_browser() -> None:
     assert chain[1].endswith("-auth@kubernetescrd")
 
     ungated = _render(("ingress.enabled=true", "ingress.domain=example.test"))
-    assert _one(ungated, "Ingress", _FULLNAME)["metadata"]["annotations"][
-        "traefik.ingress.kubernetes.io/router.middlewares"
-    ] == f"{NAMESPACE}-{_FULLNAME}-compress@kubernetescrd"
+    assert (
+        _one(ungated, "Ingress", _FULLNAME)["metadata"]["annotations"][
+            "traefik.ingress.kubernetes.io/router.middlewares"
+        ]
+        == f"{NAMESPACE}-{_FULLNAME}-compress@kubernetescrd"
+    )
 
     edge_compresses = _render(
         ("ingress.enabled=true", "ingress.domain=example.test", "ingress.compression.enabled=false")
     )
     assert not [
-        doc for doc in edge_compresses if doc["kind"] == "Middleware" and doc["metadata"]["name"].endswith("-compress")
+        doc
+        for doc in edge_compresses
+        if doc["kind"] == "Middleware" and doc["metadata"]["name"].endswith("-compress")
     ]
     assert "annotations" not in _one(edge_compresses, "Ingress", _FULLNAME)["metadata"]

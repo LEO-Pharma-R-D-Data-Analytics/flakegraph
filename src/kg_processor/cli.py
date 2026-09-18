@@ -459,7 +459,7 @@ def distributed_retry(
     run_id: Annotated[str, typer.Option("--run-id")],
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
 ) -> None:
-    """Requeue failed tasks after correcting their configuration or provider cause."""
+    """Requeue a failed run's failed tasks, or resume a cancelled run where it stopped."""
 
     settings = Settings.load(config)
     store = build_distributed_store(settings)
