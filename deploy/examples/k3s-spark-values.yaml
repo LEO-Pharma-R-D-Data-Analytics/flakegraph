@@ -78,6 +78,13 @@ gateway:
 documentParsing:
   mineru:
     replicas: 4
+    # The parser shares each GB10 with its engine: handed the device by the
+    # runtime class, batching against the share of unified memory the engine
+    # leaves it.
+    device:
+      mode: cuda
+      runtimeClassName: nvidia
+      virtualVramGiB: 16
     nodeSelector:
       flakegraph.io/node-class: nvidia-spark
   shim:
@@ -85,9 +92,8 @@ documentParsing:
 
 workers:
   prepare:
-    # MinerU preparation is CPU-bound in the standard worker image. Four
-    # four-core workers per GB10 keep its 20 CPU cores busy while leaving room
-    # for the colocated vLLM server. Tune this ratio for other node shapes.
+    # Preparation workers extract born-digital text themselves and hand scans
+    # to the parsing pool, so they are light; this many keeps the pool fed.
     replicas: 16
     autoscaling:
       maxReplicas: 16

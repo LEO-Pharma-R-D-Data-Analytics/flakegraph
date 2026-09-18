@@ -47,6 +47,9 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "flakegraph.serviceAccountName" . }}
       automountServiceAccountToken: false
+      {{- if eq $mineru.device.mode "cuda" }}
+      runtimeClassName: {{ $mineru.device.runtimeClassName }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.image.pullSecrets }}
@@ -80,6 +83,18 @@ spec:
               value: {{ $mineru.maxConcurrentRequests | quote }}
             - name: MINERU_MODEL_SOURCE
               value: {{ $mineru.modelSource | quote }}
+            - name: MINERU_DEVICE_MODE
+              value: {{ $mineru.device.mode | quote }}
+            {{- if eq $mineru.device.mode "cuda" }}
+            - name: MINERU_VIRTUAL_VRAM_SIZE
+              value: {{ $mineru.device.virtualVramGiB | quote }}
+            # The runtime injects the device for a pod that names it; without a
+            # resource claim this is how the pod asks.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: compute,utility
+            {{- end }}
             - name: HOME
               value: /tmp/mineru-home
             # Weights are fetched once and kept on the volume, so a rescheduled

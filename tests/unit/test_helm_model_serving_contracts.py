@@ -496,6 +496,37 @@ def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
     assert values["terminationGracePeriodSeconds"] > config["ocr"]["timeout_seconds"]
 
 
+def test_document_parsing_takes_the_device_without_claiming_it() -> None:
+    """On the GPU the parser is handed the device, never scheduled for it.
+
+    The engine on the same host holds the node's one nvidia.com/gpu, so a claim
+    would never schedule; the runtime class injects the device for a pod that
+    names it. Off the GPU nothing about the pod mentions a device, so the pool
+    still runs where no runtime class exists.
+    """
+
+    cpu = _pod(_one(_render(()), "StatefulSet", f"{_FULLNAME}-mineru"))
+    cuda = _pod(
+        _one(
+            _render(("documentParsing.mineru.device.mode=cuda",)),
+            "StatefulSet",
+            f"{_FULLNAME}-mineru",
+        )
+    )
+
+    assert "runtimeClassName" not in cpu
+    assert _env(_container(cpu, "mineru"))["MINERU_DEVICE_MODE"]["value"] == "cpu"
+    assert "NVIDIA_VISIBLE_DEVICES" not in _env(_container(cpu, "mineru"))
+    assert cuda["runtimeClassName"] == _values()["modelServing"]["runtimeClassName"]
+    parser = _env(_container(cuda, "mineru"))
+    assert parser["MINERU_DEVICE_MODE"]["value"] == "cuda"
+    assert parser["NVIDIA_VISIBLE_DEVICES"]["value"] == "all"
+    assert parser["MINERU_VIRTUAL_VRAM_SIZE"]["value"] == str(
+        _values()["documentParsing"]["mineru"]["device"]["virtualVramGiB"]
+    )
+    assert "nvidia.com/gpu" not in _container(cuda, "mineru")["resources"].get("limits", {})
+
+
 def test_document_parsing_replicas_spread_across_hosts_without_requiring_it() -> None:
     """One parser per host where the fleet allows it, and still schedulable where not.
 

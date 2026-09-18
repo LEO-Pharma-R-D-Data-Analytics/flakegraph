@@ -852,6 +852,21 @@ documentParsing:
     # on by default, and the Hub redirects large files to a host that is often
     # intercepted even when its own domain is not.
     modelSource: huggingface
+    # Where the layout, OCR, formula and table models run. Every one of them
+    # is a torch model and the tool environment ships a CUDA build, so "cuda"
+    # is a matter of handing the pod the device: the runtime class injects it,
+    # and no nvidia.com/gpu is claimed because the engine on the same host
+    # already holds the node's one device and the scheduler would refuse a
+    # second claim. Formula recognition is the stage that decides this: on
+    # CPU a 32-page scanned paper took over an hour, on the GPU five minutes.
+    # A cluster without the runtime class keeps "cpu".
+    device:
+      mode: cpu
+      runtimeClassName: nvidia
+      # What MinerU believes it may use of the device, which sets its batch
+      # size. On a unified-memory part the engine already holds most of the
+      # pool, so this is the parser's share of what is left, not the device.
+      virtualVramGiB: 16
     # MinerU downloads models on first use, so a site that terminates TLS on
     # egress has to hand this pool its trust store as well.
     extraEnv: []
@@ -878,7 +893,7 @@ documentParsing:
       accessModes: [ReadWriteOnce]
     nodeSelector: {}
     tolerations: []
-    # Parsing replicas hold no GPU, so nothing forces them apart the way it
+    # Parsing replicas claim no GPU, so nothing forces them apart the way it
     # does the engines. Spread them one per host where possible; a fleet
     # with fewer hosts than replicas still schedules, it just doubles up.
     topologyKey: kubernetes.io/hostname

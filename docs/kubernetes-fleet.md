@@ -563,6 +563,17 @@ authenticates nobody, so `documentParsing.mineru.networkPolicy` admits only the
 shim; a CNI that filters kubelet probes gets its node range through
 `extraIngress`, as with the engines.
 
+Put the pool on the GPU wherever there is one: `documentParsing.mineru.device.mode:
+cuda`. Layout, OCR, formula and table recognition are all torch models, and
+formula recognition is the stage that decides the matter - on CPU a 32-page
+scanned paper took over an hour, on the GPU five minutes at full fidelity. The
+pod is handed the device by the runtime class (`NVIDIA_VISIBLE_DEVICES`) rather
+than scheduled for it, because the engine on the same host already holds the
+node's one `nvidia.com/gpu` and a second claim would never place. On a
+unified-memory part the engine also holds most of the memory, so
+`device.virtualVramGiB` tells MinerU what share is its to batch against - it
+would otherwise read the whole device and size its batches accordingly.
+
 Note that the parsing bands follow the serving convention — **lower is served
 first** — while the pipeline's own task queue orders by `priority DESC`. They are
 different queues; the shim shares its vocabulary with the sidecar.

@@ -1184,6 +1184,25 @@
             },
             "resources": {
               "type": "object"
+            },
+            "device": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "runtimeClassName", "virtualVramGiB"],
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": ["cpu", "cuda"]
+                },
+                "runtimeClassName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "virtualVramGiB": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
             }
           }
         },
