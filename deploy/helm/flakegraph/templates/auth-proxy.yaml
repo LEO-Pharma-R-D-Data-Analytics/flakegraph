@@ -258,4 +258,60 @@ spec:
                 port:
                   number: 4180
     {{- end }}
+{{- if and .Values.ingress.authProxy.machineKeys.enabled .Values.controlPlane.enabled }}
+---
+# A machine reaching the console's API with one of its own keys never passes
+# the gate, so nothing vouches for the identity headers it might carry; they
+# are removed here so a key holder cannot claim to be anyone. The console
+# authenticates the key itself. See ingress.authProxy.machineKeys in values.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "flakegraph.fullname" . }}-machine-headers
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+spec:
+  headers:
+    customRequestHeaders:
+      X-Auth-Request-User: ""
+      X-Auth-Request-Email: ""
+      X-Auth-Request-Preferred-Username: ""
+      X-Auth-Request-Groups: ""
+      X-Forwarded-User: ""
+      X-Forwarded-Email: ""
+      X-Forwarded-Preferred-Username: ""
+      X-Forwarded-Groups: ""
+---
+# The route itself: the console's host, its API paths, and a request that
+# presents a key. Its priority puts it ahead of the gated `/` rule for the
+# same host, which matches everything else.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "flakegraph.fullname" . }}-machine-api
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: >-
+        Host(`{{ printf "%s.%s" $ingress.hosts.controlPlane $ingress.domain }}`)
+        && PathPrefix(`/api/`)
+        && (HeaderRegexp(`Authorization`, `^Bearer fg_`) || HeaderRegexp(`X-Flakegraph-Api-Key`, `^fg_`))
+      priority: 1000
+      middlewares:
+        - name: {{ include "flakegraph.fullname" . }}-machine-headers
+        {{- if .Values.ingress.compression.enabled }}
+        - name: {{ include "flakegraph.compressionName" . }}
+        {{- end }}
+      services:
+        - name: {{ include "flakegraph.controlPlaneName" . }}
+          port: {{ .Values.controlPlane.service.port }}
+  {{- if $ingress.tls.secretName }}
+  tls:
+    secretName: {{ $ingress.tls.secretName }}
+  {{- end }}
+{{- end }}
 {{- end }}

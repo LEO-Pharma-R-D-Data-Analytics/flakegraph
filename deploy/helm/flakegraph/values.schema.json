@@ -1078,6 +1078,15 @@
                 "type": "string"
               }
             },
+            "machineKeys": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
             "extraArgs": {
               "type": "array"
             },

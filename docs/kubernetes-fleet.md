@@ -677,9 +677,26 @@ aliases stay behind the gate, and a path is added only after it has been
 observed refusing an unauthenticated caller — and observed again on the next
 image bump.
 
+The console is the one routed service that cannot be listed there: it trusts
+the gate's identity header, so routing it past the gate would let any caller
+assert any identity. Its programs authenticate differently. The console mints
+API keys of its own (the SDK keys page, `GET /api/docs` for the catalog), and
+`ingress.authProxy.machineKeys` routes a request that presents one — as
+`Authorization: Bearer fg_…` or `X-Flakegraph-Api-Key` — to the console's API
+paths past the gate, on a Traefik route that first strips every identity
+header the gate would have set. A key holder is therefore a machine and never
+a person: the console refuses a key it does not hold, and with
+`controlPlane.auth.required` refuses any caller that is neither a key holder
+nor someone the gate signed in. Browser traffic carries no such header and
+meets the gate as before.
+
 ```bash
 # A machine path answers its own key check rather than a sign-in redirect.
 curl -so /dev/null -w '%{http_code}\n' "https://llm.$DOMAIN/v1/models"
+
+# The console's API with a console key: served, as a machine. Without one, the gate.
+curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $FLAKEGRAPH_API_KEY" \
+  "https://flakegraph.$DOMAIN/api/trpc/auth.session?batch=1&input=%7B%220%22%3A%7B%22json%22%3Anull%7D%7D"
 
 # Everything else meets the gate: this must not return the application.
 curl -sI "https://llm.$DOMAIN/ui" | grep -i '^location:'

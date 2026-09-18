@@ -2,8 +2,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { appEnv } from "@/server/env";
+import { authorizeRequest, refusal } from "@/server/auth";
 
 export async function POST(request: Request) {
+  try {
+    await authorizeRequest(request.headers);
+  } catch (error) {
+    return refusal(error) ?? Promise.reject(error);
+  }
   const form = await request.formData();
   const files = form.getAll("files").filter((value): value is File => value instanceof File);
   if (files.length === 0) {

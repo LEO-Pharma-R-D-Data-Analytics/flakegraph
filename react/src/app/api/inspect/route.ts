@@ -4,7 +4,7 @@ import { loadWorkspace } from "@/server/workspace";
 import { qualityForGraph } from "@/server/quality";
 import { inspectFromDataset, inspectHtml } from "@/server/inspect-report";
 import { Effect } from "effect";
-import { unidentifiedViewer } from "@/server/identity";
+import { authorizeRequest, refusal } from "@/server/auth";
 import { readRunRecord, runDirectory, runRecordExists } from "@/server/catalog";
 import type { RuntimeMode } from "@/server/protocol/schema";
 
@@ -14,7 +14,12 @@ export async function GET(request: Request) {
     return new Response("Missing run", { status: 400 });
   }
   const workspace = await loadWorkspace(appEnv().stateRoot);
-  const viewer = workspace.identity ?? unidentifiedViewer();
+  let viewer;
+  try {
+    viewer = (await authorizeRequest(request.headers, workspace)).viewer;
+  } catch (error) {
+    return refusal(error) ?? Promise.reject(error);
+  }
   // The run's own record says which runtime holds it; a run the console has
   // no record of is tried on each runtime in turn.
   const record = runRecordExists(runDirectory(appEnv().stateRoot, runId))

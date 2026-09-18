@@ -763,6 +763,17 @@ ingress:
       limits:
         cpu: 500m
         memory: 256Mi
+    # Programs holding one of the console's own API keys (its SDK keys page)
+    # reach its API without a browser sign-in. A request that presents such a
+    # key - `Authorization: Bearer fg_...` or `X-Flakegraph-Api-Key` - is
+    # routed to the console past the gate, with every identity header the gate
+    # would have set stripped first, so a key holder is a machine and never a
+    # person; the console then refuses any key it does not hold, and, with
+    # `controlPlane.auth.required`, any caller that is neither a key holder
+    # nor someone the gate signed in. Browser traffic carries no such header
+    # and meets the gate as before.
+    machineKeys:
+      enabled: true
   tls:
     # A Secret of type kubernetes.io/tls holding the chain and key. Empty serves
     # plain HTTP, which no identity provider will accept a redirect to.

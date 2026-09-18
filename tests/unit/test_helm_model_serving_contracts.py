@@ -1360,3 +1360,59 @@ def test_the_front_door_compresses_what_it_sends_the_browser() -> None:
         if doc["kind"] == "Middleware" and doc["metadata"]["name"].endswith("-compress")
     ]
     assert "annotations" not in _one(edge_compresses, "Ingress", _FULLNAME)["metadata"]
+
+
+def test_a_machine_with_a_console_key_reaches_the_api_past_the_gate_as_nobody() -> None:
+    """A key holder skips the sign-in, loses every identity header, and hits the console.
+
+    The route matches only requests presenting one of the console's keys, on
+    the console's host and API paths, ahead of the gated catch-all; the
+    middleware chain strips what the gate would have vouched for, then
+    compresses like the gated path does.
+    """
+
+    rendered = _render(
+        (
+            "ingress.enabled=true",
+            "ingress.domain=example.test",
+            "ingress.authProxy.enabled=true",
+            "controlPlane.networkPolicy.enabled=true",
+            "ingress.tls.secretName=wildcard-tls",
+        )
+    )
+    route = _one(rendered, "IngressRoute", f"{_FULLNAME}-machine-api")
+    (rule,) = route["spec"]["routes"]
+    assert "Host(`flakegraph.example.test`)" in rule["match"]
+    assert "PathPrefix(`/api/`)" in rule["match"]
+    assert "HeaderRegexp(`Authorization`, `^Bearer fg_`)" in rule["match"]
+    assert "HeaderRegexp(`X-Flakegraph-Api-Key`, `^fg_`)" in rule["match"]
+    assert rule["priority"] > 0
+    assert [item["name"] for item in rule["middlewares"]] == [
+        f"{_FULLNAME}-machine-headers",
+        f"{_FULLNAME}-compress",
+    ]
+    assert rule["services"] == [{"name": f"{_FULLNAME}-app", "port": 3000}]
+    assert route["spec"]["tls"] == {"secretName": "wildcard-tls"}
+    stripped = _one(rendered, "Middleware", f"{_FULLNAME}-machine-headers")["spec"]["headers"][
+        "customRequestHeaders"
+    ]
+    assert set(stripped) >= {
+        "X-Auth-Request-User",
+        "X-Auth-Request-Email",
+        "X-Auth-Request-Preferred-Username",
+        "X-Forwarded-Email",
+        "X-Forwarded-User",
+    }
+    assert all(value == "" for value in stripped.values())
+
+    without = _render(
+        (
+            "ingress.enabled=true",
+            "ingress.domain=example.test",
+            "ingress.authProxy.enabled=true",
+            "controlPlane.networkPolicy.enabled=true",
+            "ingress.authProxy.machineKeys.enabled=false",
+        )
+    )
+    assert not [doc for doc in without if doc["kind"] == "IngressRoute"]
+    assert not [doc for doc in _render(()) if doc["kind"] == "IngressRoute"]
