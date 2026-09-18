@@ -64,7 +64,7 @@ from kg_processor.config.provider_registry import (
     provider_kinds,
 )
 from kg_processor.config.settings import Settings
-from kg_processor.domain.distributed import ArtifactKind, TaskStage, TaskStatus
+from kg_processor.domain.distributed import ArtifactKind, RevisionRequest, TaskStage, TaskStatus
 from kg_processor.domain.finalization import GraphDatasetManifest
 from kg_processor.domain.graph import GraphWriteBatch
 from kg_processor.domain.jobs import JobFileClaim, JobFileResult
@@ -336,6 +336,49 @@ def distributed_submit(
         store,
         store,
     ).submit(run_id)
+    _echo_json(snapshot.model_dump(mode="json"))
+
+
+@distributed_app.command("revise")
+def distributed_revise(
+    base_run: Annotated[str, typer.Option("--base-run", help="A succeeded run of the graph.")],
+    config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
+    run_id: Annotated[str | None, typer.Option("--run-id")] = None,
+    drop_file: Annotated[
+        list[str] | None,
+        typer.Option("--drop-file", help="A document id to leave out; repeatable."),
+    ] = None,
+    add_documents: Annotated[
+        bool,
+        typer.Option(
+            "--add-documents/--no-add-documents",
+            help="Discover the configured source and add what the graph lacks.",
+        ),
+    ] = True,
+) -> None:
+    """Submit a new version of a graph: the base run's documents, minus drops, plus new ones.
+
+    Kept documents are read from the base run's stage outputs, so the workers
+    extract only what is added; the finalizer rebuilds the graph from both and
+    the graph's head moves to the new version once it succeeds.
+    """
+
+    settings = Settings.load(config)
+    store = build_distributed_store(settings)
+    store.initialize()
+    try:
+        snapshot = DistributedRunPlanner(
+            settings,
+            build_file_source(settings) if add_documents else None,
+            store,
+            store,
+        ).submit(
+            run_id,
+            RevisionRequest(base_run_id=base_run, drop_file_ids=list(drop_file or [])),
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
     _echo_json(snapshot.model_dump(mode="json"))
 
 

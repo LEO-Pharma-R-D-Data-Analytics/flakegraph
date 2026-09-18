@@ -23,13 +23,16 @@ from kg_processor.application.distributed_worker import DistributedWorker
 from kg_processor.config.settings import Settings
 from kg_processor.domain.distributed import (
     ArtifactKind,
+    RevisionRequest,
     RunDefinition,
+    RunSnapshot,
     RunStatus,
     TaskDefinition,
     TaskProgress,
     TaskStage,
     TaskStatus,
 )
+from kg_processor.domain.graph import GraphWriteBatch
 from kg_processor.factories import build_pipeline
 
 _POSTGRES_DSN = os.getenv("KG_TEST_POSTGRES_DSN")
@@ -1042,26 +1045,10 @@ def test_graph_manifest_and_active_version_publish_in_one_transaction(
     assert store.get(artifact.id).payload == payload
 
 
-def test_multiple_workers_drain_dynamic_pipeline_end_to_end(
-    isolated_postgres_dsn: str,
-    tmp_path: Path,
-) -> None:
-    """Workers should pull all discovered windows and publish one complete graph."""
+def _corpus_settings(dsn: str, tmp_path: Path, input_path: Path) -> Settings:
+    """Settings for a small end-to-end corpus run against the live store."""
 
-    input_path = tmp_path / "input"
-    input_path.mkdir()
-    for index in range(4):
-        (input_path / f"source-{index}.txt").write_text(
-            " ".join(
-                [
-                    f"Teacher {index} founded School {index} in City {index}.",
-                    f"School {index} teaches Method {index} to Student {index}.",
-                ]
-                * 8
-            ),
-            encoding="utf-8",
-        )
-    settings = Settings.load(
+    return Settings.load(
         env={},
         overrides={
             "runtime": {"runtime": "kubernetes"},
@@ -1084,19 +1071,33 @@ def test_multiple_workers_drain_dynamic_pipeline_end_to_end(
             },
             "cache": {"provider": "none"},
             "distributed": {
-                "database_url": isolated_postgres_dsn,
+                "database_url": dsn,
                 "poll_interval_seconds": 0.01,
             },
         },
     )
-    store = _store(isolated_postgres_dsn)
-    run_id = f"run_{uuid4().hex}"
-    DistributedRunPlanner(
-        settings,
-        LocalFileSource(input_path),
-        store,
-        store,
-    ).submit(run_id)
+
+
+def _write_source(input_path: Path, index: int) -> Path:
+    """Write one small document whose sentences name index-specific entities."""
+
+    path = input_path / f"source-{index}.txt"
+    path.write_text(
+        " ".join(
+            [
+                f"Teacher {index} founded School {index} in City {index}.",
+                f"School {index} teaches Method {index} to Student {index}.",
+            ]
+            * 8
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _drain(store: PostgresDistributedStore, settings: Settings, run_id: str) -> RunSnapshot:
+    """Run six workers over every stage until the run reaches a terminal state."""
+
     workers = [
         DistributedWorker(
             settings,
@@ -1108,18 +1109,54 @@ def test_multiple_workers_drain_dynamic_pipeline_end_to_end(
         )
         for index in range(6)
     ]
-
     for _iteration in range(100):
         with ThreadPoolExecutor(max_workers=len(workers)) as executor:
             list(executor.map(lambda worker: worker.process_one(), workers))
         snapshot = store.get_run(run_id)
         if snapshot.run.status == RunStatus.SUCCEEDED:
-            break
-        assert snapshot.run.status != RunStatus.FAILED
-    else:
-        pytest.fail("distributed workers did not drain the queue within 100 iterations")
+            return snapshot
+        assert snapshot.run.status != RunStatus.FAILED, snapshot.run
+    pytest.fail("distributed workers did not drain the queue within 100 iterations")
 
-    snapshot = store.get_run(run_id)
+
+def _graph_of(store: PostgresDistributedStore, snapshot: RunSnapshot) -> GraphWriteBatch:
+    """The graph a finished run published."""
+
+    (final,) = [task for task in snapshot.tasks if task.task.stage == TaskStage.FINALIZE_GRAPH]
+    (artifact_id,) = final.output_artifact_ids
+    return GraphWriteBatch.model_validate_json(store.get(artifact_id).payload)
+
+
+def _document_names(graph: GraphWriteBatch) -> set[str]:
+    """The source files a published graph says it was built from."""
+
+    return {
+        Path(str(document.get("source_uri") or document.get("id"))).name
+        for document in graph.documents
+    }
+
+
+def test_multiple_workers_drain_dynamic_pipeline_end_to_end(
+    isolated_postgres_dsn: str,
+    tmp_path: Path,
+) -> None:
+    """Workers should pull all discovered windows and publish one complete graph."""
+
+    input_path = tmp_path / "input"
+    input_path.mkdir()
+    for index in range(4):
+        _write_source(input_path, index)
+    settings = _corpus_settings(isolated_postgres_dsn, tmp_path, input_path)
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    DistributedRunPlanner(
+        settings,
+        LocalFileSource(input_path),
+        store,
+        store,
+    ).submit(run_id)
+
+    snapshot = _drain(store, settings, run_id)
     preparation_tasks = [
         task for task in snapshot.tasks if task.task.stage == TaskStage.PREPARE_DOCUMENT
     ]
@@ -1151,6 +1188,93 @@ def test_multiple_workers_drain_dynamic_pipeline_end_to_end(
     graph = store.get(final_tasks[0].output_artifact_ids[0])
     assert graph.ref.kind == ArtifactKind.GRAPH_RESULT
     assert (tmp_path / "output" / "run_report.json").is_file()
+
+
+def test_a_revision_keeps_drops_and_adds_documents_without_re_extracting_kept_ones(
+    isolated_postgres_dsn: str,
+    tmp_path: Path,
+) -> None:
+    """A second run of a graph is built from kept outputs plus what it adds.
+
+    The base graph has documents 0 and 1. The revision drops 1, is offered 0
+    again (already held: skipped) and 2 (new), so its workers prepare and
+    extract only document 2, and the graph it publishes names the entities of
+    0 and 2 but none of 1. The head moves to the revision; the base version
+    stays readable.
+    """
+
+    base_input = tmp_path / "base"
+    base_input.mkdir()
+    for index in (0, 1):
+        _write_source(base_input, index)
+    settings = _corpus_settings(isolated_postgres_dsn, tmp_path, base_input)
+    store = _store(isolated_postgres_dsn)
+    base_run_id = f"run_{uuid4().hex}"
+    DistributedRunPlanner(settings, LocalFileSource(base_input), store, store).submit(base_run_id)
+    base = _drain(store, settings, base_run_id)
+    assert _document_names(_graph_of(store, base)) == {"source-0.txt", "source-1.txt"}
+    dropped_file_id = next(
+        task.task.scope_id
+        for task in base.tasks
+        if task.task.stage == TaskStage.PREPARE_DOCUMENT
+        and "source-1" in str(store.get(task.task.payload["source_artifact_id"]).ref.metadata)
+    )
+
+    revision_input = tmp_path / "revision"
+    revision_input.mkdir()
+    _write_source(revision_input, 0)
+    _write_source(revision_input, 2)
+    revision_run_id = f"run_{uuid4().hex}"
+    summary = DistributedRunPlanner(
+        settings,
+        LocalFileSource(revision_input),
+        store,
+        store,
+    ).submit(
+        revision_run_id, RevisionRequest(base_run_id=base_run_id, drop_file_ids=[dropped_file_id])
+    )
+    prepared = [item for item in summary.task_counts if item.stage == TaskStage.PREPARE_DOCUMENT]
+    assert sum(item.count for item in prepared) == 1
+    (finalizer,) = store.get_stage_tasks(revision_run_id, TaskStage.FINALIZE_GRAPH)
+    assert finalizer.task.payload["inherit"] == [
+        {
+            "run_id": base_run_id,
+            "file_ids": sorted(
+                task.task.scope_id
+                for task in base.tasks
+                if task.task.stage == TaskStage.PREPARE_DOCUMENT
+                and task.task.scope_id != dropped_file_id
+            ),
+        }
+    ]
+
+    revised = _drain(store, settings, revision_run_id)
+    revised_graph = _graph_of(store, revised)
+    assert _document_names(revised_graph) == {"source-0.txt", "source-2.txt"}
+    assert revised_graph.nodes and revised_graph.evidence
+    assert len([t for t in revised.tasks if t.task.stage == TaskStage.PREPARE_DOCUMENT]) == 1
+    with psycopg.connect(isolated_postgres_dsn, row_factory=dict_row) as connection:
+        head = connection.execute(
+            """
+            SELECT version.run_id
+            FROM flakegraph_graph_head AS head
+            JOIN flakegraph_graph_version AS version ON version.id = head.version_id
+            WHERE head.graph_id = %s
+            """,
+            (settings.job.graph_id,),
+        ).fetchone()
+        versions = connection.execute(
+            "SELECT run_id FROM flakegraph_graph_version WHERE graph_id = %s ORDER BY created_at",
+            (settings.job.graph_id,),
+        ).fetchall()
+    assert head == {"run_id": revision_run_id}
+    assert [row["run_id"] for row in versions] == [base_run_id, revision_run_id]
+
+    # Offering only what the revised graph already holds changes nothing.
+    with pytest.raises(ValueError, match="would not change; the 2 offered are already in it"):
+        DistributedRunPlanner(settings, LocalFileSource(revision_input), store, store).submit(
+            f"run_{uuid4().hex}", RevisionRequest(base_run_id=revision_run_id)
+        )
 
 
 def _worker_demand(dsn: str) -> dict[str, int]:

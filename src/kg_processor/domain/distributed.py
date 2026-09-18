@@ -91,6 +91,40 @@ class RunDefinition(BaseModel):
         return value
 
 
+class InheritedDocuments(BaseModel):
+    """Documents a run keeps from an earlier run of the same graph.
+
+    A revision re-extracts only what it adds; everything it keeps is read from
+    the stage outputs the earlier run already produced, so the finalizer builds
+    the graph from both. Entries name concrete runs: a revision of a revision
+    inherits from each original run directly rather than through a chain.
+    """
+
+    run_id: str
+    file_ids: list[str] = Field(min_length=1)
+
+    @field_validator("run_id")
+    @classmethod
+    def run_id_must_not_be_blank(cls, value: str) -> str:
+        """Refuse an inheritance that names no run."""
+
+        if not value.strip():
+            raise ValueError("inherited documents must name their run")
+        return value
+
+
+class RevisionRequest(BaseModel):
+    """Ask for a new run of a graph that keeps an earlier run's documents.
+
+    ``drop_file_ids`` are removed from what is kept; whatever the file source
+    discovers is added, with a document whose bytes the graph already holds
+    skipped and one whose identity it holds replaced.
+    """
+
+    base_run_id: str
+    drop_file_ids: list[str] = Field(default_factory=list)
+
+
 class TaskDefinition(BaseModel):
     """Describe one idempotent stage invocation and its dependency barrier."""
 

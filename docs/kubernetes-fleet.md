@@ -723,6 +723,30 @@ was upgraded past the run. `QUEUED_WORK_NOT_ADVANCING` means queued work has
 not been claimed for at least 60 seconds; inspect pod readiness and confirm that
 an eligible worker advertises the run digest.
 
+### Revising a graph
+
+A graph is edited by running it again, not by rewriting what a run produced.
+`distributed revise` submits a new run of the same graph that keeps a finished
+run's documents, leaves out the ones named by `--drop-file`, and adds whatever
+the configured source holds that the graph does not yet:
+
+```bash
+uv run flakegraph distributed revise \
+  --base-run <run-id> \
+  --drop-file <file-id> \
+  --config configs/revision.yaml
+```
+
+The workers prepare and extract only the added documents. The kept ones are
+read from the base run's stage outputs where they already are - nothing is
+copied - and the finalizer rebuilds the graph from both, so entity resolution
+and communities see every document together. A source file whose bytes the
+graph already holds, under any name, is skipped; one whose identity it holds
+with other bytes replaces the older version. A revision that would add nothing
+and drop nothing is refused. Once it succeeds the graph's head moves to the new
+version and the earlier version stays readable by its run id. `--no-add-documents`
+revises without a source, for a run that only removes.
+
 After completion:
 
 ```bash
@@ -963,7 +987,8 @@ and until one exists the alerts are visible on the overview dashboard.
 - `kubectl get scaledobject,hpa -n flakegraph` shows worker demand and capacity.
 - `distributed cancel` stops unfinished work without deleting successful artifacts.
 - `distributed retry --run-id <run-id>` requeues terminally failed tasks after
-  the underlying provider, configuration, or storage issue is corrected.
+  the underlying provider, configuration, or storage issue is corrected, and
+  resumes a cancelled run where it stopped.
 - Worker and executor loss is recovered through task leases or Spark partition
   recomputation; incomplete finalization never publishes a graph version.
 - Set pod termination grace longer than the task lease when graceful completion

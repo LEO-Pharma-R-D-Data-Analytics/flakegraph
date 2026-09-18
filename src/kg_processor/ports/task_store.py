@@ -15,6 +15,7 @@ from kg_processor.domain.distributed import (
     TaskDefinition,
     TaskLease,
     TaskProgress,
+    TaskSnapshot,
     TaskStage,
 )
 
@@ -127,6 +128,14 @@ class TaskStore(Protocol):
 
     def get_run(self, run_id: str) -> RunSnapshot:
         """Return one consistent run and task snapshot or raise when unknown."""
+        ...
+
+    def get_stage_tasks(self, run_id: str, stage: TaskStage) -> list[TaskSnapshot]:
+        """Return one stage's tasks of a run, or raise when the run is unknown.
+
+        A planner reading a run's finalizer must not load the run's every task
+        to find it.
+        """
         ...
 
     def get_run_summary(self, run_id: str) -> RunSummary:

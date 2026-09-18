@@ -64,6 +64,42 @@ _TASK_COUNT_SELECT = """
     (jsonb_agg(progress_json ORDER BY progress_updated_at DESC)
         FILTER (WHERE progress_json IS NOT NULL))->0 AS progress_json
 """
+# An artifact a succeeded task handed to ``complete_task``; the status is bound
+# by the caller. See ``get_run_artifact_ids`` for why linkage matters.
+_LINKED_ARTIFACT_CONDITION = """
+    EXISTS (
+        SELECT 1
+        FROM flakegraph_task_output AS output
+        JOIN flakegraph_task AS task ON task.id = output.task_id
+        WHERE output.artifact_id = artifact.id
+          AND task.run_id = artifact.run_id
+          AND task.status = %s
+    )
+"""
+# A task row with its linked outputs and dependency edges, as a snapshot needs.
+_TASK_SNAPSHOT_SELECT = """
+    SELECT task.*,
+           COALESCE(
+               (
+                   SELECT jsonb_agg(output.artifact_id ORDER BY output.position)
+                   FROM flakegraph_task_output AS output
+                   WHERE output.task_id = task.id
+               ),
+               '[]'::jsonb
+           ) AS output_artifact_ids,
+           COALESCE(
+               (
+                   SELECT jsonb_agg(
+                       dependency.depends_on_task_id
+                       ORDER BY dependency.depends_on_task_id
+                   )
+                   FROM flakegraph_task_dependency AS dependency
+                   WHERE dependency.task_id = task.id
+               ),
+               '[]'::jsonb
+           ) AS dependency_ids
+    FROM flakegraph_task AS task
+"""
 _SCHEMA_VERSION = 9
 _EXHAUSTED_TASK_RECOVERY_GRACE_SECONDS = 300
 _POSTGRES_SESSION_OPTIONS = " ".join(
@@ -1485,50 +1521,10 @@ class PostgresDistributedStore:
             if run is None:
                 raise KeyError(f"unknown distributed run: {run_id}")
             rows = connection.execute(
-                """
-                SELECT task.*,
-                       COALESCE(
-                           (
-                               SELECT jsonb_agg(output.artifact_id ORDER BY output.position)
-                               FROM flakegraph_task_output AS output
-                               WHERE output.task_id = task.id
-                           ),
-                           '[]'::jsonb
-                       ) AS output_artifact_ids,
-                       COALESCE(
-                           (
-                               SELECT jsonb_agg(
-                                   dependency.depends_on_task_id
-                                   ORDER BY dependency.depends_on_task_id
-                               )
-                               FROM flakegraph_task_dependency AS dependency
-                               WHERE dependency.task_id = task.id
-                           ),
-                           '[]'::jsonb
-                       ) AS dependency_ids
-                FROM flakegraph_task AS task
-                WHERE task.run_id = %s
-                ORDER BY task.created_at, task.id
-                """,
+                f"{_TASK_SNAPSHOT_SELECT} WHERE task.run_id = %s ORDER BY task.created_at, task.id",
                 (run_id,),
             ).fetchall()
-            tasks = [
-                TaskSnapshot(
-                    task=_task_definition(row, row["dependency_ids"]),
-                    status=TaskStatus(str(row["status"])),
-                    attempts=int(row["attempts"]),
-                    lease_owner=cast(str | None, row["lease_owner"]),
-                    lease_expires_at=row["lease_expires_at"],
-                    output_artifact_ids=list(row["output_artifact_ids"]),
-                    last_error=cast(dict[str, Any] | None, row["last_error_json"]),
-                    progress=(
-                        TaskProgress.model_validate(row["progress_json"])
-                        if row["progress_json"]
-                        else None
-                    ),
-                )
-                for row in rows
-            ]
+            tasks = [_task_snapshot(row) for row in rows]
             effective_updated_at = max(
                 [run["updated_at"], *(row["updated_at"] for row in rows)],
             )
@@ -1538,6 +1534,23 @@ class PostgresDistributedStore:
                 created_at=run["created_at"],
                 updated_at=effective_updated_at,
             )
+
+    def get_stage_tasks(self, run_id: str, stage: TaskStage) -> list[TaskSnapshot]:
+        """Read one stage's tasks without materializing the rest of the run."""
+
+        with self._connection() as connection:
+            run = connection.execute(
+                "SELECT id FROM flakegraph_run WHERE id = %s",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"unknown distributed run: {run_id}")
+            rows = connection.execute(
+                f"{_TASK_SNAPSHOT_SELECT} WHERE task.run_id = %s AND task.stage = %s "
+                "ORDER BY task.created_at, task.id",
+                (run_id, stage.value),
+            ).fetchall()
+            return [_task_snapshot(row) for row in rows]
 
     def get_run_summary(self, run_id: str) -> RunSummary:
         """Read constant-size stage progress for operator-facing commands.
@@ -1793,6 +1806,38 @@ class PostgresDistributedStore:
 
         return self.get_many(self.get_run_artifact_ids(run_id, kinds))
 
+    def list_run_artifacts(
+        self,
+        run_id: str,
+        kinds: set[ArtifactKind],
+        *,
+        linked: bool = True,
+    ) -> list[ArtifactRef]:
+        """Return the references of a run's artifacts, payloads left behind."""
+
+        if not kinds:
+            return []
+        condition = f"AND {_LINKED_ARTIFACT_CONDITION}" if linked else ""
+        parameters: tuple[object, ...] = (
+            run_id,
+            [kind.value for kind in sorted(kinds, key=str)],
+            *((TaskStatus.SUCCEEDED.value,) if linked else ()),
+        )
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT artifact.id, artifact.run_id, artifact.kind, artifact.media_type,
+                       artifact.checksum, artifact.size_bytes, artifact.storage_uri,
+                       artifact.metadata_json
+                FROM flakegraph_artifact AS artifact
+                WHERE artifact.run_id = %s AND artifact.kind = ANY(%s)
+                  {condition}
+                ORDER BY artifact.created_at, artifact.id
+                """,
+                parameters,
+            ).fetchall()
+        return [_artifact_ref(row) for row in rows]
+
     def get_run_artifact_ids(
         self,
         run_id: str,
@@ -1811,18 +1856,11 @@ class PostgresDistributedStore:
             return []
         with self._connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT artifact.id
                 FROM flakegraph_artifact AS artifact
                 WHERE artifact.run_id = %s AND artifact.kind = ANY(%s)
-                  AND EXISTS (
-                      SELECT 1
-                      FROM flakegraph_task_output AS output
-                      JOIN flakegraph_task AS task ON task.id = output.task_id
-                      WHERE output.artifact_id = artifact.id
-                        AND task.run_id = artifact.run_id
-                        AND task.status = %s
-                  )
+                  AND {_LINKED_ARTIFACT_CONDITION}
                 ORDER BY artifact.created_at, artifact.id
                 """,
                 (
@@ -1963,6 +2001,23 @@ class PostgresDistributedStore:
             if row["artifact_id"] is not None:
                 outputs[dependency_id].append(str(row["artifact_id"]))
         return outputs
+
+
+def _task_snapshot(row: dict[str, Any]) -> TaskSnapshot:
+    """Convert one ``_TASK_SNAPSHOT_SELECT`` row into a task and its state."""
+
+    return TaskSnapshot(
+        task=_task_definition(row, row["dependency_ids"]),
+        status=TaskStatus(str(row["status"])),
+        attempts=int(row["attempts"]),
+        lease_owner=cast(str | None, row["lease_owner"]),
+        lease_expires_at=row["lease_expires_at"],
+        output_artifact_ids=list(row["output_artifact_ids"]),
+        last_error=cast(dict[str, Any] | None, row["last_error_json"]),
+        progress=(
+            TaskProgress.model_validate(row["progress_json"]) if row["progress_json"] else None
+        ),
+    )
 
 
 def _task_definition(

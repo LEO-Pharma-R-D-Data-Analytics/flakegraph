@@ -20,7 +20,10 @@ from kg_processor.config.settings import Settings
 from kg_processor.domain.distributed import (
     ArtifactKind,
     ArtifactRef,
+    InheritedDocuments,
+    RevisionRequest,
     RunDefinition,
+    RunStatus,
     RunSummary,
     TaskDefinition,
     TaskStage,
@@ -52,30 +55,54 @@ class DistributedRunPlanner:
     def __init__(
         self,
         settings: Settings,
-        file_source: FileSource,
+        file_source: FileSource | None,
         task_store: TaskStore,
         artifact_store: ArtifactStore,
     ) -> None:
-        """Retain explicit ports so planning is testable without PostgreSQL or filesystems."""
+        """Retain explicit ports so planning is testable without PostgreSQL or filesystems.
+
+        A revision that only removes documents has no source to discover, so the
+        file source is optional there; a run that adds nothing and keeps nothing
+        is refused at submit.
+        """
 
         self.settings = settings
         self.file_source = file_source
         self.task_store = task_store
         self.artifact_store = artifact_store
 
-    def submit(self, run_id: str | None = None) -> RunSummary:
+    def submit(
+        self,
+        run_id: str | None = None,
+        revision: RevisionRequest | None = None,
+    ) -> RunSummary:
         """Create, populate, and atomically activate one distributed graph run.
 
         Planning failures cancel the partially-created run. Source artifacts remain
         available for diagnosis until an operator deliberately removes terminal-run
         artifacts; workers can never see tasks until the complete DAG is activated.
+
+        With a ``revision`` the run is a new version of the base run's graph: it
+        keeps the base's documents minus the dropped ones by reading their stage
+        outputs, and processes only what its source adds.
         """
 
+        plan = self._plan_revision(revision) if revision is not None else None
         files = self._iter_input_files()
+        if plan is not None:
+            files = plan.without_known(files)
         first_file = next(files, None)
-        if first_file is None:
+        if first_file is None and plan is None:
             raise ValueError("distributed run source did not contain any supported files")
-        validated_files = _iter_unique_file_ids(chain((first_file,), files))
+        if first_file is None and plan is not None and not plan.changes_anything():
+            held = f"; the {len(plan.skipped)} offered are already in it" if plan.skipped else ""
+            raise ValueError(
+                "revision adds no new documents and drops none, "
+                f"so the graph would not change{held}"
+            )
+        validated_files = _iter_unique_file_ids(
+            chain((first_file,), files) if first_file is not None else files
+        )
         effective_run_id = run_id or f"run_{uuid4().hex}"
         snapshot = distributed_processing_config(self.settings)
         definition = RunDefinition(
@@ -100,7 +127,7 @@ class DistributedRunPlanner:
                 return existing
         self.task_store.create_run(definition)
         try:
-            tasks = self._iter_initial_tasks(effective_run_id, validated_files)
+            tasks = self._iter_initial_tasks(effective_run_id, validated_files, plan)
             self.task_store.add_initial_tasks(effective_run_id, tasks)
             self.task_store.activate_run(effective_run_id)
         except Exception:
@@ -118,10 +145,68 @@ class DistributedRunPlanner:
         # than serializing every task immediately after inserting a large plan.
         return self.task_store.get_run_summary(effective_run_id)
 
+    def _plan_revision(self, revision: RevisionRequest) -> _RevisionPlan:
+        """Work out what a revision keeps from its base, and what it must not re-add.
+
+        Only a succeeded run of this graph can be revised: its documents are the
+        ones whose stage outputs exist. Their identities and byte checksums let
+        the source's files be told apart into new, already held, and replaced.
+        """
+
+        try:
+            base = self.task_store.get_run_summary(revision.base_run_id)
+        except KeyError as exc:
+            raise ValueError(f"unknown base run: {revision.base_run_id}") from exc
+        if base.run.status != RunStatus.SUCCEEDED:
+            raise ValueError(
+                f"only a succeeded run can be revised; {revision.base_run_id} is "
+                f"{base.run.status.value}"
+            )
+        if base.run.graph_id != self.settings.job.graph_id:
+            raise ValueError(
+                f"base run {revision.base_run_id} built graph {base.run.graph_id}, "
+                f"not {self.settings.job.graph_id}"
+            )
+        kept: dict[str, set[str]] = {}
+        own = {
+            file_id
+            for ref in self.artifact_store.list_run_artifacts(
+                revision.base_run_id, {ArtifactKind.EXTRACTED_DOCUMENT}
+            )
+            for file_id in _file_ids_of(ref)
+        }
+        if own:
+            kept[revision.base_run_id] = own
+        for finalizer in self.task_store.get_stage_tasks(
+            revision.base_run_id, TaskStage.FINALIZE_GRAPH
+        ):
+            for entry in _inherited_documents(finalizer.task.payload):
+                kept.setdefault(entry.run_id, set()).update(entry.file_ids)
+        held = {file_id for file_ids in kept.values() for file_id in file_ids}
+        unknown = sorted(set(revision.drop_file_ids) - held)
+        if unknown:
+            raise ValueError(f"documents to drop are not in the graph: {', '.join(unknown)}")
+        for file_ids in kept.values():
+            file_ids.difference_update(revision.drop_file_ids)
+        checksums: dict[str, str] = {}
+        for source_run_id, file_ids in kept.items():
+            for ref in self.artifact_store.list_run_artifacts(
+                source_run_id, {ArtifactKind.SOURCE_DOCUMENT}, linked=False
+            ):
+                input_file = ref.metadata.get("input_file")
+                if not isinstance(input_file, dict):
+                    continue
+                file_id = str(input_file.get("id", ""))
+                checksum = str(input_file.get("checksum", ""))
+                if file_id in file_ids and checksum:
+                    checksums[checksum] = file_id
+        return _RevisionPlan(kept=kept, checksums=checksums, dropped=set(revision.drop_file_ids))
+
     def _iter_initial_tasks(
         self,
         run_id: str,
         files: Iterable[InputFile],
+        plan: _RevisionPlan | None = None,
     ) -> Iterator[TaskDefinition]:
         """Yield stable tasks from bounded, continuously replenished upload batches.
 
@@ -141,12 +226,18 @@ class DistributedRunPlanner:
                     priority=self.settings.distributed.task_priority(20),
                     max_attempts=self.settings.distributed.max_attempts,
                 )
+        payload = _graph_output_payload(self.settings)
+        # Read after the files streamed past: a file that replaced a kept
+        # document has left the kept set by now.
+        inherited = plan.inherited if plan is not None else []
+        if inherited:
+            payload["inherit"] = [entry.model_dump(mode="json") for entry in inherited]
         yield TaskDefinition(
             id=stable_id("task", run_id, TaskStage.FINALIZE_GRAPH.value),
             run_id=run_id,
             stage=TaskStage.FINALIZE_GRAPH,
             scope_id=self.settings.job.graph_id,
-            payload=_graph_output_payload(self.settings),
+            payload=payload,
             priority=self.settings.distributed.task_priority(0),
             max_attempts=self.settings.distributed.max_attempts,
         )
@@ -154,6 +245,8 @@ class DistributedRunPlanner:
     def _iter_input_files(self) -> Iterator[InputFile]:
         """Use streaming discovery when an adapter provides deterministic iteration."""
 
+        if self.file_source is None:
+            return iter(())
         if isinstance(self.file_source, IterableFileSource):
             return self.file_source.iter_files()
         files = sorted(
@@ -304,6 +397,74 @@ def _source_staging_workers(files: Sequence[InputFile]) -> int:
         _SOURCE_STAGING_MAX_IN_FLIGHT_BYTES // max(largest_file, 1),
     )
     return min(_SOURCE_STAGING_PARALLELISM, len(files), byte_limited_workers)
+
+
+class _RevisionPlan:
+    """What a revision keeps, per concrete run, and how to recognise what it holds."""
+
+    def __init__(
+        self,
+        kept: dict[str, set[str]],
+        checksums: dict[str, str],
+        dropped: set[str],
+    ) -> None:
+        self.kept = kept
+        self.checksums = checksums
+        self.dropped = dropped
+        self.skipped: list[InputFile] = []
+        self.replaced: list[InputFile] = []
+
+    @property
+    def inherited(self) -> list[InheritedDocuments]:
+        """The kept documents as the finalizer reads them, one entry per run."""
+
+        return [
+            InheritedDocuments(run_id=run_id, file_ids=sorted(file_ids))
+            for run_id, file_ids in sorted(self.kept.items())
+            if file_ids
+        ]
+
+    def changes_anything(self) -> bool:
+        """Whether the revision would build a graph different from its base."""
+
+        return bool(self.dropped or self.replaced)
+
+    def without_known(self, files: Iterator[InputFile]) -> Iterator[InputFile]:
+        """Skip files the graph already holds; let one with a held identity replace it.
+
+        Equal bytes under any name are the same document, and re-extracting
+        them would only cost the fleet. A file with a held identity but other
+        bytes is the document updated, so the old version leaves the kept set.
+        """
+
+        for file in files:
+            if file.checksum in self.checksums:
+                self.skipped.append(file)
+                continue
+            replaced = False
+            for file_ids in self.kept.values():
+                if file.id in file_ids:
+                    file_ids.discard(file.id)
+                    replaced = True
+            if replaced:
+                self.replaced.append(file)
+            yield file
+
+
+def _file_ids_of(ref: ArtifactRef) -> list[str]:
+    """The documents a stage artifact covers, from the metadata every stage writes."""
+
+    file_ids = ref.metadata.get("file_ids")
+    return [str(item) for item in file_ids] if isinstance(file_ids, list) else []
+
+
+def _inherited_documents(payload: dict[str, object]) -> list[InheritedDocuments]:
+    """Read a finalizer's inherited documents, absent on a run that inherits none."""
+
+    entries = payload.get("inherit")
+    if not isinstance(entries, list):
+        return []
+    return [InheritedDocuments.model_validate(entry) for entry in entries]
 
 
 def _iter_unique_file_ids(files: Iterable[InputFile]) -> Iterator[InputFile]:

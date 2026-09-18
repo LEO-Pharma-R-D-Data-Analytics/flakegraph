@@ -29,6 +29,7 @@ from kg_processor.domain.distributed import (
     ArtifactKind,
     ArtifactRef,
     PublicationLease,
+    RevisionRequest,
     RunDefinition,
     RunOverview,
     RunSnapshot,
@@ -74,6 +75,8 @@ class MemoryDistributedStore:
         self.progress_updates: list[tuple[str, str, TaskProgress]] = []
         self.served_configurations: dict[TaskStage, str] = {}
         self.initial_task_streams = 0
+        # Finished runs a revision may build on, beside the one being planned.
+        self.earlier_runs: dict[str, tuple[RunDefinition, list[TaskDefinition]]] = {}
 
     def initialize(self) -> None:
         """Satisfy the idempotent setup port for this already-initialized fake."""
@@ -126,22 +129,26 @@ class MemoryDistributedStore:
     def get_run_summary(self, run_id: str) -> RunSummary:
         """Aggregate the fake's task state like the production status query."""
 
-        if self.run is None or self.run.id != run_id:
+        if run_id in self.earlier_runs:
+            run, tasks = self.earlier_runs[run_id]
+        elif self.run is not None and self.run.id == run_id:
+            run, tasks = self.run, self.tasks
+        else:
             raise KeyError(run_id)
         now = datetime.now(UTC)
         counts: dict[tuple[TaskStage, TaskStatus], int] = {}
-        for task in self.tasks:
+        for task in tasks:
             key = (task.stage, TaskStatus.QUEUED)
             counts[key] = counts.get(key, 0) + 1
         return RunSummary(
-            run=self.run,
+            run=run,
             task_counts=[
                 TaskCount(stage=stage, status=status, count=count)
                 for (stage, status), count in sorted(
                     counts.items(), key=lambda item: (item[0][0].value, item[0][1].value)
                 )
             ],
-            total_tasks=len(self.tasks),
+            total_tasks=len(tasks),
             created_at=now,
             updated_at=now,
         )
@@ -198,6 +205,36 @@ class MemoryDistributedStore:
             for artifact in self.artifacts.values()
             if artifact.ref.run_id == run_id and artifact.ref.kind in kinds
         )
+
+    def list_run_artifacts(
+        self,
+        run_id: str,
+        kinds: set[ArtifactKind],
+        *,
+        linked: bool = True,
+    ) -> list[ArtifactRef]:
+        """Return references only; the fake links every artifact it holds."""
+
+        del linked
+        return [
+            self.artifacts[artifact_id].ref
+            for artifact_id in self.get_run_artifact_ids(run_id, kinds)
+        ]
+
+    def get_stage_tasks(self, run_id: str, stage: TaskStage) -> list[TaskSnapshot]:
+        """Return the fake's tasks of one stage as queued snapshots."""
+
+        if run_id in self.earlier_runs:
+            tasks = self.earlier_runs[run_id][1]
+        elif self.run is not None and self.run.id == run_id:
+            tasks = self.tasks
+        else:
+            raise KeyError(run_id)
+        return [
+            TaskSnapshot(task=task, status=TaskStatus.QUEUED, attempts=0)
+            for task in tasks
+            if task.stage == stage
+        ]
 
     def claim_task(
         self,
@@ -520,6 +557,91 @@ def test_planner_preserves_provenance_for_byte_identical_sources(tmp_path: Path)
         "first.txt",
         "second.txt",
     }
+
+
+def test_a_revision_keeps_replaces_skips_and_drops_against_its_base(tmp_path: Path) -> None:
+    """Plan a revision from what the base holds and what the source offers.
+
+    Held bytes under any name are skipped, a held identity with new bytes is
+    replaced, a dropped document leaves the kept set, and the finalizer names
+    the kept documents per run it inherits them from - flattening a base that
+    itself inherited.
+    """
+
+    settings = _settings(tmp_path)
+    store = MemoryDistributedStore()
+    base = RunDefinition(
+        id="base-run",
+        graph_id="test-graph",
+        config={},
+        config_digest="d",
+        status=RunStatus.SUCCEEDED,
+    )
+    store.earlier_runs["base-run"] = (
+        base,
+        [
+            TaskDefinition(
+                id="base-final",
+                run_id="base-run",
+                stage=TaskStage.FINALIZE_GRAPH,
+                scope_id="test-graph",
+                payload={
+                    "output": {"provider": "local_artifacts"},
+                    "inherit": [{"run_id": "older-run", "file_ids": ["older-doc"]}],
+                },
+            )
+        ],
+    )
+    store.earlier_runs["older-run"] = (base.model_copy(update={"id": "older-run"}), [])
+    # The base extracted two documents itself and inherited one from an older run.
+    for run_id, file_id, text in [
+        ("base-run", "kept-doc", "kept text"),
+        ("base-run", "changed-doc", "old text"),
+        ("older-run", "older-doc", "older text"),
+    ]:
+        payload = text.encode()
+        store.put(
+            run_id,
+            ArtifactKind.SOURCE_DOCUMENT,
+            payload,
+            "text/plain",
+            metadata={"input_file": {"id": file_id, "checksum": sha256_hex(payload)}},
+            identity_key=file_id,
+        )
+        store.put(
+            run_id,
+            ArtifactKind.EXTRACTED_DOCUMENT,
+            b"{}",
+            "application/json",
+            metadata={"file_ids": [file_id]},
+            identity_key=file_id,
+        )
+    offered = [
+        _input_file(tmp_path, "again.txt", "kept text", file_id="renamed-copy"),
+        _input_file(tmp_path, "changed.txt", "new text", file_id="changed-doc"),
+        _input_file(tmp_path, "new.txt", "new document", file_id="new-doc"),
+    ]
+
+    DistributedRunPlanner(settings, _StaticFileSource(offered), store, store).submit(
+        "revision-run",
+        RevisionRequest(base_run_id="base-run", drop_file_ids=["older-doc"]),
+    )
+
+    prepare = sorted(t.scope_id for t in store.tasks if t.stage == TaskStage.PREPARE_DOCUMENT)
+    assert prepare == ["changed-doc", "new-doc"]
+    (final,) = [t for t in store.tasks if t.stage == TaskStage.FINALIZE_GRAPH]
+    assert final.payload["inherit"] == [{"run_id": "base-run", "file_ids": ["kept-doc"]}]
+
+    with pytest.raises(ValueError, match="not in the graph: missing-doc"):
+        DistributedRunPlanner(settings, _StaticFileSource([]), store, store).submit(
+            "bad-revision",
+            RevisionRequest(base_run_id="base-run", drop_file_ids=["missing-doc"]),
+        )
+    store.earlier_runs["base-run"] = (base.model_copy(update={"status": RunStatus.FAILED}), [])
+    with pytest.raises(ValueError, match="only a succeeded run can be revised"):
+        DistributedRunPlanner(settings, _StaticFileSource([]), store, store).submit(
+            "bad-revision", RevisionRequest(base_run_id="base-run")
+        )
 
 
 def test_explicit_run_id_submit_is_idempotent_without_cancelling_live_run(
@@ -1185,6 +1307,46 @@ def test_worker_finalizes_all_dependency_shards_in_stable_order(tmp_path: Path) 
     assert store.progress_updates[-1][2].completed == 1
 
 
+def test_a_revision_finalizes_kept_shards_beside_its_own(tmp_path: Path) -> None:
+    """The finalizer reads the documents a revision kept from the runs that made them."""
+
+    settings = _settings(tmp_path)
+    store = _worker_store(settings)
+
+    def shard(run_id: str, file_id: str) -> str:
+        item = ExtractedDocumentShard(
+            prepared=PreparedDocumentShard(file_ids=[file_id], files_seen=1, documents_processed=1),
+            observations=ExtractionObservations(chunk_count=0, window_count=0),
+        )
+        return store.put(
+            run_id,
+            ArtifactKind.EXTRACTED_DOCUMENT,
+            item.model_dump_json().encode(),
+            "application/json",
+            metadata={"file_ids": [file_id]},
+            identity_key=file_id,
+        ).id
+
+    kept = shard("base-run", "kept")
+    shard("base-run", "dropped")
+    own = shard("run-test", "added")
+    task = _task(
+        TaskStage.FINALIZE_GRAPH,
+        payload={
+            "output": {"provider": "local_artifacts"},
+            "inherit": [{"run_id": "base-run", "file_ids": ["kept"]}],
+        },
+    )
+    store.lease = _lease(task, {})
+    pipeline = RecordingPipeline()
+
+    result = _worker(settings, store, pipeline, TaskStage.FINALIZE_GRAPH).process_one()
+
+    assert result.succeeded is True
+    assert pipeline.finalized_file_ids == [["added", "kept"]]
+    assert {kept, own} <= set(store.artifacts)
+
+
 def test_task_progress_rejects_inconsistent_phase_and_inner_counters() -> None:
     """Keep malformed worker progress out of durable operator status payloads."""
 
@@ -1510,15 +1672,31 @@ def _settings(tmp_path: Path) -> Settings:
 
 
 class _StaticFileSource:
-    """Return one preconstructed file record for source-integrity tests."""
+    """Return preconstructed file records for source-integrity and revision tests."""
 
-    def __init__(self, input_file: InputFile) -> None:
-        self.input_file = input_file
+    def __init__(self, input_files: InputFile | list[InputFile]) -> None:
+        self.input_files = input_files if isinstance(input_files, list) else [input_files]
 
     def list_files(self) -> list[InputFile]:
-        """Return the record without recomputing its intentionally stale checksum."""
+        """Return the records without recomputing an intentionally stale checksum."""
 
-        return [self.input_file]
+        return list(self.input_files)
+
+
+def _input_file(directory: Path, name: str, text: str, *, file_id: str) -> InputFile:
+    """Write a small source and describe it the way discovery would."""
+
+    path = directory / name
+    payload = text.encode("utf-8")
+    path.write_bytes(payload)
+    return InputFile(
+        id=file_id,
+        path=path,
+        source_uri=str(path),
+        checksum=sha256_hex(payload),
+        mime_type="text/plain",
+        size_bytes=len(payload),
+    )
 
 
 def _worker_store(settings: Settings) -> MemoryDistributedStore:

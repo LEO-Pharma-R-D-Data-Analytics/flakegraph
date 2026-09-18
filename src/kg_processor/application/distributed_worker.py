@@ -25,6 +25,8 @@ from kg_processor.application.spark_finalization import (
 from kg_processor.config.settings import Settings
 from kg_processor.domain.distributed import (
     ArtifactKind,
+    ArtifactRef,
+    InheritedDocuments,
     PublicationLease,
     StoredArtifact,
     TaskDefinition,
@@ -841,17 +843,16 @@ class DistributedWorker:
         """
 
         report = self._task_progress_reporter(lease)
+        stage_kinds = {ArtifactKind.PREPARED_DOCUMENT, ArtifactKind.EXTRACTED_DOCUMENT}
+        inputs = self.artifact_store.list_run_artifacts(lease.task.run_id, stage_kinds)
+        inputs.extend(self._inherited_artifact_refs(lease, stage_kinds))
         manifest = SparkGraphFinalizer(self.settings, report).finalize(
             SparkFinalizationRequest(
                 run_id=lease.task.run_id,
                 graph_id=lease.task.scope_id,
                 attempt=lease.attempt,
-                artifact_ids=frozenset(
-                    self.artifact_store.get_run_artifact_ids(
-                        lease.task.run_id,
-                        {ArtifactKind.PREPARED_DOCUMENT, ArtifactKind.EXTRACTED_DOCUMENT},
-                    )
-                ),
+                artifact_ids=frozenset(ref.id for ref in inputs),
+                source_run_ids=frozenset(ref.run_id for ref in inputs),
             )
         )
         # Destination publication is queued atomically by ``complete_task`` after
@@ -883,6 +884,8 @@ class DistributedWorker:
             lease.task.run_id,
             {ArtifactKind.EXTRACTED_DOCUMENT},
         )
+        inherited = self._inherited_artifact_refs(lease, {ArtifactKind.EXTRACTED_DOCUMENT})
+        inputs.extend(self.artifact_store.get_many([ref.id for ref in inherited]))
         document_shards = [
             ExtractedDocumentShard.model_validate_json(item.payload) for item in inputs
         ]
@@ -910,6 +913,31 @@ class DistributedWorker:
         )
         report(finalization_progress("persist_manifest", completed=1, total=1))
         return ref.id
+
+    def _inherited_artifact_refs(
+        self,
+        lease: TaskLease,
+        kinds: set[ArtifactKind],
+    ) -> list[ArtifactRef]:
+        """The stage outputs a revision keeps from earlier runs of its graph.
+
+        The finalizer's payload names each run and the documents kept from it;
+        an artifact is kept when every document it covers is. Nothing is copied:
+        the earlier run's objects are read where they are.
+        """
+
+        entries = lease.task.payload.get("inherit")
+        if not isinstance(entries, list) or not entries:
+            return []
+        refs: list[ArtifactRef] = []
+        for raw in entries:
+            entry = InheritedDocuments.model_validate(raw)
+            kept = set(entry.file_ids)
+            for ref in self.artifact_store.list_run_artifacts(entry.run_id, kinds):
+                covered = ref.metadata.get("file_ids")
+                if isinstance(covered, list) and covered and set(map(str, covered)) <= kept:
+                    refs.append(ref)
+        return refs
 
     def _task_progress_reporter(
         self,

@@ -55,3 +55,20 @@ class ArtifactStore(Protocol):
     ) -> list[str]:
         """Return the ids ``get_run_artifacts`` would load, for a reader elsewhere."""
         ...
+
+    def list_run_artifacts(
+        self,
+        run_id: str,
+        kinds: set[ArtifactKind],
+        *,
+        linked: bool = True,
+    ) -> list[ArtifactRef]:
+        """Return the references ``get_run_artifacts`` would load, without payloads.
+
+        A caller choosing artifacts by their metadata - the documents a shard
+        covers - reads the references and loads only what it chose. Stage
+        outputs are read ``linked``, as ``get_run_artifacts`` reads them; the
+        sources a planner staged were nobody's output, so they are read with
+        ``linked=False``.
+        """
+        ...

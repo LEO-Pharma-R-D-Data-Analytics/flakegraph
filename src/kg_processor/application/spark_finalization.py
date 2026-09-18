@@ -17,7 +17,7 @@ import hashlib
 import math
 import os
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import batched
 from threading import Lock
 from time import perf_counter
@@ -277,6 +277,18 @@ class SparkFinalizationRequest:
     graph_id: str
     attempt: int
     artifact_ids: frozenset[str]
+    # The runs whose stage prefixes hold those objects: the run itself, and
+    # any earlier run of the graph a revision keeps documents from. Only runs
+    # with linked objects are listed, because an empty prefix is not a path
+    # Spark will read.
+    source_run_ids: frozenset[str] = field(default_factory=frozenset)
+
+    def stage_run_ids(self) -> list[str]:
+        """The run prefixes to read, the run's own first."""
+
+        others = sorted(self.source_run_ids - {self.run_id})
+        own = [self.run_id] if self.run_id in self.source_run_ids or not others else []
+        return [*own, *others]
 
 
 def _spark_application_name(request: SparkFinalizationRequest) -> str:
@@ -576,8 +588,9 @@ class SparkGraphFinalizer:
         from pyspark.sql import functions as F
 
         root = _spark_uri(self.settings.distributed.artifact_uri or "")
-        prepared_path = f"{root}/{request.run_id}/prepared_document"
-        extracted_path = f"{root}/{request.run_id}/extracted_document"
+        run_ids = request.stage_run_ids()
+        prepared_path = [f"{root}/{run_id}/prepared_document" for run_id in run_ids]
+        extracted_path = [f"{root}/{run_id}/extracted_document" for run_id in run_ids]
         # An object is named by its artifact id plus a media-type suffix, so
         # the id list is a filter on file names: a semi-join against a
         # broadcast of the ids keeps every row of the linked objects and none
