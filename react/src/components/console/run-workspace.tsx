@@ -824,6 +824,7 @@ function ProgressPanel({
   documents: DocumentStatus[];
   onSkip: (fileId: string) => void;
 }) {
+  const kept = documents.filter((item) => item.phase === "inherited").length;
   return (
     <Card>
       <CardHeader>
@@ -834,6 +835,7 @@ function ProgressPanel({
         <p className="text-sm text-muted-foreground">
           Documents {documentsCompleted}
           {documentsTotal != null ? ` / ${documentsTotal}` : ""}
+          {kept > 0 ? ` · ${kept} kept from earlier versions` : ""}
           {estimate ? ` · cost so far in band ${estimate.usdLow}–${estimate.usdHigh} usd · split deserved GPU hours from idle after the run` : ""}
         </p>
         {stages.map((stage) => {

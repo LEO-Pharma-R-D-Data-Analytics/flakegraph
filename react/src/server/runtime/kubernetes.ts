@@ -384,11 +384,18 @@ export class KubernetesRuntime implements ControlPlane {
         // A revision's kept documents live in the runs that processed them;
         // the finalizer's payload says which, and they are shown as kept.
         const inherited: DocumentStatus[] = [];
-        for (const entry of inheritedDocuments(await finalizerPayload(runId))) {
-          const kept = new Set(entry.fileIds);
-          for (const status of documentStatusesFromTasks(await documentTasksByRun(entry.runId))) {
-            if (kept.has(status.fileId)) {
-              inherited.push({ ...status, phase: "inherited", detail: `Kept from ${entry.runId}` });
+        const entries = inheritedDocuments(await finalizerPayload(runId));
+        if (entries.length) {
+          const graphId = (await this.record(runId))?.graphId ?? null;
+          const versions = graphId ? ((await graphVersionsByGraph([graphId])).get(graphId) ?? []) : [];
+          for (const entry of entries) {
+            const kept = new Set(entry.fileIds);
+            const number = versions.findIndex((version) => version.runId === entry.runId) + 1;
+            const origin = number ? `version ${number}` : entry.runId;
+            for (const status of documentStatusesFromTasks(await documentTasksByRun(entry.runId))) {
+              if (kept.has(status.fileId)) {
+                inherited.push({ ...status, phase: "inherited", detail: `Kept from ${origin}` });
+              }
             }
           }
         }

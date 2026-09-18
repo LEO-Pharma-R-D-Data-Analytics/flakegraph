@@ -669,7 +669,10 @@ function versionBadge(run: RunSnapshot): string {
     return "";
   }
   const { number, count, head } = version as { number: number; count: number; head: boolean };
-  if (count < 2 || !number) {
+  if (!number) {
+    return run.raw?.baseRunId && isActiveStatus(run.status) ? ` · new version` : "";
+  }
+  if (count < 2) {
     return "";
   }
   return ` · v${number}${head ? " · head" : ""}`;
