@@ -248,3 +248,30 @@ spec:
 {{- fail "monitoring.enabled needs the Prometheus operator CRDs (monitoring.coreos.com/v1). Install the kube-prometheus-stack release from deploy/spark/install-cluster.sh into this namespace first, or pass --api-versions monitoring.coreos.com/v1/ServiceMonitor,monitoring.coreos.com/v1/PodMonitor,monitoring.coreos.com/v1/PrometheusRule when rendering offline." -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Provider credentials from the operator's Secret, for every pod that reads a
+source or calls a provider: the workers, and the control plane that lists
+sources and runs preflight on their behalf.
+*/}}
+{{- define "flakegraph.providerSecretEnv" -}}
+{{- if .Values.providerSecret.name }}
+{{- range $mapping := .Values.providerSecret.env }}
+{{- /*
+When the gateway is enabled its virtual key *is* the LLM credential, and it
+was already emitted by consumerEnv. Declaring the same variable twice leaves
+which one survives up to the kubelet's ordering rather than the chart's
+intent, and an absent optional key can blank a value the gateway just set.
+Skip the duplicate instead.
+*/ -}}
+{{- if not (and $.Values.gateway.enabled (eq $mapping.name "KG_LLM_API_KEY")) }}
+- name: {{ $mapping.name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ $.Values.providerSecret.name }}
+      key: {{ $mapping.key }}
+      optional: {{ or $.Values.providerSecret.optional $mapping.optional }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end -}}

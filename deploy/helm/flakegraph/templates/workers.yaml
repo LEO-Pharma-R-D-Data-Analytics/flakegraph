@@ -262,25 +262,7 @@ spec:
             {{- with $root.Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- if $root.Values.providerSecret.name }}
-            {{- range $mapping := $root.Values.providerSecret.env }}
-            {{- /*
-            When the gateway is enabled its virtual key *is* the LLM credential,
-            and it was already emitted above. Declaring the same variable twice
-            leaves which one survives up to the kubelet's ordering rather than
-            the chart's intent, and an absent optional key can blank a value the
-            gateway just set. Skip the duplicate instead.
-            */ -}}
-            {{- if not (and $root.Values.gateway.enabled (eq $mapping.name "KG_LLM_API_KEY")) }}
-            - name: {{ $mapping.name }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Values.providerSecret.name }}
-                  key: {{ $mapping.key }}
-                  optional: {{ or $root.Values.providerSecret.optional $mapping.optional }}
-            {{- end }}
-            {{- end }}
-            {{- end }}
+            {{- include "flakegraph.providerSecretEnv" $root | nindent 12 }}
           resources:
             {{- toYaml $pool.resources | nindent 12 }}
           securityContext:

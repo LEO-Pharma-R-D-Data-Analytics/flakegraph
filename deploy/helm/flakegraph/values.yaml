@@ -130,6 +130,13 @@ providerSecret:
     - name: KG_SNOWFLAKE_OAUTH_TOKEN
       key: KG_SNOWFLAKE_OAUTH_TOKEN
       optional: true
+    # The S3-compatible source reads through the SDK's own credential chain.
+    - name: AWS_ACCESS_KEY_ID
+      key: AWS_ACCESS_KEY_ID
+      optional: true
+    - name: AWS_SECRET_ACCESS_KEY
+      key: AWS_SECRET_ACCESS_KEY
+      optional: true
 
 # Shared object storage is the distributed data plane. PostgreSQL retains task
 # metadata and checksums; workers and Spark executors transfer payloads directly.

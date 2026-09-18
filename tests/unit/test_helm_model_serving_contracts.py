@@ -671,6 +671,8 @@ def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
             "key": "KG_SNOWFLAKE_OAUTH_TOKEN",
             "optional": True,
         },
+        {"name": "AWS_ACCESS_KEY_ID", "key": "AWS_ACCESS_KEY_ID", "optional": True},
+        {"name": "AWS_SECRET_ACCESS_KEY", "key": "AWS_SECRET_ACCESS_KEY", "optional": True},
     ]
     # A mapping without `optional` would render null and be applied as a hard
     # requirement, so the item must spell all three keys.
@@ -678,7 +680,15 @@ def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
         ("providerSecret.env[0].name=KG_X", "providerSecret.env[0].key=KG_X")
     )
     allowlisted = {mapping["name"] for mapping in values["providerSecret"]["env"]}
-    consumers = [_worker(rendered, pool) for pool in _WORKER_POOLS] + [_bootstrap(rendered)]
+    # The control plane lists sources and preflights with the same credentials
+    # the workers will run with; a bucket it cannot see, they cannot read.
+    control_plane = _container(
+        _pod(_one(rendered, "Deployment", f"{_FULLNAME}-app")), "control-plane"
+    )
+    consumers = [_worker(rendered, pool) for pool in _WORKER_POOLS] + [
+        _bootstrap(rendered),
+        control_plane,
+    ]
     for consumer in consumers:
         assert "envFrom" not in consumer, consumer["name"]
         imported = {

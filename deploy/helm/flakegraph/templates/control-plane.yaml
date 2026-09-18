@@ -199,6 +199,11 @@ spec:
             {{- with $controlPlane.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- /*
+            The source browser and preflight read the same buckets and
+            providers the workers will, with the same credentials.
+            */ -}}
+            {{- include "flakegraph.providerSecretEnv" . | nindent 12 }}
           ports:
             - name: http
               containerPort: {{ $controlPlane.service.port }}
