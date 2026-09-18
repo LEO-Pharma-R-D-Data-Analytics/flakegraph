@@ -57,7 +57,7 @@ def test_monitoring_is_opt_in_and_leaves_no_trace_when_off() -> None:
     assert not [
         doc for doc in rendered if doc["metadata"].get("labels", {}).get("grafana_datasource")
     ]
-    assert "callbacks" not in _gateway_config(rendered)
+    assert "prometheus" not in _gateway_config(rendered)
 
 
 def test_monitoring_refuses_to_render_where_it_cannot_be_applied() -> None:
@@ -190,7 +190,7 @@ def test_the_gateway_exports_metrics_and_restarts_when_its_config_changes() -> N
     off = _render(())
 
     config = yaml.safe_load(_gateway_config(on))
-    assert config["litellm_settings"]["callbacks"] == ["prometheus"]
+    assert config["litellm_settings"]["callbacks"] == ["message_order.instance", "prometheus"]
     assert config["litellm_settings"]["drop_params"] is False
     checksums = {
         state: _one(rendered, "Deployment", f"{_FULLNAME}-litellm")["spec"]["template"]["metadata"][

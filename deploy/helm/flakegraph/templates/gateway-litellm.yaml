@@ -39,12 +39,18 @@ litellm_settings:
   # would remove it silently, and the failure would surface as empty
   # extractions rather than as an error.
   drop_params: false
-  {{- if .Values.monitoring.enabled }}
-  # Serves /metrics: request, token, and spend series per virtual key and
-  # alias, which is where the fleet's per-consumer view of inference lives.
-  # Off without a scraper, because the callback is not free per request.
-  callbacks: ["prometheus"]
-  {{- end }}
+  # message_order moves system and developer messages a caller placed
+  # mid-conversation to the front, where the engine's chat template accepts
+  # them; a harness resuming a session sends them that way and would
+  # otherwise be refused. Prometheus serves /metrics: request, token, and
+  # spend series per virtual key and alias, which is where the fleet's
+  # per-consumer view of inference lives. Off without a scraper, because the
+  # callback is not free per request.
+  callbacks:
+    - message_order.instance
+    {{- if .Values.monitoring.enabled }}
+    - prometheus
+    {{- end }}
 {{- end }}
 {{- if .Values.gateway.enabled }}
 {{- $litellm := .Values.gateway.litellm }}
@@ -63,6 +69,9 @@ data:
   # Restrict each virtual key to a single alias and the mapping is unforgeable.
   config.yaml: |
     {{- include "flakegraph.gatewayConfig" . | nindent 4 }}
+  # Loaded by the proxy from beside its config file; see the module docstring.
+  message_order.py: |
+    {{- .Files.Get "gateway/message_order.py" | nindent 4 }}
 ---
 apiVersion: v1
 kind: Service

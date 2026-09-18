@@ -657,6 +657,16 @@ curl -so /dev/null -w '%{http_code}\n' "https://llm.$DOMAIN/v1/models"
 curl -sI "https://llm.$DOMAIN/ui" | grep -i '^location:'
 ```
 
+The gateway also reconciles one difference between the contract it advertises
+and the engine behind it. The OpenAI chat format admits `system` and
+`developer` messages anywhere, and a coding harness resuming a session sends
+its instruction updates between turns; the engine's chat template accepts
+instruction messages only while they lead the conversation. A gateway hook
+(`gateway/message_order.py`, loaded from beside the proxy's config) moves
+late instruction messages to the front in the order they arrived, so a resumed
+session works like a fresh one. Nothing is reworded, and a conversation whose
+instructions already lead passes through untouched.
+
 ## Submit And Export
 
 From an environment that can reach PostgreSQL and the configured source:
