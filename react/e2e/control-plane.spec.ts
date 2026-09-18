@@ -2,16 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 
 async function confirmEnvironmentIfNeeded(page: Page) {
   const confirm = page.getByRole("button", { name: "Confirm environment" });
-  const start = page.getByRole("button", { name: "Start", exact: true });
-  await expect(start).toBeVisible();
-  await expect.poll(async () => {
-    if (await confirm.isVisible()) {
-      return "confirm";
-    }
-    return (await start.isEnabled()) ? "ready" : "wait";
-  }, { timeout: 20_000 }).not.toBe("wait");
+  await expect(page.getByRole("heading", { name: "Build a graph" })).toBeVisible();
   if (await confirm.isVisible()) {
     await confirm.click();
+    await expect(confirm).toHaveCount(0);
   }
 }
 
@@ -215,7 +209,8 @@ test.describe("unavailable and failed runs", () => {
     await expect(page.getByLabel("Display name")).toHaveValue("LLM timeout");
     await expect(page.getByRole("button", { name: "Sample pack", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("button", { name: "Martial arts", exact: true })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByRole("button", { name: "Fast / cheap" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByLabel("LLM provider")).toContainText("Ollama");
+    await expect(page.getByLabel("OCR provider")).toContainText("Built-in document text only");
   });
 });
 
@@ -374,7 +369,7 @@ test.describe("snowflake sharing", () => {
     await confirmEnvironmentIfNeeded(page);
     await expect(page.getByLabel("Stage", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Sample pack", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Fast / cheap" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByLabel("LLM model")).toHaveValue("unsloth/Qwen3.8-27B-NVFP4");
     await page.getByLabel("Display name").fill("Snowflake smoke");
     await page.getByLabel("Source kind").click();
     await page.getByRole("option", { name: "Upload" }).click();
@@ -435,28 +430,31 @@ test.describe("remaining report journeys", () => {
     await expect(page.getByText("Describe the graph you want")).toBeVisible();
   });
 
-  test("selects a sample pack and processing preset on compose", async ({ page }) => {
+  test("selects a sample pack and required providers on compose", async ({ page }) => {
     await page.goto("/?runtime=local&page=new");
     await expect(page.getByRole("button", { name: "Your files", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("file-dropzone")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Sample pack" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "How to process" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Fast / cheap" })).toHaveCount(0);
+    await expect(page.getByTestId("compose-providers")).toBeVisible();
+    await expect(page.getByLabel("OCR provider")).toContainText("Adaptive layout");
+    await expect(page.getByLabel("LLM provider")).toContainText("vLLM");
+    await expect(page.getByLabel("LLM model")).toHaveValue("unsloth/Qwen3.8-27B-NVFP4");
+    await expect(page.getByLabel("Embeddings model")).toHaveValue("sentence-transformers/all-MiniLM-L6-v2");
     await useSamplePack(page);
     await expect(page.getByRole("button", { name: "Sample pack", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("button", { name: "Martial arts", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("file-dropzone")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Fast / cheap" })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByText("Selected", { exact: true }).first()).toBeVisible();
-    await page.getByRole("button", { name: "Accurate / GPU" }).click();
-    await expect(page.getByRole("button", { name: "Accurate / GPU" })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByTestId("preset-summary")).toContainText("adaptive OCR");
-    await expect(page.getByTestId("preset-summary")).toContainText("fallback");
-    await page.getByRole("button", { name: "Fast / cheap" }).click();
-    await expect(page.getByRole("button", { name: "Fast / cheap" })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByTestId("preset-summary")).toContainText("adaptive OCR");
-    await expect(page.getByTestId("preset-summary")).toContainText("ollama");
+    await expect(page.getByLabel("OCR provider")).toContainText("Adaptive layout");
+    await expect(page.getByLabel("LLM model")).toHaveValue("unsloth/Qwen3.8-27B-NVFP4");
+    await page.getByLabel("LLM provider").click();
+    await page.getByRole("option", { name: "Ollama" }).click();
+    await expect(page.getByLabel("LLM model")).toHaveValue("llama3.2");
     await page.getByRole("button", { name: "Deep learning papers", exact: true }).click();
     await expect(page.getByRole("button", { name: "Deep learning papers", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByLabel("Display name")).toHaveValue("Deep learning papers");
+    await expect(page.getByLabel("LLM model")).toHaveValue("llama3.2");
     await page.getByRole("button", { name: "Your files", exact: true }).click();
     await expect(page.getByRole("button", { name: "Your files", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("file-dropzone")).toBeVisible();

@@ -208,8 +208,8 @@ export function RunWorkspace({
       graphName: snapshot.graphName || last?.graphName || "",
       sourceKind: String(raw.sourceKind || last?.sourceKind || "local_path"),
       sourcePath: String(raw.sourcePath || watchPrefixFrom(snapshot) || last?.sourcePath || ""),
-      ocrProvider: String(raw.ocrProvider || last?.ocrProvider || "builtin_text"),
-      llmProvider: String(raw.llmProvider || last?.llmProvider || "ollama"),
+      ocrProvider: String(raw.ocrProvider || last?.ocrProvider || "fallback"),
+      llmProvider: String(raw.llmProvider || last?.llmProvider || "vllm_local"),
       embeddingProvider: String(raw.embeddingProvider || last?.embeddingProvider || "sentence_transformers"),
       savedAt: new Date().toISOString(),
     });

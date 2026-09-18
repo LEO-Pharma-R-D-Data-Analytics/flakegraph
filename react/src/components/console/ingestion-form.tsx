@@ -29,6 +29,8 @@ import {
   LLM_PROVIDERS,
   OCR_PROVIDERS,
   defaultProvider,
+  providerSelection,
+  selectionFromOption,
 } from "@/server/providers";
 import { readLastIngestion, writeLastIngestion } from "@/lib/last-ingestion";
 import { cn } from "@/lib/utils";
@@ -87,10 +89,9 @@ export function IngestionForm({
   const [stage, setStage] = useState({ stage: "", prefix: "" });
   const [outputKind, setOutputKind] = useState<StorageKind>(capabilities.has("spcs") ? "snowflake" : "local_files");
   const [ocr, setOcr] = useState<ProviderSelection>(() => defaultProvider("ocr"));
-  const [llm, setLlm] = useState(fastLlm);
-  const [embedding, setEmbedding] = useState(defaultProvider("embedding"));
-  const [parallelism, setParallelism] = useState(4);
-  const [preset, setPreset] = useState<"fast" | "accurate">("fast");
+  const [llm, setLlm] = useState(() => defaultProvider("llm"));
+  const [embedding, setEmbedding] = useState(() => defaultProvider("embedding"));
+  const [parallelism, setParallelism] = useState(DEFAULT_PROVIDER_PARALLELISM);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [preview, setPreview] = useState<string>("");
   const [dismissedClone, setDismissedClone] = useState(false);
@@ -299,7 +300,6 @@ export function IngestionForm({
       const fromPack = SAMPLE_CORPORA.some((item) => item.graphName === current);
       return !current.trim() || fromPack ? sample.graphName : current;
     });
-    applyPreset(sample.path.includes("deep_learning") ? "accurate" : "fast");
   }
 
   function enableSamplePack() {
@@ -318,19 +318,6 @@ export function IngestionForm({
     }
   }
 
-  function applyPreset(kind: "fast" | "accurate") {
-    setPreset(kind);
-    if (kind === "fast") {
-      setLlm(fastLlm());
-      setEmbedding(defaultProvider("embedding"));
-      setParallelism(4);
-      return;
-    }
-    setLlm(defaultProvider("llm"));
-    setEmbedding(defaultProvider("embedding"));
-    setParallelism(DEFAULT_PROVIDER_PARALLELISM);
-  }
-
   function applyClone(draft: NonNullable<ReturnType<typeof readLastIngestion>>) {
     setGraphName(draft.graphName);
     const kind = (draft.sourceKind as SourceKind) || "local_path";
@@ -344,11 +331,9 @@ export function IngestionForm({
     } else {
       setSourceMode("files");
     }
-    setOcr(providerFromName("ocr", draft.ocrProvider));
-    const nextLlm = providerFromName("llm", draft.llmProvider);
-    setLlm(nextLlm);
-    setEmbedding(providerFromName("embedding", draft.embeddingProvider));
-    setPreset(nextLlm.provider === "ollama" ? "fast" : "accurate");
+    setOcr(providerSelection("ocr", draft.ocrProvider));
+    setLlm(providerSelection("llm", draft.llmProvider));
+    setEmbedding(providerSelection("embedding", draft.embeddingProvider));
   }
 
   function cloneLast() {
@@ -626,8 +611,8 @@ export function IngestionForm({
         title="Build a graph"
         description={`This job runs on ${runtimeLabel(runtime)}. ${
           canUseSamplePack
-            ? "Drop your files, or switch to a sample pack. Extraction is automatic. Fast vs Accurate only changes the model."
-            : "Point at a stage or upload the workers can LIST. Extraction is automatic. Fast vs Accurate only changes the model."
+            ? "Drop your files, or switch to a sample pack. OCR, LLM, and embeddings are required; Adaptive layout, Qwen3.8 27B, and MiniLM are filled in."
+            : "Point at a stage or upload the workers can LIST. OCR, LLM, and embeddings are required; Adaptive layout, Qwen3.8 27B, and MiniLM are filled in."
         } Closing the browser does not cancel a submitted job. Destination is where artifacts are stored, not where workers run.`}
       />
 
@@ -742,39 +727,6 @@ export function IngestionForm({
         </CardContent>
       </Card>
 
-      <div className="grid items-start gap-6 lg:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle>How to process</CardTitle>
-          <CardDescription>
-            Every run uses adaptive extraction: native document text first, including tables, then MinerU layout OCR for scans, figures, and sparse PDFs. Fast vs Accurate only changes the model and parallelism. Override extraction under Advanced if you must.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid gap-2 sm:grid-cols-2">
-            <ChoiceTile
-              name="Fast / cheap"
-              title="Fast / cheap"
-              description="Local Ollama, MiniLM embeddings, and 4 calls in flight. Same adaptive extraction. Use when the GPU model is overkill."
-              selected={preset === "fast"}
-              onClick={() => applyPreset("fast")}
-            />
-            <ChoiceTile
-              name="Accurate / GPU"
-              title="Accurate / GPU"
-              description="Default GPU model and higher parallelism. Same adaptive extraction. Use for large or messy corpora."
-              selected={preset === "accurate"}
-              onClick={() => applyPreset("accurate")}
-            />
-          </div>
-          <p className="text-xs text-muted-foreground" data-testid="preset-summary">
-            {preset === "fast"
-              ? `Selected: Fast / cheap · adaptive OCR (${ocr.provider}) · ${llm.provider} ${llm.model ?? ""} · ${embedding.model?.split("/").at(-1) ?? embedding.provider} · ${parallelism} calls in flight`
-              : `Selected: Accurate / GPU · adaptive OCR (${ocr.provider}) · ${llm.provider} ${llm.model ?? ""} · ${parallelism} calls in flight`}
-          </p>
-        </CardContent>
-      </Card>
-
       <Card>
         <CardHeader>
           <CardTitle>Graph</CardTitle>
@@ -782,8 +734,8 @@ export function IngestionForm({
             A friendly name is optional; the stable graph ID is assigned on submit. Destination is where artifacts are stored, not where the job runs.
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4">
-          <p className="text-xs text-muted-foreground">
+        <CardContent className="grid gap-4 sm:grid-cols-2">
+          <p className="text-xs text-muted-foreground sm:col-span-2">
             Graph ID <span className="font-mono">{graphId}</span>
             {promotionApplied && workspace.data?.pendingPromotion?.keepGraphId ? " · kept from the promotion" : " · minted for this Start"}
           </p>
@@ -808,7 +760,20 @@ export function IngestionForm({
           </Field>
         </CardContent>
       </Card>
-      </div>
+
+      <Card data-testid="compose-providers">
+        <CardHeader>
+          <CardTitle>OCR, LLM, and embeddings</CardTitle>
+          <CardDescription>
+            Required for every run. Adaptive layout uses native document text first, then MinerU for scans, figures, and sparse PDFs. The default model is Qwen3.8 27B on vLLM, with MiniLM embeddings.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-3">
+          <ProviderFields title="OCR" options={OCR_PROVIDERS} value={ocr} onChange={setOcr} />
+          <ProviderFields title="LLM" options={LLM_PROVIDERS} value={llm} onChange={setLlm} />
+          <ProviderFields title="Embeddings" options={EMBEDDING_PROVIDERS} value={embedding} onChange={setEmbedding} dimension />
+        </CardContent>
+      </Card>
 
       {runtime === "snowflake" ? <SnowflakeGrantsCard /> : null}
 
@@ -850,39 +815,19 @@ export function IngestionForm({
           className="flex w-full items-center justify-between rounded-lg border border-border bg-card px-4 py-3 text-left text-sm font-semibold hover:bg-muted/40"
           onClick={() => setAdvancedOpen((open) => !open)}
         >
-          Advanced: providers, YAML, parallelism
+          Advanced: parallelism
           <span className="text-xs font-normal text-muted-foreground" aria-hidden="true">
             {advancedOpen ? "Hide" : "Show"}
           </span>
         </button>
         {advancedOpen ? (
           <div className="mt-3 space-y-4 rounded-lg border border-border bg-card p-4">
-            <p className="text-sm text-muted-foreground">
-              Adaptive layout is the default. Built-in text skips MinerU (no scans or figures). MinerU-only always pays layout OCR. Changing the model here does not change extraction.
-            </p>
-            <div className="grid gap-4 md:grid-cols-3">
-              <ProviderCard
-                title="OCR"
-                options={OCR_PROVIDERS}
-                value={ocr}
-                onChange={setOcr}
-              />
-              <ProviderCard
-                title="LLM"
-                options={LLM_PROVIDERS}
-                value={llm}
-                onChange={(value) => {
-                  setLlm(value);
-                  setPreset(value.provider === "ollama" ? "fast" : "accurate");
-                }}
-              />
-              <ProviderCard title="Embeddings" options={EMBEDDING_PROVIDERS} value={embedding} onChange={setEmbedding} dimension />
-            </div>
             <Field label="Provider calls in flight">
               <Input
                 type="number"
                 min={1}
                 max={64}
+                aria-label="Provider calls in flight"
                 value={parallelism}
                 onChange={(event) => setParallelism(Number(event.target.value))}
               />
@@ -1133,7 +1078,7 @@ function FileDropzone({
   );
 }
 
-function ProviderCard({
+function ProviderFields({
   title,
   options,
   value,
@@ -1148,95 +1093,64 @@ function ProviderCard({
 }) {
   const selected = options.find((option) => option.name === value.provider);
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <Select
-          value={value.provider}
-          onValueChange={(name) => {
-            const option = options.find((item) => item.name === name);
-            onChange({
-              ...value,
-              provider: name,
-              model: option?.needsModel ? value.model : null,
-              endpoint: option?.needsEndpoint ? value.endpoint : null,
-              apiKeyEnvironmentVariable: option?.needsApiKey ? value.apiKeyEnvironmentVariable : null,
-              dimension: option?.defaultDimension ?? value.dimension,
-              options: value.options,
-            });
-          }}
-        >
-          <SelectTrigger aria-label={`${title} provider`}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {options.map((option) => (
-              <SelectItem key={option.name} value={option.name}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {selected?.needsModel ? (
-          <Input
-            aria-label={`${title} model`}
-            placeholder="Model"
-            value={value.model ?? ""}
-            onChange={(event) => onChange({ ...value, model: event.target.value || null })}
-          />
-        ) : null}
-        {selected?.needsEndpoint ? (
-          <Input
-            aria-label={`${title} endpoint`}
-            placeholder="Endpoint"
-            value={value.endpoint ?? ""}
-            onChange={(event) => onChange({ ...value, endpoint: event.target.value || null })}
-          />
-        ) : null}
-        {selected?.needsApiKey ? (
-          <Input
-            aria-label={`${title} API key environment variable`}
-            placeholder="API key environment variable"
-            value={value.apiKeyEnvironmentVariable ?? ""}
-            onChange={(event) => onChange({ ...value, apiKeyEnvironmentVariable: event.target.value || null })}
-          />
-        ) : null}
-        {dimension ? (
-          <Input
-            type="number"
-            placeholder="Dimension"
-            value={value.dimension ?? ""}
-            onChange={(event) => onChange({ ...value, dimension: Number(event.target.value) || null })}
-          />
-        ) : null}
-      </CardContent>
-    </Card>
+    <div className="space-y-3">
+      <p className="text-sm font-medium">{title}</p>
+      <Select
+        value={value.provider}
+        onValueChange={(name) => {
+          const option = options.find((item) => item.name === name);
+          if (!option) {
+            return;
+          }
+          onChange(selectionFromOption(option));
+        }}
+      >
+        <SelectTrigger aria-label={`${title} provider`}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.name} value={option.name}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {selected?.needsModel ? (
+        <Input
+          aria-label={`${title} model`}
+          placeholder="Model"
+          value={value.model ?? ""}
+          onChange={(event) => onChange({ ...value, model: event.target.value || null })}
+        />
+      ) : null}
+      {selected?.needsEndpoint ? (
+        <Input
+          aria-label={`${title} endpoint`}
+          placeholder="Endpoint"
+          value={value.endpoint ?? ""}
+          onChange={(event) => onChange({ ...value, endpoint: event.target.value || null })}
+        />
+      ) : null}
+      {selected?.needsApiKey ? (
+        <Input
+          aria-label={`${title} API key environment variable`}
+          placeholder="API key environment variable"
+          value={value.apiKeyEnvironmentVariable ?? ""}
+          onChange={(event) => onChange({ ...value, apiKeyEnvironmentVariable: event.target.value || null })}
+        />
+      ) : null}
+      {dimension ? (
+        <Input
+          type="number"
+          aria-label={`${title} dimension`}
+          placeholder="Dimension"
+          value={value.dimension ?? ""}
+          onChange={(event) => onChange({ ...value, dimension: Number(event.target.value) || null })}
+        />
+      ) : null}
+    </div>
   );
-}
-
-function fastLlm(): ProviderSelection {
-  return {
-    provider: "ollama",
-    model: "llama3.2",
-    endpoint: "http://localhost:11434",
-    apiKeyEnvironmentVariable: null,
-    dimension: null,
-    options: {},
-  };
-}
-
-function providerFromName(kind: "ocr" | "llm" | "embedding", name: string): ProviderSelection {
-  if (kind === "ocr") {
-    return name === "builtin_text"
-      ? { provider: "builtin_text", model: null, endpoint: null, apiKeyEnvironmentVariable: null, dimension: null, options: {} }
-      : defaultProvider("ocr");
-  }
-  if (kind === "llm") {
-    return name === "ollama" ? fastLlm() : defaultProvider("llm");
-  }
-  return defaultProvider("embedding");
 }
 
 function humanizeField(key: string): string {

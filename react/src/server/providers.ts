@@ -6,6 +6,8 @@ export interface ProviderOption {
   needsModel?: boolean;
   needsEndpoint?: boolean;
   needsApiKey?: boolean;
+  defaultModel?: string | null;
+  defaultEndpoint?: string | null;
   defaultDimension?: number | null;
 }
 
@@ -20,8 +22,22 @@ export const OCR_PROVIDERS: ProviderOption[] = [
 ];
 
 export const LLM_PROVIDERS: ProviderOption[] = [
-  { name: "ollama", label: "Ollama", needsModel: true, needsEndpoint: true },
-  { name: "vllm_local", label: "vLLM", needsModel: true, needsEndpoint: true },
+  {
+    name: "ollama",
+    label: "Ollama",
+    needsModel: true,
+    needsEndpoint: true,
+    defaultModel: "llama3.2",
+    defaultEndpoint: "http://localhost:11434",
+  },
+  {
+    name: "vllm_local",
+    label: "vLLM",
+    needsModel: true,
+    needsEndpoint: true,
+    defaultModel: "unsloth/Qwen3.8-27B-NVFP4",
+    defaultEndpoint: "http://localhost:8000/v1",
+  },
   {
     name: "openai_compatible",
     label: "OpenAI-compatible API",
@@ -44,6 +60,7 @@ export const EMBEDDING_PROVIDERS: ProviderOption[] = [
     name: "sentence_transformers",
     label: "Sentence Transformers",
     needsModel: true,
+    defaultModel: "sentence-transformers/all-MiniLM-L6-v2",
     defaultDimension: 384,
   },
   {
@@ -115,26 +132,29 @@ export function embeddingDimension(
   return 384;
 }
 
-export function defaultProvider(kind: "ocr" | "llm" | "embedding"): ProviderSelection {
-  if (kind === "ocr") {
-    return { provider: "fallback", model: null, endpoint: null, apiKeyEnvironmentVariable: null, dimension: null, options: {} };
-  }
-  if (kind === "llm") {
-    return {
-      provider: "vllm_local",
-      model: "unsloth/Qwen3.8-27B-NVFP4",
-      endpoint: "http://localhost:8000/v1",
-      apiKeyEnvironmentVariable: null,
-      dimension: null,
-      options: {},
-    };
-  }
+export function selectionFromOption(option: ProviderOption): ProviderSelection {
   return {
-    provider: "sentence_transformers",
-    model: "sentence-transformers/all-MiniLM-L6-v2",
-    endpoint: null,
+    provider: option.name,
+    model: option.needsModel ? option.defaultModel ?? null : null,
+    endpoint: option.needsEndpoint ? option.defaultEndpoint ?? null : null,
     apiKeyEnvironmentVariable: null,
-    dimension: 384,
+    dimension: option.defaultDimension ?? null,
     options: {},
   };
+}
+
+export function providerSelection(kind: "ocr" | "llm" | "embedding", name: string): ProviderSelection {
+  const options = kind === "ocr" ? OCR_PROVIDERS : kind === "llm" ? LLM_PROVIDERS : EMBEDDING_PROVIDERS;
+  const option = options.find((item) => item.name === name);
+  return option ? selectionFromOption(option) : defaultProvider(kind);
+}
+
+export function defaultProvider(kind: "ocr" | "llm" | "embedding"): ProviderSelection {
+  if (kind === "ocr") {
+    return selectionFromOption(OCR_PROVIDERS[0]);
+  }
+  if (kind === "llm") {
+    return selectionFromOption(LLM_PROVIDERS.find((item) => item.name === "vllm_local") ?? LLM_PROVIDERS[0]);
+  }
+  return selectionFromOption(EMBEDDING_PROVIDERS[0]);
 }
