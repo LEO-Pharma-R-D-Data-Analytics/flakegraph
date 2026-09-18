@@ -60,16 +60,7 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- if .Values.providerSecret.name }}
-            {{- range $mapping := .Values.providerSecret.env }}
-            - name: {{ $mapping.name }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $.Values.providerSecret.name }}
-                  key: {{ $mapping.key }}
-                  optional: {{ or $.Values.providerSecret.optional $mapping.optional }}
-            {{- end }}
-            {{- end }}
+            {{- include "flakegraph.providerSecretEnv" . | nindent 12 }}
           resources:
             {{- toYaml .Values.database.bootstrap.resources | nindent 12 }}
           securityContext:

@@ -600,16 +600,19 @@ def test_the_llm_credential_is_declared_exactly_once_per_container() -> None:
     with_gateway = _render(("providerSecret.name=provider",))
     without_gateway = _render(("providerSecret.name=provider", "gateway.enabled=false"))
 
-    for pool in _WORKER_POOLS:
-        gateway_worker = _worker(with_gateway, pool)
-        names = [entry["name"] for entry in gateway_worker["env"]]
+    consumers = [(pool, _worker) for pool in _WORKER_POOLS] + [
+        ("bootstrap", lambda r, _: _bootstrap(r))
+    ]
+    for pool, container in consumers:
+        gateway_consumer = container(with_gateway, pool)
+        names = [entry["name"] for entry in gateway_consumer["env"]]
         assert len(names) == len(set(names)), pool
         assert (
-            _env(gateway_worker)["KG_LLM_API_KEY"]["valueFrom"]["secretKeyRef"]["name"]
+            _env(gateway_consumer)["KG_LLM_API_KEY"]["valueFrom"]["secretKeyRef"]["name"]
             == (litellm["virtualKeySecret"]["name"])
         )
-        provider_worker = _worker(without_gateway, pool)
-        assert _env(provider_worker)["KG_LLM_API_KEY"]["valueFrom"]["secretKeyRef"]["name"] == (
+        provider_consumer = container(without_gateway, pool)
+        assert _env(provider_consumer)["KG_LLM_API_KEY"]["valueFrom"]["secretKeyRef"]["name"] == (
             "provider"
         )
 
