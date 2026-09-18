@@ -421,6 +421,21 @@ def test_placement_routes_on_the_pickers_choice_and_needs_no_crds() -> None:
     ]
 
 
+def test_the_control_plane_can_see_what_preflight_asks_about() -> None:
+    """A pool scaled to zero on purpose is told apart by its ScaledObject."""
+
+    role = _one(_render(()), "Role", f"{_FULLNAME}-app")
+    granted = {
+        (group, resource)
+        for rule in role["rules"]
+        for group in rule["apiGroups"]
+        for resource in rule["resources"]
+        if "list" in rule["verbs"]
+    }
+    assert ("keda.sh", "scaledobjects") in granted
+    assert ("apps", "statefulsets") in granted
+
+
 def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
     """Give the shim a resolvable pool and the capacity it must not exceed."""
 

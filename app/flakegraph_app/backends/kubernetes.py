@@ -1538,13 +1538,15 @@ def _fleet_preflight(
         ready = (
             int(model_server.get("status", {}).get("readyReplicas", 0) or 0) if model_server else 0
         )
+        # One ready engine serves; the router only sends work to engines that
+        # are ready, so a fleet mid-rollout is slower, not unavailable.
         _record_requirement(
             errors,
             checks,
-            model_server is not None and desired > 0 and ready == desired,
+            model_server is not None and ready > 0,
             f"Chart-managed vLLM model servers are ready: {ready}/{desired}",
             "Selected vLLM endpoint is node-local, but the fleet has no ready "
-            "model-serving StatefulSet",
+            f"model server ({ready}/{desired})",
         )
 
     _validate_fleet_credentials(request, namespace, by_component, checks, errors, target)

@@ -1280,8 +1280,9 @@ def test_kubernetes_fleet_preflight_explains_profile_and_model_serving_mismatch(
         in result["errors"]
     )
     assert (
-        "Selected vLLM endpoint is node-local, but the fleet has no ready model-serving StatefulSet"
-    ) in result["errors"]
+        "Selected vLLM endpoint is node-local, but the fleet has no ready model server (0/0)"
+        in result["errors"]
+    )
 
 
 def test_kubernetes_fleet_preflight_requires_output_secret_on_finalizer(
