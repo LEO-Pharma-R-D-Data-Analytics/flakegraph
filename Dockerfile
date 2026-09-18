@@ -12,7 +12,16 @@ FROM registry.k8s.io/kubectl:${KG_KUBECTL_VERSION} AS kubectl
 FROM oven/bun:1.3-slim AS console-build
 WORKDIR /console
 COPY react/package.json react/bun.lock ./
-RUN bun install --frozen-lockfile
+# A build host whose egress is TLS-intercepted hands its trust bundle in as a
+# build secret (--secret id=ca-bundle,src=...); it is read for this one
+# install and never lands in a layer. Without one, the registry is trusted as
+# shipped.
+RUN --mount=type=secret,id=ca-bundle \
+    if [ -f /run/secrets/ca-bundle ]; then \
+        bun install --frozen-lockfile --cafile /run/secrets/ca-bundle; \
+    else \
+        bun install --frozen-lockfile; \
+    fi
 COPY react/ ./
 RUN bun run build
 
