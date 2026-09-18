@@ -70,6 +70,23 @@ export async function documentCountsByRun(
     }
     counts.set(row.runId, entry);
   }
+  // A revision's kept documents are in the graph without a task of their
+  // own; the finalizer's payload counts them.
+  const kept = await db
+    .select({
+      runId: schema.flakegraphTask.runId,
+      count: sql<number>`sum(jsonb_array_length(entry -> 'file_ids'))::int`,
+    })
+    .from(schema.flakegraphTask)
+    .innerJoin(sql`jsonb_array_elements(${schema.flakegraphTask.payloadJson} -> 'inherit') AS entry`, sql`true`)
+    .where(and(inArray(schema.flakegraphTask.runId, [...runIds]), eq(schema.flakegraphTask.stage, "finalize_graph")))
+    .groupBy(schema.flakegraphTask.runId);
+  for (const row of kept) {
+    const entry = counts.get(row.runId) ?? { total: null, completed: 0, failed: 0 };
+    entry.total = (entry.total ?? 0) + row.count;
+    entry.completed += row.count;
+    counts.set(row.runId, entry);
+  }
   return counts;
 }
 

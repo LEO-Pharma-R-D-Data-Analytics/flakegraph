@@ -420,16 +420,22 @@ export function RunWorkspace({
           <TabsContent value="versions">
             <div className="space-y-4">
               {capabilities.has("revise") ? (
+                // The fleet keeps the graph's versions itself, and a new one
+                // is built from the Edit tab; the workspace's own version
+                // labels and watches belong to runtimes without either.
                 <GraphVersionsCard graphId={snapshot.graphId} runId={runId} onOpenRun={onOpenRun} />
-              ) : null}
-              <VersionsPanel graphId={snapshot.graphId} canPublish={operator} />
-              {operator ? (
-                <WatchPanel
-                  graphId={snapshot.graphId}
-                  sourcePath={watchPrefixFrom(snapshot)}
-                  onProcessNow={() => void cloneToCompose()}
-                />
-              ) : null}
+              ) : (
+                <>
+                  <VersionsPanel graphId={snapshot.graphId} canPublish={operator} />
+                  {operator ? (
+                    <WatchPanel
+                      graphId={snapshot.graphId}
+                      sourcePath={watchPrefixFrom(snapshot)}
+                      onProcessNow={() => void cloneToCompose()}
+                    />
+                  ) : null}
+                </>
+              )}
               {operator ? (
                 <PromotionCard
                   fromRuntime={runtime}
@@ -889,6 +895,7 @@ function RunDetails({
   onSkip?: (fileId: string) => void;
 }) {
   const raw = snapshot.raw as Record<string, unknown>;
+  const keptCount = documents.filter((item) => item.phase === "inherited").length;
   const startedAt = Date.parse(snapshot.startedAt ?? "");
   const updatedAt = Date.parse(snapshot.updatedAt ?? "");
   const duration = Number.isFinite(startedAt) && Number.isFinite(updatedAt) ? updatedAt - startedAt : null;
@@ -901,9 +908,11 @@ function RunDetails({
     [isActiveStatus(snapshot.status) ? "Running for" : "Took", formatDuration(duration)],
     [
       "Documents",
-      snapshot.documentsTotal == null
-        ? `${snapshot.documentsCompleted} indexed`
-        : `${snapshot.documentsCompleted} of ${snapshot.documentsTotal} indexed${snapshot.documentsFailed ? `, ${snapshot.documentsFailed} failed` : ""}`,
+      `${
+        snapshot.documentsTotal == null
+          ? `${snapshot.documentsCompleted} indexed`
+          : `${snapshot.documentsCompleted} of ${snapshot.documentsTotal} indexed${snapshot.documentsFailed ? `, ${snapshot.documentsFailed} failed` : ""}`
+      }${keptCount ? ` · ${keptCount} kept from earlier versions` : ""}`,
     ],
     ["Storage", `${snapshot.storageKind}${snapshot.storageLocation ? ` · ${snapshot.storageLocation}` : ""}`],
   ];
