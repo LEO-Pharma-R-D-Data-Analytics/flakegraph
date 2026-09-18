@@ -2,11 +2,19 @@ import { Either, Schema } from "effect";
 
 export const DEFAULT_PROVIDER_PARALLELISM = 12;
 export const MAX_GRAPH_NAME_LENGTH = 120;
+/**
+ * How much of a graph the console carries to the browser for review.
+ *
+ * Entities are the best-connected ones (see `loadLocalGraph`), relations the
+ * ones between them; the canvas caps itself further, tables page. Without
+ * vector columns a row is a few hundred bytes, and the edge compresses the
+ * payload, so ten thousand entities travel as a few megabytes.
+ */
 export const GRAPH_REVIEW_ROW_LIMITS = {
-  nodes: 2_500,
-  edges: 5_000,
-  communities: 1_000,
-  evidence: 5_000,
+  nodes: 10_000,
+  edges: 25_000,
+  communities: 2_000,
+  evidence: 10_000,
 } as const;
 
 export const DISTRIBUTED_STAGE_ORDER = [

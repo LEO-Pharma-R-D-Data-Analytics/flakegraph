@@ -31,6 +31,25 @@ describe("graph-geometry", () => {
     expect(afterCamera.scale).toBeCloseTo(1.25);
   });
 
+  it("keeps a large sparse graph finite under the force layout", () => {
+    // A long edge across the initial ring used to overshoot until every
+    // coordinate was NaN and the canvas painted nothing.
+    const nodes = Array.from({ length: 400 }, (_, index) => ({ id: `node_${index}`, name: `n${index}` }));
+    const edges = [
+      { id: "e1", source_node_id: "node_0", target_node_id: "node_200", relation_type: "x" },
+      { id: "e2", source_node_id: "node_3", target_node_id: "node_150", relation_type: "x" },
+    ];
+    const normalized = normalizeGraph(nodes, edges);
+    const laid = layoutGraph(normalized.nodes, normalized.edges, "force");
+    expect(laid.every((node) => Number.isFinite(node.x) && Number.isFinite(node.y))).toBe(true);
+    const camera = fitCamera(laid, 895, 430);
+    expect(Number.isFinite(camera.scale)).toBe(true);
+    const a = laid.find((node) => node.id === "node_0")!;
+    const b = laid.find((node) => node.id === "node_200")!;
+    const spread = Math.max(...laid.map((node) => Math.hypot(node.x, node.y)));
+    expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeLessThan(spread);
+  });
+
   it("fits a camera around laid-out nodes", () => {
     const camera = fitCamera(
       [

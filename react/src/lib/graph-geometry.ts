@@ -281,25 +281,40 @@ export function layoutGraph(nodes: LayoutNode[], edges: LayoutEdge[], mode: Layo
   const iterations = count > 280 ? 24 : count > 90 ? 40 : 64;
   const area = Math.max(1_200, count * 110);
   const k = Math.sqrt(area / count);
+  // Fruchterman-Reingold with a cooling step cap: forces are accumulated per
+  // node and each node moves at most `temperature` per iteration, so a long
+  // edge on a big ring cannot overshoot and blow the layout up to NaN.
+  const spread = Math.max(...copies.map((node) => Math.hypot(node.x, node.y)));
+  const startTemperature = Math.max(k, spread / 4);
+  const endTemperature = k / 4;
+  const displacement = new Map(copies.map((node) => [node.id, { x: 0, y: 0 }]));
   for (let iteration = 0; iteration < iterations; iteration += 1) {
+    for (const vector of displacement.values()) {
+      vector.x = 0;
+      vector.y = 0;
+    }
     for (let i = 0; i < count; i += 1) {
+      const a = copies[i]!;
+      const aDisp = displacement.get(a.id)!;
       for (let j = i + 1; j < count; j += 1) {
-        let dx = copies[j]!.x - copies[i]!.x;
-        let dy = copies[j]!.y - copies[i]!.y;
+        const b = copies[j]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
         const dist = Math.hypot(dx, dy) || 0.05;
-        const force = (k * k) / dist;
-        const fx = (dx / dist) * force * 0.06;
-        const fy = (dy / dist) * force * 0.06;
-        copies[i]!.x -= fx;
-        copies[i]!.y -= fy;
-        copies[j]!.x += fx;
-        copies[j]!.y += fy;
+        const force = ((k * k) / dist) * 0.06;
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        aDisp.x -= fx;
+        aDisp.y -= fy;
+        const bDisp = displacement.get(b.id)!;
+        bDisp.x += fx;
+        bDisp.y += fy;
       }
     }
     for (const edge of edges) {
       const source = byId.get(edge.source);
       const target = byId.get(edge.target);
-      if (!source || !target) {
+      if (!source || !target || source === target) {
         continue;
       }
       const dx = target.x - source.x;
@@ -308,12 +323,23 @@ export function layoutGraph(nodes: LayoutNode[], edges: LayoutEdge[], mode: Layo
       const force = ((dist * dist) / k) * 0.012;
       const fx = (dx / dist) * force;
       const fy = (dy / dist) * force;
-      source.x += fx;
-      source.y += fy;
-      target.x -= fx;
-      target.y -= fy;
+      const sourceDisp = displacement.get(source.id)!;
+      const targetDisp = displacement.get(target.id)!;
+      sourceDisp.x += fx;
+      sourceDisp.y += fy;
+      targetDisp.x -= fx;
+      targetDisp.y -= fy;
     }
+    const temperature =
+      startTemperature + ((endTemperature - startTemperature) * iteration) / Math.max(1, iterations - 1);
     for (const node of copies) {
+      const vector = displacement.get(node.id)!;
+      const length = Math.hypot(vector.x, vector.y);
+      if (length > 0) {
+        const step = Math.min(length, temperature) / length;
+        node.x += vector.x * step;
+        node.y += vector.y * step;
+      }
       node.x -= node.x * 0.012;
       node.y -= node.y * 0.012;
     }

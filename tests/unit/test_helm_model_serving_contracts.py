@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 from helm import FULLNAME as _FULLNAME
+from helm import NAMESPACE
 from helm import args as _args
 from helm import container as _container
 from helm import env as _env
@@ -1314,3 +1315,43 @@ def _executor_template(rendered: list[dict[str, Any]]) -> dict[str, Any]:
     configmap = _one(rendered, "ConfigMap", f"{_FULLNAME}-spark-executor-template")
     template: dict[str, Any] = yaml.safe_load(configmap["data"]["executor-pod-template.yaml"])
     return template
+
+
+def test_the_front_door_compresses_what_it_sends_the_browser() -> None:
+    """The console's own gzip skips its API routes, so the edge compresses.
+
+    Next.js hands its compression filter a Content-Type list for route
+    handler responses, which the filter rejects, and a graph payload is tens
+    of megabytes of JSON. The chain keeps the gate first and compression
+    nearest the service, and the Middleware goes away with the setting.
+    """
+
+    gated = _render(
+        (
+            "ingress.enabled=true",
+            "ingress.domain=example.test",
+            "ingress.authProxy.enabled=true",
+            "controlPlane.networkPolicy.enabled=true",
+        )
+    )
+    middleware = _one(gated, "Middleware", f"{_FULLNAME}-compress")
+    assert middleware["spec"] == {"compress": {"minResponseBodyBytes": 1024}}
+    chain = _one(gated, "Ingress", _FULLNAME)["metadata"]["annotations"][
+        "traefik.ingress.kubernetes.io/router.middlewares"
+    ].split(",")
+    assert chain[-1] == f"{NAMESPACE}-{_FULLNAME}-compress@kubernetescrd"
+    assert chain[0].endswith("-errors@kubernetescrd")
+    assert chain[1].endswith("-auth@kubernetescrd")
+
+    ungated = _render(("ingress.enabled=true", "ingress.domain=example.test"))
+    assert _one(ungated, "Ingress", _FULLNAME)["metadata"]["annotations"][
+        "traefik.ingress.kubernetes.io/router.middlewares"
+    ] == f"{NAMESPACE}-{_FULLNAME}-compress@kubernetescrd"
+
+    edge_compresses = _render(
+        ("ingress.enabled=true", "ingress.domain=example.test", "ingress.compression.enabled=false")
+    )
+    assert not [
+        doc for doc in edge_compresses if doc["kind"] == "Middleware" and doc["metadata"]["name"].endswith("-compress")
+    ]
+    assert "annotations" not in _one(edge_compresses, "Ingress", _FULLNAME)["metadata"]

@@ -271,6 +271,27 @@ spec:
 {{- printf "%s-%s-errors@kubernetescrd,%s-%s-auth@kubernetescrd" .Release.Namespace (include "flakegraph.authProxyName" .) .Release.Namespace (include "flakegraph.authProxyName" .) -}}
 {{- end -}}
 
+{{/* The Middleware that compresses responses on their way to a browser. */}}
+{{- define "flakegraph.compressionName" -}}
+{{- printf "%s-compress" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+The middleware chain on the ingress people use: the gate first, when there
+is one, then compression nearest the service so every response it sends -
+the console's, and the gate's own sign-in redirects - is compressed alike.
+*/}}
+{{- define "flakegraph.ingressMiddlewares" -}}
+{{- $chain := list -}}
+{{- if .Values.ingress.authProxy.enabled -}}
+{{- $chain = append $chain (include "flakegraph.authProxyMiddlewares" .) -}}
+{{- end -}}
+{{- if .Values.ingress.compression.enabled -}}
+{{- $chain = append $chain (printf "%s-%s@kubernetescrd" .Release.Namespace (include "flakegraph.compressionName" .)) -}}
+{{- end -}}
+{{- join "," $chain -}}
+{{- end -}}
+
 {{/* Names produced by the kube-prometheus-stack release monitoring addresses. */}}
 {{- define "flakegraph.grafanaServiceName" -}}
 {{- printf "%s-grafana" .Values.monitoring.release | trunc 63 | trimSuffix "-" -}}

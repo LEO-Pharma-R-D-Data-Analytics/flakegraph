@@ -9,6 +9,15 @@ export interface GraphFilters {
   communityIds?: string[];
   minimumConfidence?: number;
   includeIsolates?: boolean;
+  /** How many entities the result may carry; the best-connected ones win. */
+  limit?: number;
+}
+
+export interface FilteredGraph {
+  nodes: Record<string, unknown>[];
+  edges: Record<string, unknown>[];
+  /** Entities that matched before the limit was applied. */
+  totalNodes: number;
 }
 
 export interface GraphFacets {
@@ -26,10 +35,7 @@ export function graphFacets(dataset: GraphDataset): GraphFacets {
   return { nodeTypes, relationTypes, communityIds };
 }
 
-export function filterGraph(
-  dataset: GraphDataset,
-  filters: GraphFilters = {},
-): { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } {
+export function filterGraph(dataset: GraphDataset, filters: GraphFilters = {}): FilteredGraph {
   const search = (filters.search ?? "").trim().toLowerCase();
   const allowedTypes = new Set(filters.nodeTypes ?? []);
   const allowedRelations = new Set(filters.relationTypes ?? []);
@@ -73,19 +79,54 @@ export function filterGraph(
       connected.add(String(edge.source_node_id ?? edge.source ?? ""));
       connected.add(String(edge.target_node_id ?? edge.target ?? ""));
     }
-    return {
-      nodes: nodes.filter((node) => connected.has(String(node.id ?? ""))).slice(0, MAX_CANVAS_NODES),
+    return capGraph(
+      nodes.filter((node) => connected.has(String(node.id ?? ""))),
       edges,
-    };
+      filters.limit ?? MAX_CANVAS_NODES,
+    );
   }
-  const cappedNodes = nodes.slice(0, MAX_CANVAS_NODES);
-  const cappedIds = new Set(cappedNodes.map((node) => String(node.id ?? "")));
-  edges = edges.filter(
-    (edge) =>
-      cappedIds.has(String(edge.source_node_id ?? edge.source ?? "")) &&
-      cappedIds.has(String(edge.target_node_id ?? edge.target ?? "")),
-  );
-  return { nodes: cappedNodes, edges };
+  return capGraph(nodes, edges, filters.limit ?? MAX_CANVAS_NODES);
+}
+
+/**
+ * Keep the `limit` best-connected entities and the edges between them.
+ *
+ * Degree is counted over the edges passed in, so a filtered view ranks by the
+ * connections that survived the filter. Ties keep the incoming order, which
+ * makes the choice stable across renders.
+ */
+export function capGraph(
+  nodes: Record<string, unknown>[],
+  edges: Record<string, unknown>[],
+  limit: number,
+): FilteredGraph {
+  const totalNodes = nodes.length;
+  if (nodes.length <= limit) {
+    return { nodes, edges, totalNodes };
+  }
+  const degree = new Map<string, number>();
+  for (const edge of edges) {
+    for (const end of [edge.source_node_id ?? edge.source, edge.target_node_id ?? edge.target]) {
+      const id = String(end ?? "");
+      degree.set(id, (degree.get(id) ?? 0) + 1);
+    }
+  }
+  const ranked = nodes
+    .map((node, index) => ({ node, index, degree: degree.get(String(node.id ?? "")) ?? 0 }))
+    .sort((left, right) => right.degree - left.degree || left.index - right.index)
+    .slice(0, limit)
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.node);
+  const ids = new Set(ranked.map((node) => String(node.id ?? "")));
+  return {
+    nodes: ranked,
+    edges: edges.filter(
+      (edge) =>
+        ids.has(String(edge.source_node_id ?? edge.source ?? "")) &&
+        ids.has(String(edge.target_node_id ?? edge.target ?? "")),
+    ),
+    totalNodes,
+  };
 }
 
 export function communityMembership(communities: readonly Record<string, unknown>[]): Map<string, Set<string>> {

@@ -28,14 +28,14 @@ metadata:
   name: {{ include "flakegraph.fullname" . }}
   labels:
     {{- include "flakegraph.labels" . | nindent 4 }}
-  {{- if or $ingress.annotations $ingress.authProxy.enabled }}
+  {{- if or $ingress.annotations $ingress.authProxy.enabled $ingress.compression.enabled }}
   annotations:
     {{- with $ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    {{- if $ingress.authProxy.enabled }}
-    # Errors wrapping the gate, in that order; the helper says why.
-    traefik.ingress.kubernetes.io/router.middlewares: {{ include "flakegraph.authProxyMiddlewares" $root }}
+    {{- if or $ingress.authProxy.enabled $ingress.compression.enabled }}
+    # Errors wrapping the gate, then compression; the helpers say why.
+    traefik.ingress.kubernetes.io/router.middlewares: {{ include "flakegraph.ingressMiddlewares" $root }}
     {{- end }}
   {{- end }}
 spec:
@@ -145,4 +145,18 @@ spec:
           {{- end }}
     {{- end }}
 {{- end }}
+{{- end }}
+{{- if and .Values.ingress.enabled .Values.ingress.compression.enabled }}
+---
+# Gzip or brotli, whichever the browser offers, for anything over a kilobyte
+# that the service did not already encode. See ingress.compression in values.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "flakegraph.compressionName" . }}
+  labels:
+    {{- include "flakegraph.labels" . | nindent 4 }}
+spec:
+  compress:
+    minResponseBodyBytes: 1024
 {{- end }}

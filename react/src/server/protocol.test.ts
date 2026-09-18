@@ -111,6 +111,16 @@ describe("graph filters", () => {
     expect(search.nodes.map((node) => node.id)).toEqual(["judo"]);
     const connected = filterGraph(dataset, { includeIsolates: false });
     expect(connected.nodes.every((node) => ["judo", "kano", "tokyo"].includes(String(node.id)))).toBe(true);
+    expect(connected.totalNodes).toBe(connected.nodes.length);
+  });
+
+  it("keeps the best-connected entities when a limit applies", () => {
+    const capped = filterGraph(dataset, { limit: 2 });
+    expect(capped.totalNodes).toBe(dataset.nodes.length);
+    expect(capped.nodes.map((node) => node.id)).toEqual(["judo", "kano"]);
+    expect(capped.edges.map((edge) => edge.id)).toEqual(["r1"]);
+    const uncapped = filterGraph(dataset, { limit: Number.POSITIVE_INFINITY });
+    expect(uncapped.nodes).toHaveLength(dataset.nodes.length);
   });
 });
 

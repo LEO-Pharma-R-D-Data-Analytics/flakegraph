@@ -648,6 +648,15 @@ unreachable rather than unprotected — but the chart refuses to render the gate
 without it, since a gate whose header anyone in the cluster can forge is not a
 gate.
 
+`ingress.compression` compresses responses at the edge. The console serves a
+graph to the browser as one JSON payload, tens of megabytes before compression
+for a few thousand entities, and the console's own gzip never reaches it:
+Next.js hands its compression filter a Content-Type list for route handler
+responses, which the filter rejects as not compressible. The setting renders a
+Traefik `compress` Middleware and appends it to the ingress chain after the
+gate, so it needs the Traefik CRDs the gate already needs. An edge that
+compresses on its own turns it off.
+
 ### Callers that are programs
 
 A caller holding an API key cannot satisfy a browser sign-in, so the paths

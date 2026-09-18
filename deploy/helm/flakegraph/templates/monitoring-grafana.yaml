@@ -16,13 +16,13 @@ metadata:
   labels:
     {{- include "flakegraph.labels" . | nindent 4 }}
     app.kubernetes.io/component: monitoring
-  {{- if or $ingress.annotations $ingress.authProxy.enabled }}
+  {{- if or $ingress.annotations $ingress.authProxy.enabled $ingress.compression.enabled }}
   annotations:
     {{- with $ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    {{- if $ingress.authProxy.enabled }}
-    traefik.ingress.kubernetes.io/router.middlewares: {{ include "flakegraph.authProxyMiddlewares" . }}
+    {{- if or $ingress.authProxy.enabled $ingress.compression.enabled }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ include "flakegraph.ingressMiddlewares" . }}
     {{- end }}
   {{- end }}
 spec:

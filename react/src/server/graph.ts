@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { capGraph } from "./graph-filter";
 import { GRAPH_REVIEW_ROW_LIMITS, type GraphDataset } from "./protocol/schema";
 
 export async function loadLocalGraph(directory: string): Promise<GraphDataset> {
@@ -12,13 +13,19 @@ export async function loadLocalGraph(directory: string): Promise<GraphDataset> {
   if (!existsSync(parquetNodes) && !existsSync(jsonNodes)) {
     throw new Error(`Graph directory must contain nodes.parquet or nodes.json: ${directory}`);
   }
-  const [nodes, nodeCount] = await readTable(directory, "nodes", GRAPH_REVIEW_ROW_LIMITS.nodes);
-  const nodeIds = new Set(nodes.map((node) => String(node.id ?? "")));
-  const [edges, edgeCount] = await readTable(directory, "edges", GRAPH_REVIEW_ROW_LIMITS.edges);
-  const visibleEdges = edges.filter(
+  // Every row is read so the review sample is the best-connected part of the
+  // graph rather than whichever rows the writer happened to put first; vector
+  // columns are dropped at the reader, which is what makes that affordable.
+  const [allNodes, nodeCount] = await readTable(directory, "nodes", Number.MAX_SAFE_INTEGER);
+  const [allEdges, edgeCount] = await readTable(directory, "edges", Number.MAX_SAFE_INTEGER);
+  const nodeIds = new Set(allNodes.map((node) => String(node.id ?? "")));
+  const joinedEdges = allEdges.filter(
     (edge) => nodeIds.has(String(edge.source_node_id ?? edge.source ?? "")) &&
       nodeIds.has(String(edge.target_node_id ?? edge.target ?? "")),
   );
+  const sample = capGraph(allNodes, joinedEdges.length > 0 ? joinedEdges : allEdges, GRAPH_REVIEW_ROW_LIMITS.nodes);
+  const nodes = sample.nodes;
+  const edges = sample.edges.slice(0, GRAPH_REVIEW_ROW_LIMITS.edges);
   const [communities, communityCount] = await readTable(
     directory,
     "communities",
@@ -46,7 +53,7 @@ export async function loadLocalGraph(directory: string): Promise<GraphDataset> {
   return {
     graphId,
     nodes,
-    edges: visibleEdges.length > 0 ? visibleEdges : edges,
+    edges,
     communities,
     evidence,
     documents,
@@ -88,21 +95,29 @@ async function readOptionalTable(directory: string, name: string): Promise<Recor
   return rows;
 }
 
+/** Column names the console never renders and that dominate a table's size. */
+const VECTOR_COLUMN = /(^|_)embedding(s)?$/;
+
 async function readParquetRows(file: string, limit: number): Promise<Record<string, unknown>[]> {
-  const { asyncBufferFromFile, parquetReadObjects } = await import("hyparquet");
+  const { asyncBufferFromFile, parquetMetadataAsync, parquetReadObjects, parquetSchema } = await import("hyparquet");
   const buffer = await asyncBufferFromFile(file);
+  const metadata = await parquetMetadataAsync(buffer);
+  const columns = parquetSchema(metadata)
+    .children.map((child) => child.element.name)
+    .filter((name) => !VECTOR_COLUMN.test(name));
   const rows = await parquetReadObjects({
     file: buffer,
-    rowEnd: limit,
+    metadata,
+    columns,
+    rowEnd: Math.min(limit, Number(metadata.num_rows)),
   });
   return rows.map(normalizeRow);
 }
 
 async function countParquet(file: string): Promise<number> {
-  const { asyncBufferFromFile, parquetReadObjects } = await import("hyparquet");
-  const buffer = await asyncBufferFromFile(file);
-  const rows = await parquetReadObjects({ file: buffer });
-  return rows.length;
+  const { asyncBufferFromFile, parquetMetadataAsync } = await import("hyparquet");
+  const metadata = await parquetMetadataAsync(await asyncBufferFromFile(file));
+  return Number(metadata.num_rows);
 }
 
 async function readJsonArray(file: string): Promise<Record<string, unknown>[]> {
@@ -123,6 +138,9 @@ async function readJsonObject(file: string): Promise<Record<string, unknown>> {
 export function normalizeRow(row: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(row)) {
+    if (VECTOR_COLUMN.test(key)) {
+      continue;
+    }
     result[key] = normalizeValue(value);
   }
   return result;

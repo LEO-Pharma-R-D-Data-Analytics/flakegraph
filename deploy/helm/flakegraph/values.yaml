@@ -677,6 +677,14 @@ ingress:
     gateway: llm
     ocr: ocr
   annotations: {}
+  # Compress what the edge sends the browser. The console's own gzip never
+  # reaches its API route handlers - Next.js hands the compression filter a
+  # Content-Type list, which it rejects as not compressible - and one graph
+  # payload is tens of megabytes of JSON before compression. Rendered as a
+  # Traefik Middleware on the gated ingress, so it needs the same CRDs the gate
+  # does; an edge that compresses on its own can switch it off.
+  compression:
+    enabled: true
   # Paths whose callers are programs, not people, keyed by the service that
   # serves them. They are routed without the gate, because every one of them
   # already authenticates its own callers - the gateway on a virtual key, the

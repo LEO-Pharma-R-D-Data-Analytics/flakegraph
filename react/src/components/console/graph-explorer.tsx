@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/components/providers";
 import { graphCounts } from "@/server/protocol/schema";
-import { filterGraph, graphFacets, type GraphFilters } from "@/server/graph-filter";
+import { CANVAS_NODE_LIMIT, capGraph, filterGraph, graphFacets, type GraphFilters } from "@/server/graph-filter";
 import { actualUsdFromConsumption, compareEstimateToActual, type ConsumptionEstimate } from "@/server/estimate";
 import type { GraphDataset } from "@/server/protocol/schema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +32,9 @@ import {
   type LayoutMode,
 } from "@/lib/graph-geometry";
 import { cn } from "@/lib/utils";
+
+/** The overview draws only the best-connected core; a focus widens the cap. */
+const OVERVIEW_NODE_LIMIT = 400;
 
 export function GraphExplorer({
   dataset,
@@ -95,7 +98,17 @@ export function GraphExplorer({
   const facets = useMemo(() => graphFacets(dataset), [dataset]);
   const membership = useMemo(() => communityMembership(dataset.communities ?? []), [dataset.communities]);
   const filters: GraphFilters = useMemo(
-    () => ({ search, nodeTypes, relationTypes, communityIds, minimumConfidence: confidence, includeIsolates }),
+    () => ({
+      search,
+      nodeTypes,
+      relationTypes,
+      communityIds,
+      minimumConfidence: confidence,
+      includeIsolates,
+      // The whole match stays available for neighborhoods and exports; only
+      // the canvas is capped below.
+      limit: Number.POSITIVE_INFINITY,
+    }),
     [search, nodeTypes, relationTypes, communityIds, confidence, includeIsolates],
   );
   const filtered = useMemo(() => filterGraph(dataset, filters), [dataset, filters]);
@@ -115,9 +128,10 @@ export function GraphExplorer({
     }
     return hopNeighborhood(filtered.nodes, filtered.edges, selectedId);
   }, [filtered, selectedId, showNeighborhood]);
+  const canvasLimit = focused ? CANVAS_NODE_LIMIT : OVERVIEW_NODE_LIMIT;
   const canvas = useMemo(
-    () => capGraph(focusedGraph.nodes, focusedGraph.edges, focused ? 1_200 : 400),
-    [focusedGraph.edges, focusedGraph.nodes, focused],
+    () => capGraph(focusedGraph.nodes, focusedGraph.edges, canvasLimit),
+    [canvasLimit, focusedGraph.edges, focusedGraph.nodes],
   );
   const pathHighlight = useMemo(() => {
     if (pathEndpoints.length !== 2) {
@@ -429,11 +443,10 @@ export function GraphExplorer({
       </details>
       {focusedGraph.nodes.length > 0 ? (
         <p className="text-sm text-muted-foreground" data-testid="explore-scope">
-          Showing {Math.min(focusedGraph.nodes.length, focused ? 1_200 : 400).toLocaleString()} of{" "}
-          {focusedGraph.nodes.length.toLocaleString()} entities on the canvas
+          Showing {canvas.nodes.length.toLocaleString()} of {canvas.totalNodes.toLocaleString()} entities on the canvas
           {showNeighborhood && selectedId ? " in the selected neighborhood" : ""}.
-          {focusedGraph.nodes.length > (focused ? 1_200 : 400)
-            ? " Search or a neighborhood focuses the rest. Summary metrics cover the full graph."
+          {canvas.totalNodes > canvas.nodes.length
+            ? " The best-connected ones are drawn; search or a neighborhood focuses the rest. Summary metrics cover the full graph."
             : " Summary metrics cover the full graph."}
         </p>
       ) : (
@@ -950,21 +963,6 @@ function RecordTable({
       </Table>
     </div>
   );
-}
-
-function capGraph(
-  nodes: Record<string, unknown>[],
-  edges: Record<string, unknown>[],
-  limit: number,
-) {
-  const cappedNodes = nodes.slice(0, limit);
-  const ids = new Set(cappedNodes.map((node) => String(node.id)));
-  const cappedEdges = edges.filter((edge) => {
-    const source = String(edge.source_node_id ?? edge.source ?? "");
-    const target = String(edge.target_node_id ?? edge.target ?? "");
-    return ids.has(source) && ids.has(target);
-  });
-  return { nodes: cappedNodes, edges: cappedEdges };
 }
 
 function prettyLabel(value: string): string {

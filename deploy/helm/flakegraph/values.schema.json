@@ -1000,6 +1000,15 @@
         "annotations": {
           "type": "object"
         },
+        "compression": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
         "authProxy": {
           "type": "object",
           "additionalProperties": false,

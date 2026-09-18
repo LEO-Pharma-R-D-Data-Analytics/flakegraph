@@ -19,6 +19,7 @@ export function scopeDataset(dataset: GraphDataset, scope?: AskScope): GraphData
     search: scope.search,
     communityIds: scope.communityIds,
     includeIsolates: true,
+    limit: Number.POSITIVE_INFINITY,
   });
   const nodeIds = new Set(filtered.nodes.map((node) => String(node.id ?? "")));
   const edgeIds = new Set(filtered.edges.map((edge) => String(edge.id ?? "")));
