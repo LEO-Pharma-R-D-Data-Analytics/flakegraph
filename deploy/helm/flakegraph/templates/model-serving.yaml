@@ -156,7 +156,7 @@ spec:
         # live here rather than on the engine because a healthy engine behind an
         # unhealthy floor is not a servable replica.
         - name: sidecar
-          image: {{ include "flakegraph.image" . }}
+          image: {{ include "flakegraph.sidecarImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [flakegraph, serving, sidecar]
           env:

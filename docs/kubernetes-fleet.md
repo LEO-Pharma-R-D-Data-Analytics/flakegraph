@@ -574,6 +574,14 @@ unified-memory part the engine also holds most of the memory, so
 `device.virtualVramGiB` tells MinerU what share is its to batch against - it
 would otherwise read the whole device and size its batches accordingly.
 
+Releasing the application does not have to roll the engines. The engine pod's
+auth sidecar is built from the application image, so an `image.tag` bump
+would restart all six engines - an hour of reduced capacity and every open
+conversation cut - for a release that changed nothing about the sidecar. Pin
+`modelServing.sidecar.imageTag` at the last build that touched
+`src/kg_processor/serving/`, and move it deliberately when one does.
+
+
 Note that the parsing bands follow the serving convention — **lower is served
 first** — while the pipeline's own task queue orders by `priority DESC`. They are
 different queues; the shim shares its vocabulary with the sidecar.

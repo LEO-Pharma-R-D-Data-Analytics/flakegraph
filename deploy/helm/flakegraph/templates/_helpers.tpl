@@ -36,6 +36,15 @@
 {{- end -}}
 {{- end -}}
 
+{{/* The sidecar's image: the application image, at its own tag when one is pinned. */}}
+{{- define "flakegraph.sidecarImage" -}}
+{{- if .Values.modelServing.sidecar.imageTag -}}
+{{- printf "%s:%s" .Values.image.repository .Values.modelServing.sidecar.imageTag -}}
+{{- else -}}
+{{- include "flakegraph.image" . -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Return the stable in-cluster vLLM Service name. */}}
 {{- define "flakegraph.modelServingName" -}}
 {{- printf "%s-vllm" (include "flakegraph.fullname" .) | trunc 63 | trimSuffix "-" -}}

@@ -359,6 +359,12 @@ modelServing:
   # sidecar stamps unconditionally and an unknown class resolves to the largest
   # band here.
   sidecar:
+    # The sidecar is the one container in the engine pod built from the
+    # application image, so a release of the application would otherwise roll
+    # every engine - an hour of reduced capacity, and every open conversation
+    # cut. Pinning the tag it runs holds the engines still through releases
+    # that change nothing about it; empty follows image.tag.
+    imageTag: ""
     keySecret:
       name: flakegraph-serving-keys
       key: serving-keys.json

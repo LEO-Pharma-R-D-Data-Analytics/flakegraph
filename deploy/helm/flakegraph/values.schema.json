@@ -547,6 +547,9 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "imageTag": {
+              "type": "string"
+            },
             "keySecret": {
               "$ref": "#/$defs/servingKeySecret"
             },

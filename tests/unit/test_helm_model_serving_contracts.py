@@ -496,6 +496,23 @@ def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
     assert values["terminationGracePeriodSeconds"] > config["ocr"]["timeout_seconds"]
 
 
+def test_the_sidecar_can_hold_its_tag_while_the_application_moves() -> None:
+    """A release of the application must not have to roll every engine.
+
+    The sidecar is the engine pod's one container built from the application
+    image, and it rarely changes. Pinned, the engines stay up through a worker
+    release; unpinned, it follows the application tag as before.
+    """
+
+    following = _render((*_SERVING, "image.tag=0.3.11"))
+    pinned = _render((*_SERVING, "image.tag=0.3.11", "modelServing.sidecar.imageTag=0.3.10"))
+
+    for rendered, tag in ((following, "0.3.11"), (pinned, "0.3.10")):
+        pod = _pod(_one(rendered, "StatefulSet", _VLLM))
+        assert _container(pod, "sidecar")["image"].endswith(f"/flakegraph:{tag}")
+        assert _worker(rendered, "extract")["image"].endswith("/flakegraph:0.3.11")
+
+
 def test_document_parsing_takes_the_device_without_claiming_it() -> None:
     """On the GPU the parser is handed the device, never scheduled for it.
 
