@@ -287,6 +287,28 @@ test.describe("kubernetes fleet", () => {
     await expect(page.getByRole("main")).toContainText("graph_k8s_done");
   });
 
+  test("removing a document alone is enough to build a new version, and versions are listed", async ({ page }) => {
+    await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_done");
+    await expect(page.getByRole("heading", { name: "Fleet judo" })).toBeVisible();
+    await page.getByRole("tab", { name: "Versions" }).click();
+    // The fleet keeps the versions; the stub has published none, and the
+    // workspace's own version labels do not appear on the fleet.
+    await expect(page.getByTestId("graph-versions")).toContainText("No version has been published");
+    await expect(page.getByRole("button", { name: "Publish new version" })).toHaveCount(0);
+    await expect(page.getByText("Watch new files")).toHaveCount(0);
+    await page.getByRole("tab", { name: "Edit" }).click();
+    await page.getByLabel("Remove judo-history.md").check();
+    const confirm = page.getByRole("button", { name: "Confirm environment" });
+    if (await confirm.isVisible()) {
+      await confirm.click();
+    }
+    await expect(page.getByTestId("revision-summary")).toContainText("Keeps 1 document · removes 1");
+    await page.getByRole("button", { name: "Build new version" }).click();
+    await expect(page.getByText(/Building a new version of Fleet judo/)).toBeVisible();
+    await expect(page).not.toHaveURL(/run=run_k8s_done/);
+    await expect(page.getByRole("main").getByText("queued", { exact: false }).first()).toBeVisible({ timeout: 30_000 });
+  });
+
   test("cancels an in-flight fleet run and retries a failed one", async ({ page }) => {
     await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_martial");
     await expect(page.getByRole("heading", { name: "Fleet martial arts" })).toBeVisible();
@@ -294,6 +316,11 @@ test.describe("kubernetes fleet", () => {
     await expect(page.getByText(/Reconciled infrastructure/i)).toBeVisible();
     await page.getByTestId("guide-card").getByRole("button", { name: "Cancel job" }).click();
     await expect(page.getByRole("main").getByText("cancelled", { exact: true }).first()).toBeVisible();
+    // A cancelled run keeps what it finished and can be picked up again.
+    await expect(page.getByTestId("guide-card")).toContainText("Resume this run where it stopped");
+    await page.getByTestId("guide-card").getByRole("button", { name: "Resume run" }).click();
+    await expect(page.getByText("Run resumed")).toBeVisible();
+    await expect(page.getByRole("main").getByText("queued", { exact: false }).first()).toBeVisible();
     await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_failed");
     await expect(page.getByTestId("status-sentence")).toContainText("Worker lease expired");
     await page.getByTestId("guide-card").getByRole("button", { name: "Retry failed documents" }).click();
