@@ -35,6 +35,11 @@ config:
       fallback_secondary_provider: mineru_api
       mineru_api_url: ${KG_MINERU_API_URL}
       mineru_api_key: ${KG_MINERU_API_KEY}
+      # A scanned document is held by the shim for up to an hour
+      # (documentParsing.shim.requestTimeoutSeconds); the worker has to wait
+      # at least that long, or it gives up on a parse the pool then finishes
+      # for nobody and retries it from the start.
+      timeout_seconds: 3600
     llm:
       # vllm_local rather than openai_compatible: the adapter disables the chat
       # template's free-form reasoning before strict JSON generation. vLLM counts

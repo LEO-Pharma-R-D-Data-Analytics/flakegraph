@@ -488,6 +488,12 @@ def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:
     writable = tuple(mount["mountPath"] for mount in parser["volumeMounts"])
     for variable in ("MINERU_API_OUTPUT_ROOT", "XDG_CACHE_HOME", "HF_HOME", "HOME"):
         assert _env(parser)[variable]["value"].startswith(writable), variable
+    # The worker waits at least as long as the shim holds a document. Giving up
+    # sooner leaves the pool parsing for nobody and retries the parse from the
+    # start; the workers' grace period then covers the parse it is finishing.
+    config = yaml.safe_load(values["config"]["content"])
+    assert config["ocr"]["timeout_seconds"] >= parsing["shim"]["requestTimeoutSeconds"]
+    assert values["terminationGracePeriodSeconds"] > config["ocr"]["timeout_seconds"]
 
 
 def test_document_parsing_replicas_spread_across_hosts_without_requiring_it() -> None:
