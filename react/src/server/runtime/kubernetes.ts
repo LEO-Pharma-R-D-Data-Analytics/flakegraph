@@ -528,7 +528,7 @@ export class KubernetesRuntime implements ControlPlane {
         if (!snapshot.outputPath) {
           throw invalid(`Run ${snapshot.runId} does not record an output directory`);
         }
-        const directory = this.local.artifactDirectory(snapshot.outputPath);
+        const directory = this.materialisedGraphDirectory(snapshot.runId, snapshot.outputPath);
         // The fleet publishes its graph to the artifact store; the local copy
         // is materialised once, by the CLI, then read like any other graph.
         if (!this.stubbed && !graphArtifactsExist(directory)) {
@@ -546,6 +546,25 @@ export class KubernetesRuntime implements ControlPlane {
       },
       catch: (cause) => fromCause(cause, "Unable to load fleet graph"),
     });
+  }
+
+  /**
+   * Where a fleet run's graph is materialised for reading.
+   *
+   * Runs of one graph submitted by the console share the graph's output path,
+   * and each version is its own graph, so a run keeps its export in a
+   * directory of its own beneath it. A run submitted with its id as the last
+   * element of its path already owns that directory.
+   */
+  private materialisedGraphDirectory(runId: string, outputPath: string): string {
+    const base = this.local.artifactDirectory(outputPath);
+    if (path.basename(base) === runId) {
+      return base;
+    }
+    if (this.stubbed && graphArtifactsExist(base)) {
+      return base;
+    }
+    return path.join(base, runId);
   }
 
   private async control(action: "cancel" | "retry", runId: string, configPath: string | null | undefined): Promise<void> {
