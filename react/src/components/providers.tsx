@@ -12,16 +12,19 @@ import { Toaster } from "@/components/ui/sonner";
 
 export const trpc = createTRPCReact<AppRouter>();
 
-function getRuntimeHeader(): RuntimeMode {
+// The runtime travels as a header only when the address names one; otherwise
+// the server's configured default applies, which on a deployed control plane
+// is the fleet it fronts.
+function getRuntimeHeader(): RuntimeMode | null {
   if (typeof window === "undefined") {
-    return "local";
+    return null;
   }
   const params = new URLSearchParams(window.location.search);
   const runtime = params.get("runtime");
   if (runtime === "kubernetes" || runtime === "snowflake" || runtime === "local") {
     return runtime;
   }
-  return "local";
+  return null;
 }
 
 export function AppProviders({ children }: { children: ReactNode }) {
@@ -40,7 +43,8 @@ export function AppProviders({ children }: { children: ReactNode }) {
           url: "/api/trpc",
           transformer: superjson,
           headers() {
-            return { "x-flakegraph-runtime": getRuntimeHeader() };
+            const runtime = getRuntimeHeader();
+            return runtime ? { "x-flakegraph-runtime": runtime } : {};
           },
         }),
       ],

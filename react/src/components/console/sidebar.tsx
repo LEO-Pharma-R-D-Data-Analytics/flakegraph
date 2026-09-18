@@ -31,6 +31,10 @@ interface SidebarProps {
   page: string;
   selectedRunId: string | null;
   identified: boolean;
+  // Behind a sign-in gate the identity is the gate's: nothing here assumes
+  // one, and leaving means signing out of the gate.
+  identityFromGate?: boolean;
+  signOutUrl?: string | null;
   principal: string;
   role: "operator" | "analyst" | "staff";
   suggestionMode: "off" | "on-request" | "auto-fill";
@@ -255,7 +259,9 @@ export function Sidebar(props: SidebarProps) {
             <DialogHeader>
               <DialogTitle>Session identity</DialogTitle>
               <DialogDescription>
-                Assume an ACL principal for this catalog. These are demo identities, not a product login.
+                {props.identityFromGate
+                  ? "Who the sign-in gate says you are. Graphs you own are listed under Mine."
+                  : "Assume an ACL principal for this catalog. These are demo identities, not a product login."}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 text-sm">
@@ -272,34 +278,44 @@ export function Sidebar(props: SidebarProps) {
                       ? "This cluster catalog lists every graph this control plane can see. Identity does not hide rows here. Sign in, then use Mine for graphs you own."
                       : "This laptop catalog lists every local graph. Identity does not hide rows here. Sign in, then use Mine for graphs you own."}
               </p>
-              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Assume principal</p>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  onClick={() =>
-                    assume.mutate({ userName: "ALICE", roles: ["APP_OPERATOR"], role: "operator" })
-                  }
-                >
-                  Sign in as ALICE
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => assume.mutate({ userName: "CAROL", roles: ["ANALYST"], role: "analyst" })}
-                >
-                  Sign in as CAROL
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => assume.mutate({ userName: "SRE", roles: ["FLAKEGRAPH_STAFF"], role: "staff" })}
-                >
-                  Staff
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => assume.mutate({ userName: "", roles: [], role: "operator" })}>
-                  Sign out
-                </Button>
-              </div>
+              {props.identityFromGate ? (
+                props.signOutUrl ? (
+                  <Button size="sm" variant="outline" asChild>
+                    <a href={props.signOutUrl}>Sign out</a>
+                  </Button>
+                ) : null
+              ) : (
+                <>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Assume principal</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        assume.mutate({ userName: "ALICE", roles: ["APP_OPERATOR"], role: "operator" })
+                      }
+                    >
+                      Sign in as ALICE
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => assume.mutate({ userName: "CAROL", roles: ["ANALYST"], role: "analyst" })}
+                    >
+                      Sign in as CAROL
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => assume.mutate({ userName: "SRE", roles: ["FLAKEGRAPH_STAFF"], role: "staff" })}
+                    >
+                      Staff
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => assume.mutate({ userName: "", roles: [], role: "operator" })}>
+                      Sign out
+                    </Button>
+                  </div>
+                </>
+              )}
               <div className="space-y-1.5">
                 <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Suggestions</p>
                 <div className="flex flex-wrap gap-1.5">

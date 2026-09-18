@@ -59,6 +59,8 @@ export const appRouter = router({
         runtime: ctx.runtimeName,
         capabilities: [...ctx.controlPlane.capabilities],
         identified: Boolean(ctx.viewer.userName),
+        identityFromGate: appEnv().trustIdentityHeaders,
+        signOutUrl: process.env.FLAKEGRAPH_APP_SIGN_OUT_URL?.trim() || null,
         snowflakeHosted: appEnv().snowflakeHosted,
         availableRuntimes: availableRuntimes(),
         repositoryRoot: appEnv().repositoryRoot,
@@ -79,7 +81,15 @@ export const appRouter = router({
           role: z.enum(["operator", "analyst", "staff"]),
         }),
       )
-      .mutation(({ input }) => assumeIdentity(input)),
+      .mutation(({ input }) => {
+        if (appEnv().trustIdentityHeaders) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Identity comes from the sign-in gate here; it cannot be assumed.",
+          });
+        }
+        return assumeIdentity(input);
+      }),
     setSuggestions: publicProcedure
       .input(z.object({ mode: z.enum(["off", "on-request", "auto-fill"]) }))
       .mutation(({ input }) => setSuggestionMode(input.mode)),

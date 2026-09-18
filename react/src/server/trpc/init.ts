@@ -43,14 +43,18 @@ export async function createContext(opts: { headers: Headers }): Promise<TrpcCon
     trustIdentityHeaders: env.trustIdentityHeaders,
     snowflakeHosted: env.snowflakeHosted,
   });
-  const viewer = workspace.identity ?? headerViewer;
+  // A gate that established who the viewer is outranks a runtime's own
+  // answer; an assumed identity is a rehearsal device for a control plane
+  // nobody has signed in to, never an override of the gate.
+  const assumed = env.trustIdentityHeaders ? null : workspace.identity;
+  const viewer = assumed ?? headerViewer;
   const controlPlane = resolveRuntime(runtimeName, viewer);
-  const runtimeViewer = await runEffect(controlPlane.viewer());
+  const runtimeViewer = headerViewer.userName ? headerViewer : await runEffect(controlPlane.viewer());
   return {
     headers: opts.headers,
     runtimeName: controlPlane.runtime,
     controlPlane,
-    viewer: workspace.identity ?? runtimeViewer,
+    viewer: assumed ?? runtimeViewer,
   };
 }
 

@@ -34,7 +34,7 @@ export function ConsoleApp() {
 }
 
 function ConsoleInner() {
-  const [runtime, setRuntime] = useQueryState("runtime", runtimeParser.withDefault("local"));
+  const [runtime, setRuntime] = useQueryState("runtime", runtimeParser);
   const [page, setPage] = useQueryState("page", pageParser.withDefault("new"));
   const [runId, setRunId] = useQueryState("run");
   const [navOpen, setNavOpen] = useState(false);
@@ -127,7 +127,7 @@ function ConsoleInner() {
   }
 
   const capabilities = new Set(session.data?.capabilities ?? []);
-  const effectiveRuntime = session.data?.runtime ?? runtime;
+  const effectiveRuntime = session.data?.runtime ?? runtime ?? "local";
 
   return (
     <div className="flex h-svh overflow-hidden bg-background">
@@ -181,6 +181,8 @@ function ConsoleInner() {
         page={page}
         selectedRunId={runId}
         identified={Boolean(session.data?.identified)}
+        identityFromGate={Boolean(session.data?.identityFromGate)}
+        signOutUrl={session.data?.signOutUrl ?? null}
         principal={session.data?.viewer.userName || "unidentified"}
         role={role}
         suggestionMode={session.data?.suggestionMode ?? "on-request"}
