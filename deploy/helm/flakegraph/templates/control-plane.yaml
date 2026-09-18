@@ -113,9 +113,9 @@ metadata:
     {{- include "flakegraph.labels" . | nindent 4 }}
     app.kubernetes.io/component: control-plane
 spec:
-  # Streamlit keeps session state in the process, so a second replica would serve
-  # some requests from a process that has never seen the session. Scaling this
-  # needs sticky sessions or shared state, not a larger number here.
+  # The console keeps its catalog on one volume, so a second replica would
+  # need that volume shared. Scaling this needs shared state, not a larger
+  # number here.
   replicas: 1
   strategy:
     type: Recreate
@@ -130,7 +130,8 @@ spec:
         checksum/config: {{ .Values.config.content | sha256sum }}
     spec:
       serviceAccountName: {{ include "flakegraph.controlPlaneName" . }}
-      # The app queries the cluster through kubectl, which reads this token.
+      # The console reads the cluster through the CLI and kubectl, which read
+      # this token.
       automountServiceAccountToken: true
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
@@ -144,51 +145,43 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
-          workingDir: /app
-          # TLS terminates at the ingress, so the app serves plain HTTP here and
-          # holds no key material of its own.
-          command:
-            - streamlit
-            - run
-            - app/streamlit_app.py
-            - --server.address
-            - 0.0.0.0
-            - --server.port
-            - {{ $controlPlane.service.port | quote }}
-            - --server.headless
-            - "true"
-            - --browser.gatherUsageStats
-            - "false"
+          workingDir: /app/react
+          # TLS terminates at the ingress, so the console serves plain HTTP
+          # here and holds no key material of its own.
+          command: [node, server.js]
           env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: {{ $controlPlane.service.port | quote }}
+            - name: HOSTNAME
+              value: 0.0.0.0
             - name: HOME
               value: /tmp
-            # The control plane shells out to `uv run flakegraph`, and uv wants a
-            # cache it can write. The root filesystem is deliberately read-only,
-            # so point it at the one writable mount rather than relaxing that.
-            - name: UV_CACHE_DIR
-              value: /tmp/uv-cache
-            # The project is already installed into the image's environment, so
-            # `uv run` must use it rather than re-syncing it - which it cannot do
-            # against a read-only /opt/venv, and should not do in any case.
-            - name: UV_NO_SYNC
-              value: "1"
             - name: XDG_CACHE_HOME
               value: /tmp/cache
-            - name: PYTHONPATH
-              value: /app/app
+            # The console shells out to the CLI installed in the image, and
+            # the checkout it reads defaults from is the image's own.
+            - name: FLAKEGRAPH_CLI
+              value: flakegraph
+            - name: FLAKEGRAPH_REPOSITORY_ROOT
+              value: /app
             - name: FLAKEGRAPH_APP_KUBERNETES_NAMESPACE
               value: {{ .Release.Namespace | quote }}
-            # This deployment *is* the fleet's control plane, so the runtime that
-            # opens by default is the fleet, not whatever this pod ran locally.
+            # This deployment *is* the fleet's control plane, so the runtime
+            # that opens by default is the fleet, not whatever this pod ran
+            # locally.
             - name: FLAKEGRAPH_APP_DEFAULT_RUNTIME
-              value: Kubernetes
+              value: kubernetes
             - name: FLAKEGRAPH_APP_REQUIRE_SIGN_IN
               value: {{ $controlPlane.auth.required | quote }}
             {{- if and .Values.ingress.enabled .Values.ingress.authProxy.enabled }}
-            # A gate already authenticated this request, so the application
-            # reads who the viewer is instead of signing them in a second time.
-            - name: FLAKEGRAPH_APP_FORWARDED_IDENTITY_HEADER
-              value: X-Auth-Request-Email
+            # A gate already authenticated this request, so the console reads
+            # who the viewer is from its headers instead of signing them in a
+            # second time. Sound only because the NetworkPolicy the gate
+            # requires admits nothing but the ingress controller.
+            - name: FLAKEGRAPH_TRUST_IDENTITY_HEADERS
+              value: "true"
             - name: FLAKEGRAPH_APP_SIGN_OUT_URL
               value: {{ printf "https://%s.%s/oauth2/sign_out" .Values.ingress.authProxy.host .Values.ingress.domain | quote }}
             {{- end }}
@@ -196,13 +189,36 @@ spec:
             - name: FLAKEGRAPH_APP_STATE_ROOT
               value: {{ $controlPlane.persistence.stateRoot | quote }}
             {{- end }}
+            # The run listing reads the coordination store directly.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: {{ .Values.database.secretKey }}
+            {{- if $controlPlane.ask.secretName }}
+            # Questions over a graph are answered through the gateway, as an
+            # interactive consumer, with a virtual key of the console's own.
+            - name: FLAKEGRAPH_ASK_BASE_URL
+              value: {{ include "flakegraph.gatewayEndpoint" . | quote }}
+            - name: FLAKEGRAPH_ASK_MODEL
+              value: {{ $controlPlane.ask.model | quote }}
+            - name: FLAKEGRAPH_ASK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.ask.secretName }}
+                  key: {{ $controlPlane.ask.secretKey }}
+            {{- end }}
             {{- with $controlPlane.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
             {{- /*
-            The source browser and preflight read the same buckets and
-            providers the workers will, with the same credentials.
+            The CLI the console runs submits to the same queue, reads the same
+            artifact store, and resolves the same provider placeholders as the
+            workers: a run it writes is one the workers will claim, and a graph
+            they publish is one it can read back.
             */ -}}
+            {{- include "flakegraph.coordinationEnv" . | nindent 12 }}
+            {{- include "flakegraph.consumerEnv" . | nindent 12 }}
             {{- include "flakegraph.providerSecretEnv" . | nindent 12 }}
           ports:
             - name: http
@@ -210,18 +226,18 @@ spec:
               protocol: TCP
           startupProbe:
             httpGet:
-              path: /_stcore/health
+              path: /api/health
               port: http
             periodSeconds: 5
             failureThreshold: 60
           readinessProbe:
             httpGet:
-              path: /_stcore/health
+              path: /api/health
               port: http
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /_stcore/health
+              path: /api/health
               port: http
             periodSeconds: 30
           resources:
@@ -232,17 +248,13 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            # Next.js keeps an on-disk cache beside its build, and the build
+            # sits on the read-only image.
+            - name: next-cache
+              mountPath: /app/react/.next/cache
             {{- if $controlPlane.persistence.enabled }}
             - name: state
               mountPath: {{ $controlPlane.persistence.stateRoot }}
-            {{- end }}
-            {{- if $controlPlane.auth.secretName }}
-            # subPath so the image's own .streamlit/config.toml survives; a
-            # directory mount would hide it.
-            - name: streamlit-secrets
-              mountPath: /app/app/.streamlit/secrets.toml
-              subPath: {{ $controlPlane.auth.secretKey }}
-              readOnly: true
             {{- end }}
             {{- with $controlPlane.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
@@ -253,16 +265,12 @@ spec:
             name: {{ include "flakegraph.configMapName" . }}
         - name: tmp
           emptyDir: {}
+        - name: next-cache
+          emptyDir: {}
         {{- if $controlPlane.persistence.enabled }}
         - name: state
           persistentVolumeClaim:
             claimName: {{ include "flakegraph.controlPlaneName" . }}
-        {{- end }}
-        {{- if $controlPlane.auth.secretName }}
-        - name: streamlit-secrets
-          secret:
-            secretName: {{ $controlPlane.auth.secretName }}
-            defaultMode: 0400
         {{- end }}
         {{- with $controlPlane.extraVolumes }}
         {{- toYaml . | nindent 8 }}

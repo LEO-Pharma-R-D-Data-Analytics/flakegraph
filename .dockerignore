@@ -16,3 +16,7 @@ tmp
 data
 docs
 tests
+react/node_modules
+react/.next
+react/test-results
+react/playwright-report

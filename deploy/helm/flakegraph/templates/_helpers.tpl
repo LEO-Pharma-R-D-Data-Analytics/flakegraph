@@ -121,6 +121,40 @@
      workers run: configured differently, it either passes a profile the workers
      cannot execute or fails one they can. Both have drifted from each other
      before, in both directions. */}}
+{{/*
+The coordination store and artifact store, as every process that submits,
+claims, or reads a run must reach them. Workers and the control plane share
+this block so the CLI the console shells out to sees the same fleet the
+workers do.
+*/}}
+{{- define "flakegraph.coordinationEnv" -}}
+- name: KG_DISTRIBUTED_DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.database.secretName }}
+      key: {{ .Values.database.secretKey }}
+{{- if .Values.artifactStorage.uri }}
+- name: KG_DISTRIBUTED_ARTIFACT_URI
+  value: {{ .Values.artifactStorage.uri | quote }}
+- name: KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL
+  value: {{ .Values.artifactStorage.endpointUrl | quote }}
+- name: KG_DISTRIBUTED_ARTIFACT_REGION
+  value: {{ .Values.artifactStorage.region | quote }}
+{{- if .Values.artifactStorage.existingSecret }}
+- name: KG_DISTRIBUTED_ARTIFACT_ACCESS_KEY_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.artifactStorage.existingSecret }}
+      key: {{ .Values.artifactStorage.accessKeyKey }}
+- name: KG_DISTRIBUTED_ARTIFACT_SECRET_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.artifactStorage.existingSecret }}
+      key: {{ .Values.artifactStorage.secretKeyKey }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
 {{- define "flakegraph.consumerEnv" -}}
 {{- if .Values.gateway.enabled }}
 - name: KG_LLM_ENDPOINT

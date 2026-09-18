@@ -599,14 +599,12 @@ gateway:
 controlPlane:
   enabled: true
   service:
-    port: 8501
-  # Sign-in is provider-neutral: Streamlit is pointed at whatever OIDC issuer
-  # the operator names, and nothing in this chart knows which one.
-  # The control plane owns a little state of its own: which runs an operator has
-  # hidden, what a graph has been renamed to, which clusters are registered. The
-  # code lives on a read-only filesystem, so this has to be somewhere writable -
-  # and somewhere that survives a restart, or hiding a run would un-hide itself
-  # the next time the pod moved.
+    port: 3000
+  # The control plane owns state of its own: its run catalog, uploads awaiting
+  # submission, what a graph has been renamed to, which clusters are
+  # registered. The code lives on a read-only filesystem, so this has to be
+  # somewhere writable - and somewhere that survives a restart, or a rename
+  # would undo itself the next time the pod moved.
   persistence:
     enabled: true
     size: 1Gi
@@ -640,16 +638,18 @@ controlPlane:
             app.kubernetes.io/name: traefik
   auth:
     # Refuse to serve an anonymous viewer. Off by default so a local or
-    # single-operator deployment works without an issuer; turn it on wherever
+    # single-operator deployment works without a gate; turn it on wherever
     # the application is reachable by more than the person who installed it.
+    # Identity comes from the gate in front of the ingress (ingress.authProxy),
+    # never from the application itself.
     required: false
-    # A Secret holding a Streamlit secrets.toml with an [auth] section:
-    # redirect_uri, cookie_secret, client_id, client_secret, server_metadata_url.
-    # Mounted read-only over the image's own file. Keeping it here rather than
-    # in the image means the credential is rotated by replacing a Secret, and
-    # survives a redeploy - a copy placed inside a running container does not.
+  # Questions asked over a finished graph go to the gateway as an interactive
+  # consumer. The Secret holds a LiteLLM virtual key scoped to the alias named
+  # here; with no Secret the console still serves graphs, but not questions.
+  ask:
     secretName: ""
-    secretKey: secrets.toml
+    secretKey: FLAKEGRAPH_ASK_API_KEY
+    model: llm-interactive
   resources:
     requests:
       cpu: 250m

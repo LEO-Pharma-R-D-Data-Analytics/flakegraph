@@ -164,11 +164,7 @@ spec:
             - {{ $stage }}
             {{- end }}
           env:
-            - name: KG_DISTRIBUTED_DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Values.database.secretName }}
-                  key: {{ $root.Values.database.secretKey }}
+            {{- include "flakegraph.coordinationEnv" $root | nindent 12 }}
             {{- if $root.Values.database.cloudNativePG.enabled }}
             # KEDA runs outside this namespace, so its PostgreSQL scaler uses a
             # fully qualified CNPG service plus this password instead of the
@@ -192,26 +188,6 @@ spec:
             {{- if or $root.Values.ontology.content $root.Values.ontology.existingConfigMap }}
             - name: KG_ONTOLOGY_PROFILE
               value: /etc/flakegraph-ontology/{{ $root.Values.ontology.key }}
-            {{- end }}
-            {{- if $root.Values.artifactStorage.uri }}
-            - name: KG_DISTRIBUTED_ARTIFACT_URI
-              value: {{ $root.Values.artifactStorage.uri | quote }}
-            - name: KG_DISTRIBUTED_ARTIFACT_ENDPOINT_URL
-              value: {{ $root.Values.artifactStorage.endpointUrl | quote }}
-            - name: KG_DISTRIBUTED_ARTIFACT_REGION
-              value: {{ $root.Values.artifactStorage.region | quote }}
-            {{- if $root.Values.artifactStorage.existingSecret }}
-            - name: KG_DISTRIBUTED_ARTIFACT_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Values.artifactStorage.existingSecret }}
-                  key: {{ $root.Values.artifactStorage.accessKeyKey }}
-            - name: KG_DISTRIBUTED_ARTIFACT_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Values.artifactStorage.existingSecret }}
-                  key: {{ $root.Values.artifactStorage.secretKeyKey }}
-            {{- end }}
             {{- end }}
             {{- if $sparkDriver }}
             - name: KG_DISTRIBUTED_FINALIZATION_ENGINE

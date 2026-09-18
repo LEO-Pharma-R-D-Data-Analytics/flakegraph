@@ -421,6 +421,71 @@ def test_placement_routes_on_the_pickers_choice_and_needs_no_crds() -> None:
     ]
 
 
+def test_the_console_runs_the_fleet_the_way_the_workers_do() -> None:
+    """The console is the Node server, and its CLI sees the workers' fleet.
+
+    The CLI the console shells out to submits to the same queue, reads the same
+    artifact store, and resolves the same provider placeholders as the workers
+    - a run it writes is one they claim, a graph they publish is one it reads.
+    Behind the gate it trusts the gate's identity headers; without one it does
+    not.
+    """
+
+    values = _values()
+    gated = _render(
+        (
+            *_SERVING,
+            "spark.enabled=true",
+            "artifactStorage.uri=s3://artifacts",
+            "artifactStorage.existingSecret=artifacts",
+            "ingress.enabled=true",
+            "ingress.domain=example.test",
+            "ingress.authProxy.enabled=true",
+            "controlPlane.networkPolicy.enabled=true",
+            "controlPlane.ask.secretName=ask",
+        )
+    )
+    pod = _pod(_one(gated, "Deployment", f"{_FULLNAME}-app"))
+    console = _container(pod, "control-plane")
+    env = _env(console)
+    worker = _env(_worker(gated, "extract"))
+
+    assert console["command"] == ["node", "server.js"]
+    assert console["workingDir"] == "/app/react"
+    assert env["PORT"]["value"] == str(values["controlPlane"]["service"]["port"])
+    assert env["FLAKEGRAPH_CLI"]["value"] == "flakegraph"
+    assert env["FLAKEGRAPH_APP_DEFAULT_RUNTIME"]["value"] == "kubernetes"
+    assert env["FLAKEGRAPH_TRUST_IDENTITY_HEADERS"]["value"] == "true"
+    for name in (
+        "KG_DISTRIBUTED_DATABASE_URL",
+        "KG_DISTRIBUTED_ARTIFACT_URI",
+        "KG_LLM_ENDPOINT",
+        "KG_MINERU_API_URL",
+    ):
+        assert env[name] == worker[name], name
+    assert env["DATABASE_URL"]["valueFrom"] == env["KG_DISTRIBUTED_DATABASE_URL"]["valueFrom"]
+    assert env["FLAKEGRAPH_ASK_BASE_URL"]["value"] == env["KG_LLM_ENDPOINT"]["value"]
+    assert env["FLAKEGRAPH_ASK_API_KEY"]["valueFrom"]["secretKeyRef"] == {
+        "name": "ask",
+        "key": values["controlPlane"]["ask"]["secretKey"],
+    }
+    assert {
+        probe["httpGet"]["path"]
+        for probe in (console["startupProbe"], console["readinessProbe"], console["livenessProbe"])
+    } == {"/api/health"}
+    assert {mount["mountPath"] for mount in console["volumeMounts"]} >= {
+        "/app/react/.next/cache",
+        "/tmp",
+        values["controlPlane"]["persistence"]["stateRoot"],
+    }
+
+    ungated = _env(
+        _container(_pod(_one(_render(()), "Deployment", f"{_FULLNAME}-app")), "control-plane")
+    )
+    assert "FLAKEGRAPH_TRUST_IDENTITY_HEADERS" not in ungated
+    assert "FLAKEGRAPH_ASK_BASE_URL" not in ungated
+
+
 def test_the_control_plane_can_see_what_preflight_asks_about() -> None:
     """A pool scaled to zero on purpose is told apart by its ScaledObject."""
 
