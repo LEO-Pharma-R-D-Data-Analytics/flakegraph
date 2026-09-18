@@ -1,11 +1,14 @@
 import type { Viewer } from "./protocol/schema";
 
+// In order of what a person recognises as themselves: a gate's "user" is
+// often the provider's opaque subject id, so it comes last.
 const VIEWER_NAME_HEADERS = [
   "x-forwarded-preferred-username",
-  "x-forwarded-user",
+  "x-auth-request-preferred-username",
   "x-forwarded-email",
-  "x-auth-request-user",
   "x-auth-request-email",
+  "x-forwarded-user",
+  "x-auth-request-user",
 ];
 
 export function unidentifiedViewer(): Viewer {

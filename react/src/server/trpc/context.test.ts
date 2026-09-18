@@ -23,8 +23,9 @@ async function context(headers: Record<string, string>, trust: boolean) {
 
 describe("request context", () => {
   it("takes the gate's identity when the gate is trusted", async () => {
-    const ctx = await context({ "x-auth-request-email": "alice@example.test", "x-auth-request-user": "alice" }, true);
-    expect(ctx.viewer.userName).toBe("ALICE");
+    const ctx = await context({ "x-auth-request-email": "alice@example.test", "x-auth-request-user": "c7s1v9-opaque-subject" }, true);
+    // The address, not the provider's opaque subject id, is who the viewer is.
+    expect(ctx.viewer.userName).toBe("ALICE@EXAMPLE.TEST");
     expect(ctx.viewer.email).toBe("alice@example.test");
   });
 

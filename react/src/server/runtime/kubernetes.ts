@@ -23,7 +23,7 @@ import {
 import { lastJsonObject, runFlakegraph } from "../cli";
 import { buildRunConfig, environmentForRequest, redactedConfig, writeRunConfig } from "../config";
 import { appEnv } from "../env";
-import { listPostgresRuns } from "../db/client";
+import { documentCountsByRun, listPostgresRuns } from "../db/client";
 import {
   KUBERNETES_CAPABILITIES,
   type Capability,
@@ -208,6 +208,7 @@ export class KubernetesRuntime implements ControlPlane {
           }));
         }
         const hidden = await hiddenRunIds(this.stateRoot);
+        const counts = await documentCountsByRun(rows.map((row) => row.id).filter((id) => !hidden.has(id)));
         const seen = new Set<string>();
         const merged: RunSnapshot[] = [];
         for (const row of rows) {
@@ -217,16 +218,19 @@ export class KubernetesRuntime implements ControlPlane {
           seen.add(row.id);
           const record = records.get(row.id);
           const name = await graphName(this.stateRoot, row.graphId);
-          if (record) {
-            merged.push(
-              snapshotFromRecord(
+          const documents = counts.get(row.id) ?? { total: null, completed: 0, failed: 0 };
+          const snapshot = record
+            ? snapshotFromRecord(
                 { ...record, status: row.status, updatedAt: row.updatedAt?.toISOString() ?? record.updatedAt },
                 { graphName: name ?? record.graphName ?? null },
-              ),
-            );
-            continue;
-          }
-          merged.push(this.snapshotFromRow(row, name));
+              )
+            : this.snapshotFromRow(row, name);
+          merged.push({
+            ...snapshot,
+            documentsTotal: documents.total,
+            documentsCompleted: documents.completed,
+            documentsFailed: documents.failed,
+          });
         }
         for (const snapshot of local) {
           if (!seen.has(snapshot.runId)) {
