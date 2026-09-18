@@ -42,6 +42,7 @@ import {
   upsertPerspective,
 } from "../workspace";
 import { ontologyCoverage, type GoldGraph } from "../gold";
+import type { FleetProfile } from "../fleet";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -377,6 +378,10 @@ export const appRouter = router({
     incident: publicProcedure.query(() => staffIncident()),
   }),
   fleet: router({
+    profile: publicProcedure.query(async ({ ctx }) => {
+      const plane = ctx.controlPlane as { fleetProfile?: () => Promise<FleetProfile | null> };
+      return plane.fleetProfile ? await plane.fleetProfile() : null;
+    }),
     cluster: publicProcedure
       .input(z.object({ namespace: z.string().optional() }).optional())
       .query(({ ctx, input }) =>

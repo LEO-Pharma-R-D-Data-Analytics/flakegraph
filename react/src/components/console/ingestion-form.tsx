@@ -112,6 +112,15 @@ export function IngestionForm({
     credentialField: "password",
   });
 
+  // On the fleet the workers' own profile decides the providers: a worker
+  // claims only a run whose semantic configuration hashes to its own. The
+  // fields show what the fleet runs and are not editable there.
+  const fleet = trpc.fleet.profile.useQuery(undefined, { enabled: runtime === "kubernetes" });
+  const fleetProfile = runtime === "kubernetes" ? fleet.data ?? null : null;
+  const effectiveOcr = fleetProfile ? fleetSelection(fleetProfile, "ocr", ocr) : ocr;
+  const effectiveLlm = fleetProfile ? fleetSelection(fleetProfile, "llm", llm) : llm;
+  const effectiveEmbedding = fleetProfile ? fleetSelection(fleetProfile, "embedding", embedding) : embedding;
+
   const preflight = trpc.ingestion.preflight.useMutation();
   const previewConfig = trpc.ingestion.config.preview.useMutation();
   const submit = trpc.runs.submit.useMutation();
@@ -194,9 +203,9 @@ export function IngestionForm({
       graphName: graphName.trim() || null,
       sourceKind,
       source,
-      ocr,
-      llm,
-      embedding,
+      ocr: effectiveOcr,
+      llm: effectiveLlm,
+      embedding: effectiveEmbedding,
       output: {
         kind: outputKind,
         workspacePath,
@@ -259,9 +268,9 @@ export function IngestionForm({
     s3,
     stage,
     outputKind,
-    ocr,
-    llm,
-    embedding,
+    effectiveOcr,
+    effectiveLlm,
+    effectiveEmbedding,
     parallelism,
     ontologyTypes,
     snowflake,
@@ -765,13 +774,22 @@ export function IngestionForm({
         <CardHeader>
           <CardTitle>OCR, LLM, and embeddings</CardTitle>
           <CardDescription>
-            Required for every run. Adaptive layout uses native document text first, then MinerU for scans, figures, and sparse PDFs. The default model is Qwen3.8 27B on vLLM, with MiniLM embeddings.
+            {fleetProfile
+              ? `Set by the fleet: its workers mount one processing profile (${fleetProfile.configMap}) and take only runs that match it, so these are what this graph will be built with.`
+              : "Required for every run. Adaptive layout uses native document text first, then MinerU for scans, figures, and sparse PDFs. The default model is Qwen3.8 27B on vLLM, with MiniLM embeddings."}
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-3">
-          <ProviderFields title="OCR" options={OCR_PROVIDERS} value={ocr} onChange={setOcr} />
-          <ProviderFields title="LLM" options={LLM_PROVIDERS} value={llm} onChange={setLlm} />
-          <ProviderFields title="Embeddings" options={EMBEDDING_PROVIDERS} value={embedding} onChange={setEmbedding} dimension />
+          <ProviderFields title="OCR" options={OCR_PROVIDERS} value={effectiveOcr} onChange={setOcr} locked={Boolean(fleetProfile)} />
+          <ProviderFields title="LLM" options={LLM_PROVIDERS} value={effectiveLlm} onChange={setLlm} locked={Boolean(fleetProfile)} />
+          <ProviderFields
+            title="Embeddings"
+            options={EMBEDDING_PROVIDERS}
+            value={effectiveEmbedding}
+            onChange={setEmbedding}
+            dimension
+            locked={Boolean(fleetProfile)}
+          />
         </CardContent>
       </Card>
 
@@ -1084,14 +1102,28 @@ function ProviderFields({
   value,
   onChange,
   dimension = false,
+  locked = false,
 }: {
   title: string;
   options: typeof OCR_PROVIDERS;
   value: ProviderSelection;
   onChange: (value: ProviderSelection) => void;
   dimension?: boolean;
+  locked?: boolean;
 }) {
   const selected = options.find((option) => option.name === value.provider);
+  if (locked) {
+    return (
+      <div className="space-y-1" data-testid={`fleet-provider-${title.toLowerCase()}`}>
+        <p className="text-sm font-medium">{title}</p>
+        <p className="text-sm">{selected?.label ?? value.provider}</p>
+        {value.model ? <p className="text-xs text-muted-foreground">{value.model}</p> : null}
+        {dimension && value.dimension ? (
+          <p className="text-xs text-muted-foreground">{value.dimension} dimensions</p>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div className="space-y-3">
       <p className="text-sm font-medium">{title}</p>
@@ -1151,6 +1183,27 @@ function ProviderFields({
       ) : null}
     </div>
   );
+}
+
+function fleetSelection(
+  profile: { config: Record<string, unknown> },
+  section: "ocr" | "llm" | "embedding",
+  fallback: ProviderSelection,
+): ProviderSelection {
+  const values = profile.config[section];
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    return fallback;
+  }
+  const record = values as Record<string, unknown>;
+  if (typeof record.provider !== "string" || !record.provider) {
+    return fallback;
+  }
+  return {
+    ...providerSelection(section, record.provider),
+    model: typeof record.model === "string" ? record.model : null,
+    endpoint: typeof record.endpoint === "string" && !record.endpoint.startsWith("${") ? record.endpoint : null,
+    dimension: typeof record.dimension === "number" ? record.dimension : null,
+  };
 }
 
 function humanizeField(key: string): string {

@@ -9,6 +9,7 @@ import {
   storageLocation,
 } from "./protocol/schema";
 import { embeddingDimension } from "./providers";
+import { composeAgainstFleet, type FleetProfile } from "./fleet";
 
 const PARALLELISM_SETTINGS = [
   "extraction_parallelism",
@@ -66,7 +67,10 @@ export async function loadBaseConfig(file: string | null): Promise<Record<string
   return structuredClone(value);
 }
 
-export async function buildRunConfig(request: IngestionRequest): Promise<Record<string, unknown>> {
+export async function buildRunConfig(
+  request: IngestionRequest,
+  fleet: FleetProfile | null = null,
+): Promise<Record<string, unknown>> {
   rejectLiteralSecrets(request.source, "source");
   const config = await loadBaseConfig(request.baseConfigPath);
   inlineOntologyProfile(config, ontologyProfilePath(config, request.baseConfigPath));
@@ -121,13 +125,20 @@ export async function buildRunConfig(request: IngestionRequest): Promise<Record<
   }
   deepMerge(config, overrides);
   sanitizeProviderSections(config, request);
+  if (fleet) {
+    composeAgainstFleet(config, fleet);
+  }
   rejectLiteralSecrets(config);
   return config;
 }
 
-export async function writeRunConfig(request: IngestionRequest, destination: string): Promise<string> {
+export async function writeRunConfig(
+  request: IngestionRequest,
+  destination: string,
+  fleet: FleetProfile | null = null,
+): Promise<string> {
   await mkdir(path.dirname(destination), { recursive: true });
-  const config = await buildRunConfig(request);
+  const config = await buildRunConfig(request, fleet);
   await writeFile(destination, stringifyYaml(config, { sortMapEntries: false }), "utf8");
   return destination;
 }

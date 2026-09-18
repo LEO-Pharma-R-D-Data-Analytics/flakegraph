@@ -43,7 +43,8 @@ import {
 import { ControlPlaneError, fromCause, invalid, notFound, notSupported } from "../protocol/errors";
 import type { ControlPlane } from "../protocol/runtime";
 import { LocalRuntime } from "./local";
-import { loadLocalGraph } from "../graph";
+import { graphArtifactsExist, loadLocalGraph } from "../graph";
+import { readFleetProfile, type FleetProfile } from "../fleet";
 import { catalogWriterPrincipal } from "../workspace";
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/;
@@ -82,11 +83,11 @@ export class KubernetesRuntime implements ControlPlane {
           return { ok: true, errors: [], warnings: ["Stub fleet accepted the run."], checks: [] };
         }
         const configPath = path.join(runDirectory(this.stateRoot, request.jobId), "config.yaml");
-        await writeRunConfig(request, configPath);
-        const result = await runFlakegraph(["preflight", "--config", configPath, "--orchestrator"], {
-          cwd: this.repositoryRoot,
-          env: environmentForRequest(request),
-        });
+        await writeRunConfig(request, configPath, await this.fleetProfile());
+        const result = await runFlakegraph(
+          ["fleet", "preflight", "--config", configPath, ...(await this.fleetArguments())],
+          { cwd: this.repositoryRoot, env: environmentForRequest(request) },
+        );
         const payload = lastJsonObject(result.stdout) ?? lastJsonObject(result.stderr);
         if (!payload) {
           return {
@@ -114,7 +115,11 @@ export class KubernetesRuntime implements ControlPlane {
           await persistGraphName(this.stateRoot, request.graphId, validateGraphName(request.graphName));
         }
         const directory = runDirectory(this.stateRoot, request.jobId);
-        const configPath = await writeRunConfig(request, path.join(directory, "config.yaml"));
+        const configPath = await writeRunConfig(
+          request,
+          path.join(directory, "config.yaml"),
+          this.stubbed ? null : await this.fleetProfile(),
+        );
         const startedAt = new Date().toISOString();
         if (this.stubbed) {
           await writeRunRecord(directory, {
@@ -326,10 +331,47 @@ export class KubernetesRuntime implements ControlPlane {
         if (!snapshot.outputPath) {
           throw invalid(`Run ${snapshot.runId} does not record an output directory`);
         }
-        return loadLocalGraph(this.local.artifactDirectory(snapshot.outputPath));
+        const directory = this.local.artifactDirectory(snapshot.outputPath);
+        // The fleet publishes its graph to the artifact store; the local copy
+        // is materialised once, by the CLI, then read like any other graph.
+        if (!this.stubbed && !graphArtifactsExist(directory)) {
+          const record = await readRunRecord(runDirectory(this.stateRoot, snapshot.runId));
+          if (!record.configPath) {
+            throw invalid(`Run ${snapshot.runId} has no configuration to export with`);
+          }
+          const result = await runFlakegraph(
+            ["distributed", "export", "--config", record.configPath, "--run-id", snapshot.runId, "--output", directory],
+            { cwd: this.repositoryRoot },
+          );
+          if (result.exitCode !== 0) {
+            throw new Error(result.stderr.trim() || `Exporting the graph of ${snapshot.runId} failed`);
+          }
+        }
+        return loadLocalGraph(directory);
       },
       catch: (cause) => fromCause(cause, "Unable to load fleet graph"),
     });
+  }
+
+  /** What the fleet's workers run, or null when the fleet cannot be read. */
+  async fleetProfile(): Promise<FleetProfile | null> {
+    if (this.stubbed) {
+      return null;
+    }
+    const cluster = await Effect.runPromise(this.selectedCluster());
+    return readFleetProfile(cluster?.namespace || appEnv().kubernetesNamespace, {
+      cwd: this.repositoryRoot,
+      context: cluster?.context || null,
+    });
+  }
+
+  private async fleetArguments(): Promise<string[]> {
+    const cluster = await Effect.runPromise(this.selectedCluster());
+    const args = ["--namespace", cluster?.namespace || appEnv().kubernetesNamespace];
+    if (cluster?.context) {
+      args.push("--context", cluster.context);
+    }
+    return args;
   }
 
   cluster(namespace: string): Effect.Effect<ClusterSnapshot | null, ControlPlaneError> {
@@ -451,7 +493,10 @@ export class KubernetesRuntime implements ControlPlane {
 
   previewConfig(request: IngestionRequest): Effect.Effect<string, ControlPlaneError> {
     return Effect.tryPromise({
-      try: async () => stringifyYaml(redactedConfig(await buildRunConfig(request)), { sortMapEntries: false }),
+      try: async () =>
+        stringifyYaml(redactedConfig(await buildRunConfig(request, await this.fleetProfile())), {
+          sortMapEntries: false,
+        }),
       catch: (cause) => fromCause(cause, "Unable to preview configuration"),
     });
   }
