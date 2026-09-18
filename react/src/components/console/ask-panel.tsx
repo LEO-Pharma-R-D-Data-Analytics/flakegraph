@@ -1,0 +1,293 @@
+"use client";
+
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport, isToolUIPart, type UIMessage } from "ai";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { PROGRESS_LABELS, type QueryMode, type SearchProgressUpdate } from "@/server/ask/types";
+
+type AskUIMessage = UIMessage<never, { status: SearchProgressUpdate }>;
+
+const MODES: Array<{ id: QueryMode | "auto"; label: string; hint: string }> = [
+  { id: "local", label: "Local", hint: "Entities, relations, and quotes." },
+  { id: "global", label: "Global", hint: "Community reports and themes." },
+  { id: "hybrid", label: "Hybrid", hint: "Entities plus community context." },
+  { id: "drift", label: "Drift", hint: "Multi-hop follow-up retrieval." },
+  { id: "auto", label: "Auto", hint: "Planner picks the retrieval level." },
+];
+
+export function AskPanel({
+  runId,
+  perspectives = [],
+  onOpenEntity,
+}: {
+  runId: string;
+  perspectives?: Array<{ id: string; name: string; lifecycle: string; suggestedQuestions: string[] }>;
+  onOpenEntity?: (name: string) => void;
+}) {
+  const production = perspectives.filter((item) => item.lifecycle === "production");
+  const [question, setQuestion] = useState(production[0]?.suggestedQuestions[0] ?? "Who developed judo?");
+  const [mode, setMode] = useState<QueryMode | "auto">("local");
+  const [perspectiveId, setPerspectiveId] = useState(production[0]?.id ?? "");
+  const transport = useMemo(
+    () =>
+      new DefaultChatTransport({
+        api: "/api/ask",
+        headers: () => ({ "x-flakegraph-runtime": runtimeFromLocation() }),
+        body: () => ({
+          runId,
+          mode,
+          perspectiveId: perspectiveId || undefined,
+          format: "ui",
+        }),
+      }),
+    [mode, perspectiveId, runId],
+  );
+  const { messages, sendMessage, status, stop, error, setMessages } = useChat<AskUIMessage>({
+    id: `${runId}:${mode}:${perspectiveId}`,
+    transport,
+    onError: (next) => toast.error(next.message),
+  });
+  useEffect(() => {
+    setMessages([]);
+  }, [runId, setMessages]);
+
+  const selected = perspectives.find((item) => item.id === perspectiveId);
+  const pending = status === "submitted" || status === "streaming";
+  const assistant = [...messages].reverse().find((message) => message.role === "assistant");
+  const answerText = assistant ? textFromMessage(assistant) : "";
+  const statuses = statusParts(messages);
+  const latestStatus = statuses.at(-1);
+  const tools = toolParts(messages);
+  const citations = citationsFromTools(tools);
+  const consumption = consumptionFromTools(tools);
+  const modeHint = MODES.find((item) => item.id === mode)?.hint;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Ask the graph</CardTitle>
+        <CardDescription>
+          The model queries entities, communities, relations, documents, and neighborhoods, then streams the answer.
+          Other programs can call the same endpoint at <span className="font-mono text-xs">POST /api/ask</span>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap gap-2">
+          {MODES.map((item) => (
+            <Button
+              key={item.id}
+              size="sm"
+              variant={mode === item.id ? "default" : "outline"}
+              aria-pressed={mode === item.id}
+              onClick={() => setMode(item.id)}
+            >
+              {item.label}
+            </Button>
+          ))}
+          <p className="self-center text-xs text-muted-foreground">{modeHint}</p>
+        </div>
+        {perspectives.length ? (
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant={!perspectiveId ? "default" : "outline"} onClick={() => setPerspectiveId("")}>
+              Whole graph
+            </Button>
+            {perspectives.map((item) => (
+              <Button
+                key={item.id}
+                size="sm"
+                variant={perspectiveId === item.id ? "default" : "outline"}
+                onClick={() => {
+                  setPerspectiveId(item.id);
+                  if (item.suggestedQuestions[0]) {
+                    setQuestion(item.suggestedQuestions[0]);
+                  }
+                }}
+              >
+                Scope: {item.name}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+        {(selected?.suggestedQuestions ?? []).map((item) => (
+          <Button key={item} size="sm" variant="ghost" onClick={() => setQuestion(item)}>
+            {item}
+          </Button>
+        ))}
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Input
+            aria-label="Ask the graph"
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            placeholder="Ask a question about this graph"
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && question.trim().length >= 2 && !pending) {
+                event.preventDefault();
+                void sendMessage({ text: question.trim() });
+              }
+            }}
+          />
+          {pending ? (
+            <Button className="sm:shrink-0" variant="outline" onClick={() => stop()}>
+              Stop
+            </Button>
+          ) : (
+            <Button
+              className="sm:shrink-0"
+              onClick={() => void sendMessage({ text: question.trim() })}
+              disabled={question.trim().length < 2}
+            >
+              Ask
+            </Button>
+          )}
+        </div>
+        {latestStatus || pending ? (
+          <p className="text-xs text-muted-foreground" data-testid="ask-status">
+            {latestStatus?.message ?? PROGRESS_LABELS.answering}
+            {latestStatus?.detail ? ` · ${latestStatus.detail}` : ""}
+          </p>
+        ) : null}
+        {tools.length ? (
+          <ul className="space-y-1 text-xs text-muted-foreground" data-testid="ask-tools">
+            {tools.map((tool) => (
+              <li key={tool.id}>
+                {tool.name} · {tool.state}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {error ? <p className="text-sm text-destructive">{error.message}</p> : null}
+        {answerText ? (
+          <div className="space-y-2 text-sm" data-testid="ask-answer">
+            <p className="whitespace-pre-wrap">{answerText}</p>
+            {perspectiveId ? <p className="text-muted-foreground">Answer scoped to the selected perspective.</p> : null}
+            {consumption ? (
+              <p className="text-muted-foreground" data-testid="query-consumption">
+                Query consumption · {consumption.entities} entities · {consumption.quotes} quotes · streamed LLM
+                answer
+              </p>
+            ) : (
+              <p className="text-muted-foreground" data-testid="query-consumption">
+                Query consumption · streamed from POST /api/ask
+              </p>
+            )}
+            {citations.length ? (
+              <ul className="list-disc pl-5">
+                {citations.map((citation, index) => (
+                  <li key={`${citation.documentId}-${index}`}>
+                    <button
+                      type="button"
+                      className="text-left underline"
+                      onClick={() => onOpenEntity?.(citation.entityName || citation.quote.slice(0, 48))}
+                    >
+                      <span className="font-medium">{citation.documentId || "document"}:</span> {citation.quote}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function runtimeFromLocation(): string {
+  if (typeof window === "undefined") {
+    return "local";
+  }
+  const runtime = new URLSearchParams(window.location.search).get("runtime");
+  return runtime === "kubernetes" || runtime === "snowflake" ? runtime : "local";
+}
+
+function textFromMessage(message: AskUIMessage): string {
+  return message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+}
+
+function statusParts(messages: AskUIMessage[]): SearchProgressUpdate[] {
+  return messages.flatMap((message) =>
+    message.parts.flatMap((part) => {
+      if (part.type !== "data-status") {
+        return [];
+      }
+      return [part.data];
+    }),
+  );
+}
+
+function toolParts(messages: AskUIMessage[]): Array<{ id: string; name: string; state: string; output?: unknown }> {
+  return messages.flatMap((message) =>
+    message.parts.flatMap((part, index) => {
+      if (!isToolUIPart(part)) {
+        return [];
+      }
+      return [
+        {
+          id: `${message.id}-${index}`,
+          name: part.type.replace(/^tool-/, ""),
+          state: part.state,
+          output: "output" in part ? part.output : undefined,
+        },
+      ];
+    }),
+  );
+}
+
+function citationsFromTools(tools: Array<{ output?: unknown }>): Array<{
+  quote: string;
+  documentId: string;
+  entityName: string | null;
+}> {
+  const citations: Array<{ quote: string; documentId: string; entityName: string | null }> = [];
+  const seen = new Set<string>();
+  for (const tool of tools) {
+    if (!tool.output || typeof tool.output !== "object") {
+      continue;
+    }
+    const output = tool.output as { citations?: Array<{ quote?: string; documentId?: string; entityName?: string | null }> };
+    for (const citation of output.citations ?? []) {
+      const quote = citation.quote?.trim();
+      if (!quote) {
+        continue;
+      }
+      const key = `${citation.documentId ?? ""}:${quote}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      citations.push({
+        quote,
+        documentId: citation.documentId ?? "",
+        entityName: citation.entityName ?? null,
+      });
+    }
+  }
+  return citations;
+}
+
+function consumptionFromTools(tools: Array<{ output?: unknown }>): { entities: number; quotes: number } | null {
+  for (let index = tools.length - 1; index >= 0; index -= 1) {
+    const output = tools[index]?.output;
+    if (!output || typeof output !== "object") {
+      continue;
+    }
+    const row = output as {
+      entityIds?: string[];
+      citations?: unknown[];
+      counts?: { entities?: number; evidence?: number };
+    };
+    const entities = row.counts?.entities ?? row.entityIds?.length;
+    const quotes = row.counts?.evidence ?? row.citations?.length;
+    if (entities || quotes) {
+      return { entities: entities ?? 0, quotes: quotes ?? 0 };
+    }
+  }
+  return null;
+}

@@ -1,0 +1,14 @@
+# Deploy from this directory only: `snow app deploy`.
+# Do not move this file to the repository root. The remote builder would upload
+# the Python processing tree.
+definition_version: 2
+entities:
+  pkg:
+    type: application package
+    identifier: flakegraph_control_plane
+    manifest: manifest.yml
+artifacts:
+  - src: .next/standalone
+    dest: server
+runtime: nodejs
+entrypoint: .next/standalone/server.js
