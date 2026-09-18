@@ -1,16 +1,26 @@
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { desc, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { appEnv } from "../env";
+import { DOCUMENT_STAGES } from "../documents";
 import * as schema from "./schema";
 
-export function createDrizzle() {
+type Database = ReturnType<typeof drizzle<typeof schema>>;
+
+// One pool for the process: a pool per query would hold its connections
+// open until the process exits.
+let pool: { url: string; db: Database } | null = null;
+
+export function createDrizzle(): Database | null {
   const url = appEnv().databaseUrl;
   if (!url) {
     return null;
   }
-  const client = postgres(url, { max: 4, prepare: false });
-  return drizzle(client, { schema });
+  if (pool?.url !== url) {
+    const client = postgres(url, { max: 4, prepare: false });
+    pool = { url, db: drizzle(client, { schema }) };
+  }
+  return pool.db;
 }
 
 export async function listPostgresRuns(limit = 100) {
@@ -61,4 +71,46 @@ export async function documentCountsByRun(
     counts.set(row.runId, entry);
   }
   return counts;
+}
+
+export interface DocumentTaskRow {
+  stage: string;
+  scopeId: string;
+  status: string;
+  attempts: number;
+  lastError: unknown;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  /** The source artifact's metadata, on the prepare task that carries it. */
+  sourceMetadata: unknown;
+}
+
+/**
+ * The per-document tasks of one run, each joined to the source artifact its
+ * prepare task names so the document can be shown by filename.
+ */
+export async function documentTasksByRun(runId: string): Promise<DocumentTaskRow[]> {
+  const db = createDrizzle();
+  if (!db) {
+    return [];
+  }
+  const rows = await db
+    .select({
+      stage: schema.flakegraphTask.stage,
+      scopeId: schema.flakegraphTask.scopeId,
+      status: schema.flakegraphTask.status,
+      attempts: schema.flakegraphTask.attempts,
+      lastError: schema.flakegraphTask.lastErrorJson,
+      startedAt: schema.flakegraphTask.startedAt,
+      completedAt: schema.flakegraphTask.completedAt,
+      sourceMetadata: schema.flakegraphArtifact.metadataJson,
+    })
+    .from(schema.flakegraphTask)
+    .leftJoin(
+      schema.flakegraphArtifact,
+      eq(schema.flakegraphArtifact.id, sql`${schema.flakegraphTask.payloadJson}->>'source_artifact_id'`),
+    )
+    .where(and(eq(schema.flakegraphTask.runId, runId), inArray(schema.flakegraphTask.stage, [...DOCUMENT_STAGES])))
+    .orderBy(schema.flakegraphTask.scopeId, schema.flakegraphTask.stage);
+  return rows;
 }

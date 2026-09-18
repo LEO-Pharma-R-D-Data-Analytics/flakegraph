@@ -14,6 +14,7 @@ import {
   type Capability,
 } from "./schema";
 import { ControlPlaneError } from "./errors";
+import type { DocumentStatus } from "../documents";
 
 export interface ControlPlane {
   readonly runtime: RuntimeMode;
@@ -27,6 +28,8 @@ export interface ControlPlane {
   submit(request: IngestionRequest): Effect.Effect<RunSnapshot, ControlPlaneError>;
   listRuns(limit?: number): Effect.Effect<readonly RunSnapshot[], ControlPlaneError>;
   getRun(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError>;
+  /** Where each of a run's documents stands, by whatever the runtime records. */
+  documents(runId: string): Effect.Effect<readonly DocumentStatus[], ControlPlaneError>;
   cancel(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError>;
   retry(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError>;
   recover(runId: string): Effect.Effect<string, ControlPlaneError>;

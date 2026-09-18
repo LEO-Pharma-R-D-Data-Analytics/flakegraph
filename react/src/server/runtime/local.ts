@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
+import { documentStatusesFromEvents, type DocumentStatus } from "../documents";
 import {
   graphName,
   listRunRecords,
@@ -206,6 +207,10 @@ export class LocalRuntime implements ControlPlane {
       },
       catch: (cause) => fromCause(cause, "Unable to load run"),
     });
+  }
+
+  documents(runId: string): Effect.Effect<readonly DocumentStatus[], ControlPlaneError> {
+    return Effect.map(this.getRun(runId), (snapshot) => documentStatusesFromEvents(snapshot.events));
   }
 
   cancel(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError> {

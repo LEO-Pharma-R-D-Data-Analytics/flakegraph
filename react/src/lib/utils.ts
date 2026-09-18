@@ -43,6 +43,32 @@ export function formatRelativeTime(iso: string | null | undefined): string {
   return formatter.format(Math.round(deltaSeconds / 86400), "day");
 }
 
+/** A wall-clock span as people say it: 4s, 12m 30s, 1h 36m. */
+export function formatDuration(milliseconds: number | null | undefined): string {
+  if (milliseconds == null || !Number.isFinite(milliseconds) || milliseconds < 0) {
+    return "—";
+  }
+  const seconds = Math.round(milliseconds / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m ${seconds % 60}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+/** An instant in the viewer's locale, or a dash when the runtime has none. */
+export function formatInstant(iso: string | null | undefined): string {
+  if (!iso) {
+    return "—";
+  }
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+}
+
 export function formatCount(value: number | null | undefined): string {
   return Number(value ?? 0).toLocaleString();
 }
@@ -60,6 +86,9 @@ const DOCUMENT_PHASES: Record<string, string> = {
   "extracted-0": "No text extracted",
   skipped: "Skipped",
   poison: "Poisoned file",
+  cancelled: "Cancelled",
+  scanned: "Parsed",
+  indexed: "Indexed",
   queued: "Queued",
   running: "In progress",
   extracted: "Text extracted",

@@ -12,7 +12,7 @@ import { completeAsk } from "../ask/complete";
 import { perspectiveScope } from "../ask/load";
 import { scanPii } from "../pii";
 import { estimateConsumption } from "../estimate";
-import { documentStatusesFromEvents } from "../documents";
+import { withSkippedFiles } from "../documents";
 import {
   acknowledgePii,
   applyIncremental,
@@ -137,9 +137,9 @@ export const appRouter = router({
       .input(z.object({ runId: z.string().min(1), fileId: z.string().min(1) }))
       .mutation(({ input }) => skipFile(input.runId, input.fileId)),
     documents: publicProcedure.input(runIdInput).query(async ({ ctx, input }) => {
-      const snapshot = await runEffect(ctx.controlPlane.getRun(input.runId));
+      const statuses = await runEffect(ctx.controlPlane.documents(input.runId));
       const workspace = await loadWorkspace();
-      return documentStatusesFromEvents(snapshot.events, workspace.skippedFiles[input.runId] ?? []);
+      return withSkippedFiles(statuses, workspace.skippedFiles[input.runId] ?? []);
     }),
   }),
   ingestion: router({

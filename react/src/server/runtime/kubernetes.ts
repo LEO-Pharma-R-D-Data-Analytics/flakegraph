@@ -23,7 +23,8 @@ import {
 import { lastJsonObject, runFlakegraph } from "../cli";
 import { buildRunConfig, environmentForRequest, redactedConfig, writeRunConfig } from "../config";
 import { appEnv } from "../env";
-import { documentCountsByRun, listPostgresRuns } from "../db/client";
+import { documentCountsByRun, documentTasksByRun, listPostgresRuns } from "../db/client";
+import { documentStatusesFromEvents, documentStatusesFromTasks, type DocumentStatus } from "../documents";
 import {
   KUBERNETES_CAPABILITIES,
   type Capability,
@@ -329,6 +330,19 @@ export class KubernetesRuntime implements ControlPlane {
         return snapshot;
       },
       catch: (cause) => fromCause(cause, "Unable to load Kubernetes run"),
+    });
+  }
+
+  documents(runId: string): Effect.Effect<readonly DocumentStatus[], ControlPlaneError> {
+    return Effect.tryPromise({
+      try: async () => {
+        if (this.stubbed) {
+          const snapshot = await Effect.runPromise(this.getRun(runId));
+          return documentStatusesFromEvents(snapshot.events);
+        }
+        return documentStatusesFromTasks(await documentTasksByRun(runId));
+      },
+      catch: (cause) => fromCause(cause, "Unable to list the run's documents"),
     });
   }
 

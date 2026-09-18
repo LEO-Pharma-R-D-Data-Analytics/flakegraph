@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/components/providers";
 import { Alert } from "@/components/ui/alert";
@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/console/sidebar";
 import { GraphExplorer } from "@/components/console/graph-explorer";
@@ -29,7 +30,8 @@ import {
   type StageProgress,
 } from "@/server/protocol/schema";
 import { readLastIngestion, writeLastIngestion } from "@/lib/last-ingestion";
-import { formatDocumentPhase, documentPhaseNeedsSkip, formatRelativeTime, titleCaseStage } from "@/lib/utils";
+import { formatDocumentPhase, documentPhaseNeedsSkip, formatDuration, formatInstant, formatRelativeTime, titleCaseStage } from "@/lib/utils";
+import type { DocumentStatus } from "@/server/documents";
 import { statusSentence } from "@/lib/status-sentence";
 
 export function RunWorkspace({
@@ -770,7 +772,7 @@ function ProgressPanel({
   documentsCompleted: number;
   documentsTotal: number | null;
   estimate: { usdLow: number; usdHigh: number } | null;
-  documents: Array<{ fileId: string; phase: string; detail: string }>;
+  documents: DocumentStatus[];
   onSkip: (fileId: string) => void;
 }) {
   return (
@@ -809,8 +811,8 @@ function ProgressPanel({
           <ul className="space-y-1 text-sm">
             {documents.map((item) => (
               <li key={item.fileId} className="flex items-center justify-between gap-2">
-                <span>
-                  {item.fileId} · {formatDocumentPhase(item.phase)} · {item.detail}
+                <span title={item.fileId}>
+                  {item.name ?? item.fileId} · {formatDocumentPhase(item.phase)} · {item.detail}
                 </span>
                 {documentPhaseNeedsSkip(item.phase) ? (
                   <Button size="sm" variant="outline" onClick={() => onSkip(item.fileId)}>
@@ -831,46 +833,181 @@ function RunDetails({
   documents = [],
   onSkip,
 }: {
-  snapshot: { events: readonly { timestamp: string; stage: string; status: string; message: string | null; fileId?: string | null }[]; error: string | null };
-  documents?: Array<{ fileId: string; phase: string; detail: string }>;
+  snapshot: RunSnapshot;
+  documents?: DocumentStatus[];
   onSkip?: (fileId: string) => void;
 }) {
-  if (snapshot.events.length === 0 && documents.length === 0) {
-    return null;
+  const raw = snapshot.raw as Record<string, unknown>;
+  const startedAt = Date.parse(snapshot.startedAt ?? "");
+  const updatedAt = Date.parse(snapshot.updatedAt ?? "");
+  const duration = Number.isFinite(startedAt) && Number.isFinite(updatedAt) ? updatedAt - startedAt : null;
+  const facts: Array<[string, string]> = [
+    ["Run", snapshot.runId],
+    ["Graph", snapshot.graphId],
+    ["Status", snapshot.status],
+    ["Started", formatInstant(snapshot.startedAt)],
+    [isActiveStatus(snapshot.status) ? "Last update" : "Finished", formatInstant(snapshot.updatedAt)],
+    [isActiveStatus(snapshot.status) ? "Running for" : "Took", formatDuration(duration)],
+    [
+      "Documents",
+      snapshot.documentsTotal == null
+        ? `${snapshot.documentsCompleted} indexed`
+        : `${snapshot.documentsCompleted} of ${snapshot.documentsTotal} indexed${snapshot.documentsFailed ? `, ${snapshot.documentsFailed} failed` : ""}`,
+    ],
+    ["Storage", `${snapshot.storageKind}${snapshot.storageLocation ? ` · ${snapshot.storageLocation}` : ""}`],
+  ];
+  const source = [raw.sourceKind, raw.sourcePath].filter(Boolean).map(String).join(" · ");
+  if (source) {
+    facts.push(["Source", source]);
+  }
+  const providers = [
+    ["OCR", raw.ocrProvider],
+    ["LLM", raw.llmProvider],
+    ["Embedding", raw.embeddingProvider],
+  ]
+    .filter(([, value]) => Boolean(value))
+    .map(([label, value]) => `${label} ${String(value)}`)
+    .join(" · ");
+  if (providers) {
+    facts.push(["Providers", providers]);
+  }
+  if (typeof raw.owner === "string" && raw.owner) {
+    facts.push(["Owner", raw.owner]);
   }
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Recent events</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <ol className="space-y-2 text-sm">
-          {snapshot.events.slice(-30).reverse().map((event, index) => (
-            <li key={`${event.timestamp}-${index}`}>
-              <span className="text-muted-foreground">{event.timestamp}</span> {event.stage} {event.status}
-              {event.fileId ? ` · ${event.fileId}` : ""}
-              {event.message ? ` — ${event.message}` : ""}
-            </li>
-          ))}
-        </ol>
-        {documents.length ? (
-          <ul className="mt-4 space-y-1 text-sm">
-            {documents.map((item) => (
-              <li key={item.fileId} className="flex items-center justify-between gap-2">
-                <span>
-                  {item.fileId} · {formatDocumentPhase(item.phase)} · {item.detail}
-                </span>
-                {onSkip && documentPhaseNeedsSkip(item.phase) ? (
-                  <Button size="sm" variant="outline" onClick={() => onSkip(item.fileId)}>
-                    Skip file
-                  </Button>
-                ) : null}
-              </li>
+    <div className="space-y-4" data-testid="run-details">
+      <Card>
+        <CardHeader>
+          <CardTitle>Run</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[max-content_1fr]">
+            {facts.map(([label, value]) => (
+              <Fragment key={label}>
+                <dt className="text-muted-foreground">{label}</dt>
+                <dd className="break-all">{value}</dd>
+              </Fragment>
             ))}
-          </ul>
-        ) : null}
-      </CardContent>
-    </Card>
+          </dl>
+          {snapshot.warnings.length ? (
+            <ul className="mt-4 space-y-1 text-sm text-amber-700 dark:text-amber-400">
+              {snapshot.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {snapshot.stages.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Stages</CardTitle>
+            <CardDescription>Work per stage, and how long the workers spent on it.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Stage</TableHead>
+                  <TableHead>Progress</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Worker time</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {snapshot.stages.map((stage) => {
+                  const percent = stage.total
+                    ? Math.min(100, Math.round((stage.completed / stage.total) * 100))
+                    : stage.status === "completed" || stage.status === "succeeded"
+                      ? 100
+                      : 0;
+                  return (
+                    <TableRow key={stage.stage}>
+                      <TableCell className="font-medium">{titleCaseStage(stage.stage)}</TableCell>
+                      <TableCell className="min-w-48">
+                        <div className="flex items-center gap-3">
+                          <Progress value={percent} className="h-2 w-28" />
+                          <span className="text-muted-foreground">
+                            {stage.completed}
+                            {stage.total != null ? ` / ${stage.total}` : ""}
+                          </span>
+                        </div>
+                        {stage.message ? <p className="mt-1 text-xs text-muted-foreground">{stage.message}</p> : null}
+                      </TableCell>
+                      <TableCell>{stage.status}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatDuration(stage.elapsedMs)}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {documents.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Documents</CardTitle>
+            <CardDescription>
+              {documents.length} document{documents.length === 1 ? "" : "s"} the run discovered, and where each stands.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Document</TableHead>
+                  <TableHead>Phase</TableHead>
+                  <TableHead>Detail</TableHead>
+                  {onSkip ? <TableHead /> : null}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {documents.map((item) => (
+                  <TableRow key={item.fileId}>
+                    <TableCell className="font-medium" title={item.fileId}>
+                      {item.name ?? item.fileId}
+                    </TableCell>
+                    <TableCell>{formatDocumentPhase(item.phase)}</TableCell>
+                    <TableCell className="max-w-md break-words text-muted-foreground">{item.detail}</TableCell>
+                    {onSkip ? (
+                      <TableCell className="text-right">
+                        {documentPhaseNeedsSkip(item.phase) ? (
+                          <Button size="sm" variant="outline" onClick={() => onSkip(item.fileId)}>
+                            Skip file
+                          </Button>
+                        ) : null}
+                      </TableCell>
+                    ) : null}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {snapshot.events.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent events</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ol className="space-y-2 text-sm">
+              {snapshot.events.slice(-30).reverse().map((event, index) => (
+                <li key={`${event.timestamp}-${index}`}>
+                  <span className="text-muted-foreground">{event.timestamp}</span> {event.stage} {event.status}
+                  {event.fileId ? ` · ${event.fileId}` : ""}
+                  {event.message ? ` — ${event.message}` : ""}
+                </li>
+              ))}
+            </ol>
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
   );
 }
 

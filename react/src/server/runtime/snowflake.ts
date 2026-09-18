@@ -1,6 +1,7 @@
 import path from "node:path";
 import { mkdir, rm } from "node:fs/promises";
 import { Effect } from "effect";
+import { documentStatusesFromEvents, type DocumentStatus } from "../documents";
 import { stringify as stringifyYaml } from "yaml";
 import { listRunRecords, readJsonFile, readRunRecord, removeRunDirectory, renameGraph as persistGraphName, runDirectory, runRecordExists, snapshotFromRecord, writeRunRecord, graphName, atomicWriteJson, cloneFieldsFromRequest } from "../catalog";
 import { buildRunConfig, redactedConfig, writeRunConfig } from "../config";
@@ -208,6 +209,10 @@ export class SnowflakeRuntime implements ControlPlane {
       },
       catch: (cause) => fromCause(cause, "Unable to load Snowflake job"),
     });
+  }
+
+  documents(runId: string): Effect.Effect<readonly DocumentStatus[], ControlPlaneError> {
+    return Effect.map(this.getRun(runId), (snapshot) => documentStatusesFromEvents(snapshot.events));
   }
 
   cancel(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError> {
