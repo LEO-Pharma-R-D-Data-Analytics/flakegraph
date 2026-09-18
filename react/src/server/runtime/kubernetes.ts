@@ -12,6 +12,8 @@ import {
   readRunRecord,
   runDirectory,
   runRecordExists,
+  hiddenRunIds,
+  hideRun,
   graphName,
   renameGraph as persistGraphName,
   snapshotFromRecord,
@@ -45,6 +47,7 @@ import type { ControlPlane } from "../protocol/runtime";
 import { LocalRuntime } from "./local";
 import { graphArtifactsExist, loadLocalGraph } from "../graph";
 import { readFleetProfile, type FleetProfile } from "../fleet";
+import { snapshotFromStatus } from "../fleet-status";
 import { catalogWriterPrincipal } from "../workspace";
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/;
@@ -175,73 +178,151 @@ export class KubernetesRuntime implements ControlPlane {
     return Effect.tryPromise({
       try: async () => {
         const catalog = await listRunRecords(this.stateRoot, limit);
-        const local = await Promise.all(
+        const records = new Map(
           catalog
             .filter(({ record }) => String(record.runtime || "") === "kubernetes")
-            .map(async ({ record }) =>
-              snapshotFromRecord(record, {
-                graphName: (await graphName(this.stateRoot, record.graphId)) ?? record.graphName ?? null,
-              }),
-            ),
+            .map(({ record }) => [record.runId, record] as const),
         );
-        if (this.stubbed || local.length > 0) {
+        const local = await Promise.all(
+          [...records.values()].map(async (record) =>
+            snapshotFromRecord(record, {
+              graphName: (await graphName(this.stateRoot, record.graphId)) ?? record.graphName ?? null,
+            }),
+          ),
+        );
+        if (this.stubbed) {
           return local;
         }
+        // The coordination store lists every run the fleet holds, including
+        // those submitted from elsewhere; the catalog only adds what this
+        // console knows about them. Without the store, the catalog is shown
+        // with a warning rather than nothing.
+        let rows;
         try {
-          const rows = await listPostgresRuns(limit);
-          return rows.map((row) => ({
-            runId: row.id,
-            graphId: row.graphId,
-            status: row.status,
-            startedAt: row.createdAt?.toISOString() ?? null,
-            updatedAt: row.updatedAt?.toISOString() ?? null,
-            graphName: null,
-            stages: [],
-            events: [],
-            documentsTotal: null,
-            documentsCompleted: 0,
-            documentsFailed: 0,
-            outputPath: null,
-            storageKind: "local_files" as const,
-            storageLocation: null,
-            warnings: [],
-            error: row.errorJson ? JSON.stringify(row.errorJson) : null,
-            listingWarning: null,
-            raw: {},
-          }));
+          rows = await listPostgresRuns(limit);
         } catch (error) {
-          return catalog.map(({ record }) =>
-            snapshotFromRecord(record, {
-              listingWarning: error instanceof Error ? error.message : "Postgres listing unavailable",
-            }),
-          );
+          const reason = error instanceof Error ? error.message : "coordination store unavailable";
+          return local.map((snapshot) => ({
+            ...snapshot,
+            listingWarning: `Showing this console's own record of fleet runs, not the fleet's: ${reason}.`,
+          }));
         }
+        const hidden = await hiddenRunIds(this.stateRoot);
+        const seen = new Set<string>();
+        const merged: RunSnapshot[] = [];
+        for (const row of rows) {
+          if (hidden.has(row.id)) {
+            continue;
+          }
+          seen.add(row.id);
+          const record = records.get(row.id);
+          const name = await graphName(this.stateRoot, row.graphId);
+          if (record) {
+            merged.push(
+              snapshotFromRecord(
+                { ...record, status: row.status, updatedAt: row.updatedAt?.toISOString() ?? record.updatedAt },
+                { graphName: name ?? record.graphName ?? null },
+              ),
+            );
+            continue;
+          }
+          merged.push(this.snapshotFromRow(row, name));
+        }
+        for (const snapshot of local) {
+          if (!seen.has(snapshot.runId)) {
+            merged.push(snapshot);
+          }
+        }
+        return merged;
       },
       catch: (cause) => fromCause(cause, "Unable to list fleet runs"),
     });
   }
 
+  private snapshotFromRow(
+    row: { id: string; graphId: string; status: string; createdAt: Date | null; updatedAt: Date | null; errorJson: unknown },
+    graphName: string | null,
+  ): RunSnapshot {
+    const outputPath = this.defaultOutputPath(row.id);
+    return {
+      runId: row.id,
+      graphId: row.graphId,
+      status: row.status,
+      startedAt: row.createdAt?.toISOString() ?? null,
+      updatedAt: row.updatedAt?.toISOString() ?? null,
+      graphName,
+      stages: [],
+      events: [],
+      documentsTotal: null,
+      documentsCompleted: 0,
+      documentsFailed: 0,
+      outputPath,
+      storageKind: "local_files",
+      storageLocation: outputPath,
+      warnings: [],
+      error: row.errorJson ? JSON.stringify(row.errorJson) : null,
+      listingWarning: null,
+      raw: {},
+    };
+  }
+
+  /** Where a fleet run's graph is materialised on first view: under the console's own state. */
+  private defaultOutputPath(runId: string): string {
+    return path.join(this.stateRoot, "artifacts", runId);
+  }
+
+  /** The record the console keeps for a run, or null for one it only knows through the fleet. */
+  private async record(runId: string) {
+    const directory = runDirectory(this.stateRoot, runId);
+    return runRecordExists(directory) ? readRunRecord(directory) : null;
+  }
+
+  /** `distributed status` for one run, read with the run's own configuration when the console has it. */
+  private async status(runId: string, configPath: string | null | undefined): Promise<Record<string, unknown> | null> {
+    const args = ["distributed", "status", "--run-id", runId];
+    if (configPath) {
+      args.push("--config", configPath);
+    }
+    const result = await runFlakegraph(args, { cwd: this.repositoryRoot });
+    return lastJsonObject(result.stdout);
+  }
+
   getRun(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError> {
     return Effect.tryPromise({
       try: async () => {
-        const directory = runDirectory(this.stateRoot, runId);
-        if (!runRecordExists(directory)) {
-          throw notFound(`Unknown Kubernetes run: ${runId}`);
-        }
-        const record = await readRunRecord(directory);
-        if (!this.stubbed && record.configPath) {
-          const result = await runFlakegraph(["distributed", "status", "--config", record.configPath, "--run-id", runId], {
-            cwd: this.repositoryRoot,
-          });
-          const payload = lastJsonObject(result.stdout);
-          if (payload?.status) {
-            record.status = String(payload.status);
-            await writeRunRecord(runDirectory(this.stateRoot, runId), { status: record.status });
+        const record = await this.record(runId);
+        if (this.stubbed) {
+          if (!record) {
+            throw notFound(`Unknown Kubernetes run: ${runId}`);
           }
+          return snapshotFromRecord(record, {
+            graphName: (await graphName(this.stateRoot, record.graphId)) ?? record.graphName ?? null,
+          });
         }
-        return snapshotFromRecord(record, {
-          graphName: (await graphName(this.stateRoot, record.graphId)) ?? record.graphName ?? null,
-        });
+        const payload = await this.status(runId, record?.configPath);
+        if (!payload?.run) {
+          if (!record) {
+            throw notFound(`Unknown Kubernetes run: ${runId}`);
+          }
+          return snapshotFromRecord(record, {
+            graphName: (await graphName(this.stateRoot, record.graphId)) ?? record.graphName ?? null,
+            listingWarning: "The fleet's coordination store could not be read; this is the console's own record.",
+          });
+        }
+        const run = payload.run as Record<string, unknown>;
+        const graphId = String(run.graph_id ?? record?.graphId ?? runId);
+        const name = (await graphName(this.stateRoot, graphId)) ?? record?.graphName ?? null;
+        const base = record
+          ? snapshotFromRecord(record, { graphName: name })
+          : this.snapshotFromRow(
+              { id: runId, graphId, status: String(run.status ?? "unknown"), createdAt: null, updatedAt: null, errorJson: null },
+              name,
+            );
+        const snapshot = snapshotFromStatus(payload, base);
+        if (record && record.status !== snapshot.status) {
+          await writeRunRecord(runDirectory(this.stateRoot, runId), { status: snapshot.status });
+        }
+        return snapshot;
       },
       catch: (cause) => fromCause(cause, "Unable to load Kubernetes run"),
     });
@@ -250,20 +331,19 @@ export class KubernetesRuntime implements ControlPlane {
   cancel(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError> {
     return Effect.tryPromise({
       try: async () => {
-        const directory = runDirectory(this.stateRoot, runId);
-        const record = await readRunRecord(directory);
-        if (!record.runId) {
+        const record = await this.record(runId);
+        if (!record && this.stubbed) {
           throw notFound(`Unknown Kubernetes run: ${runId}`);
         }
-        if (!this.stubbed && record.configPath) {
-          await runFlakegraph(["distributed", "cancel", "--config", record.configPath, "--run-id", runId], {
-            cwd: this.repositoryRoot,
+        if (!this.stubbed) {
+          await this.control("cancel", runId, record?.configPath);
+        }
+        if (record) {
+          await writeRunRecord(runDirectory(this.stateRoot, runId), {
+            status: "cancelled",
+            cancellationRequestedAt: new Date().toISOString(),
           });
         }
-        await writeRunRecord(directory, {
-          status: "cancelled",
-          cancellationRequestedAt: new Date().toISOString(),
-        });
         return Effect.runPromise(this.getRun(runId));
       },
       catch: (cause) => fromCause(cause, "Unable to cancel Kubernetes run"),
@@ -273,17 +353,20 @@ export class KubernetesRuntime implements ControlPlane {
   retry(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError> {
     return Effect.tryPromise({
       try: async () => {
-        const directory = runDirectory(this.stateRoot, runId);
-        const record = await readRunRecord(directory);
-        if (!record.runId) {
+        const record = await this.record(runId);
+        if (!record && this.stubbed) {
           throw notFound(`Unknown Kubernetes run: ${runId}`);
         }
-        if (!this.stubbed && record.configPath) {
-          await runFlakegraph(["distributed", "retry", "--config", record.configPath, "--run-id", runId], {
-            cwd: this.repositoryRoot,
+        if (!this.stubbed) {
+          await this.control("retry", runId, record?.configPath);
+        }
+        if (record) {
+          await writeRunRecord(runDirectory(this.stateRoot, runId), {
+            status: "queued",
+            error: null,
+            cancellationRequestedAt: null,
           });
         }
-        await writeRunRecord(directory, { status: "queued", error: null, cancellationRequestedAt: null });
         return Effect.runPromise(this.getRun(runId));
       },
       catch: (cause) => fromCause(cause, "Unable to retry Kubernetes run"),
@@ -311,6 +394,8 @@ export class KubernetesRuntime implements ControlPlane {
         if (isActiveStatus(snapshot.status)) {
           throw invalid("An active run must be cancelled before removal");
         }
+        // The fleet keeps the run and its graph; the console stops listing it.
+        await hideRun(this.stateRoot, runId);
         await removeRunDirectory(this.stateRoot, runId);
       },
       catch: (cause) => fromCause(cause, "Unable to forget Kubernetes run"),
@@ -335,14 +420,12 @@ export class KubernetesRuntime implements ControlPlane {
         // The fleet publishes its graph to the artifact store; the local copy
         // is materialised once, by the CLI, then read like any other graph.
         if (!this.stubbed && !graphArtifactsExist(directory)) {
-          const record = await readRunRecord(runDirectory(this.stateRoot, snapshot.runId));
-          if (!record.configPath) {
-            throw invalid(`Run ${snapshot.runId} has no configuration to export with`);
+          const record = await this.record(snapshot.runId);
+          const args = ["distributed", "export", "--run-id", snapshot.runId, "--output", directory];
+          if (record?.configPath) {
+            args.push("--config", record.configPath);
           }
-          const result = await runFlakegraph(
-            ["distributed", "export", "--config", record.configPath, "--run-id", snapshot.runId, "--output", directory],
-            { cwd: this.repositoryRoot },
-          );
+          const result = await runFlakegraph(args, { cwd: this.repositoryRoot });
           if (result.exitCode !== 0) {
             throw new Error(result.stderr.trim() || `Exporting the graph of ${snapshot.runId} failed`);
           }
@@ -351,6 +434,17 @@ export class KubernetesRuntime implements ControlPlane {
       },
       catch: (cause) => fromCause(cause, "Unable to load fleet graph"),
     });
+  }
+
+  private async control(action: "cancel" | "retry", runId: string, configPath: string | null | undefined): Promise<void> {
+    const args = ["distributed", action, "--run-id", runId];
+    if (configPath) {
+      args.push("--config", configPath);
+    }
+    const result = await runFlakegraph(args, { cwd: this.repositoryRoot });
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr.trim() || `Unable to ${action} ${runId}`);
+    }
   }
 
   /** What the fleet's workers run, or null when the fleet cannot be read. */

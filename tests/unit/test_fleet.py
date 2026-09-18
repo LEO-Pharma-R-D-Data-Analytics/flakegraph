@@ -55,6 +55,27 @@ def _fleet_kubectl_fixture(
 
     deployments = []
     scaled_objects = []
+    # The gate mounts configuration of its own under the same volume name; it
+    # must not be mistaken for a pool that claims runs.
+    deployments.append(
+        {
+            "metadata": {
+                "name": "flakegraph-auth",
+                "labels": {"app.kubernetes.io/component": "auth-proxy"},
+            },
+            "spec": {
+                "replicas": 1,
+                "template": {
+                    "spec": {
+                        "serviceAccountName": "default",
+                        "containers": [{"image": "oauth2-proxy:1", "env": []}],
+                        "volumes": [{"name": "config", "configMap": {"name": "flakegraph-auth"}}],
+                    }
+                },
+                "status": {"availableReplicas": 1},
+            },
+        }
+    )
     for component in ("worker-prepare", "worker-extract", "worker-finalize"):
         name = f"flakegraph-{component}"
         deployments.append(

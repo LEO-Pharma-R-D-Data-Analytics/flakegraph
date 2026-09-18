@@ -120,16 +120,19 @@ def fleet_profile(target: ClusterTarget, namespace: str) -> dict[str, Any]:
     """
 
     deployments = worker_deployments(target, namespace)
-    config_maps = {
-        name for item in deployments.values() if (name := mounted_config_map(item)) is not None
-    }
+    # Only the pools that claim runs decide the profile; the gate, the gateway
+    # and the console mount configuration of their own under the same name.
+    workers = [item for name, item in deployments.items() if name in REQUIRED_WORKER_COMPONENTS]
+    if len(workers) != len(REQUIRED_WORKER_COMPONENTS):
+        missing = sorted(REQUIRED_WORKER_COMPONENTS - set(deployments))
+        raise RuntimeError(f"Kubernetes fleet is missing worker deployments: {', '.join(missing)}")
+    config_maps = {name for item in workers if (name := mounted_config_map(item)) is not None}
     if len(config_maps) != 1:
         raise RuntimeError("Worker pools must mount one shared FlakeGraph processing ConfigMap")
     config_name = next(iter(config_maps))
     profile = load_deployed_profile(config_map(target, namespace, config_name))
     ontology_name = next(
-        (name for item in deployments.values() if (name := mounted_config_map(item, "ontology"))),
-        None,
+        (name for item in workers if (name := mounted_config_map(item, "ontology"))), None
     )
     ontology: dict[str, Any] | None = None
     if ontology_name:
