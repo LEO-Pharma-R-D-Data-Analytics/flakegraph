@@ -30,37 +30,43 @@ def render_cluster_selector(state_root: Path) -> ClusterProfile | None:
     catalog = read_catalog(state_root)
     if not catalog.clusters:
         st.caption("No clusters registered yet.")
-        if st.button(
+        st.button(
             "Add a cluster",
             icon=":material/add:",
             width="stretch",
             key="cluster_add_first",
-        ):
-            st.session_state["active_page"] = "clusters"
-            st.rerun()
+            on_click=st.session_state.__setitem__,
+            args=("active_page", "clusters"),
+        )
         return None
 
     names = [cluster.name for cluster in catalog.clusters]
     active = catalog.active()
-    chosen = st.selectbox(
+    # Sidebar changes land in callbacks, which run before the page renders,
+    # rather than in ``st.rerun``, which would sweep the main page's widget
+    # state before that page is reached.
+    st.selectbox(
         "Cluster",
         names,
         index=names.index(active.name) if active and active.name in names else 0,
         key="cluster_selector",
         help="Kubernetes cluster that runs FlakeGraph workers and model servers.",
+        on_change=_select_cluster,
+        args=(state_root,),
     )
-    if chosen and (active is None or chosen != active.name):
-        select_cluster(state_root, chosen)
-        st.rerun()
-    if st.button(
+    st.button(
         "Manage clusters",
         icon=":material/settings:",
         width="stretch",
         key="cluster_manage",
-    ):
-        st.session_state["active_page"] = "clusters"
-        st.rerun()
+        on_click=st.session_state.__setitem__,
+        args=("active_page", "clusters"),
+    )
     return read_catalog(state_root).active()
+
+
+def _select_cluster(state_root: Path) -> None:
+    select_cluster(state_root, st.session_state["cluster_selector"])
 
 
 def render_cluster_manager(state_root: Path) -> None:

@@ -17,11 +17,13 @@ import shutil
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
-from flakegraph_app.models import RuntimeMode
+from flakegraph_app.models import RuntimeMode, SourceKind
 from flakegraph_app.run_catalog import write_run_record
 from streamlit.testing.v1 import AppTest
+from streamlit.testing.v1.element_tree import ButtonGroup
 
 from kg_processor.adapters.writers.local_artifacts import LocalArtifactsWriter
 from kg_processor.domain.graph import (
@@ -45,8 +47,6 @@ def completed_run() -> Iterator[str]:
     The app resolves its catalog from the repository root, so the fixture is
     written there under a unique id rather than into a temporary directory.
     """
-
-
 
     run_id = f"apptest-{uuid.uuid4().hex[:12]}"
     state_root = _REPOSITORY_ROOT / ".flakegraph" / "app"
@@ -241,6 +241,48 @@ def test_the_completed_graph_page_renders(completed_run: str) -> None:
     )
 
 
+@pytest.fixture
+def single_select_button_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the harness rerun a page holding a segmented control.
+
+    Its button-group model was written for ``st.feedback`` and reads every value
+    as a list; a segmented control holds one value, which it would iterate as
+    characters when it serialises the widget for the next run.
+    """
+
+    def indices(self: ButtonGroup[Any]) -> list[int]:
+        values = self.value if isinstance(self.value, list) else [self.value]
+        return [self.options.index(self.format_func(value)) for value in values]
+
+    monkeypatch.setattr(ButtonGroup, "indices", property(indices))
+
+
+@pytest.mark.usefixtures("single_select_button_groups")
+def test_a_sidebar_action_keeps_a_half_filled_source_form(completed_run: str) -> None:
+    """Opening the removal dialog must not wipe the bucket form beside it.
+
+    A sidebar button that changed state and called ``st.rerun`` ended the run
+    before the form's widgets were seen, and Streamlit swept their state as
+    stale; the operator came back to an empty form.
+    """
+
+    app = _app()
+    app.session_state["navigation_runtime"] = "local"
+    app.session_state["active_page"] = "new"
+    app.run()
+    # Filled the way an operator fills it: a value the page seeds itself is
+    # not widget state, and would survive the sweep this test is about.
+    # A single-select control, whose harness model is typed for lists.
+    app.button_group(key="ingest_source_kind").set_value(SourceKind.S3).run()  # type: ignore[arg-type]
+    app.text_input(key="ingest_s3_bucket").set_value("test-corpora").run()
+    app.button(key=f"forget_local_{completed_run}").click().run()
+
+    assert not app.exception
+    assert app.session_state["pending_forget_run_id"] == completed_run
+    assert app.session_state["ingest_source_kind"] == SourceKind.S3
+    assert app.session_state["ingest_s3_bucket"] == "test-corpora"
+
+
 def test_the_cluster_manager_renders() -> None:
     """Registering a cluster must be possible without leaving the application."""
 
@@ -268,9 +310,7 @@ def test_only_the_snowflake_runtime_is_offered_inside_snowflake(
 
         return object()
 
-    monkeypatch.setattr(
-        "flakegraph_app.backends.factory.active_snowflake_session", _session
-    )
+    monkeypatch.setattr("flakegraph_app.backends.factory.active_snowflake_session", _session)
 
     app = _app()
     app.run()

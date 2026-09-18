@@ -37,25 +37,28 @@ def render_run_navigation(
         st.session_state["active_page"] = "fleet" if runtime == RuntimeMode.KUBERNETES else "new"
         st.session_state["selected_run_id"] = None
 
+    # Sidebar buttons change state in callbacks, which run before the page
+    # renders. Calling ``st.rerun`` from the sidebar instead ends the run before
+    # the main page's widgets are seen, and Streamlit sweeps their state as
+    # stale, wiping a half-filled ingestion form.
     active_page = str(st.session_state.get("active_page") or "new")
-    if st.button(
+    st.button(
         "New graph",
         icon=":material/add_circle:",
         type="primary" if active_page == "new" else "secondary",
         width="stretch",
         key=f"new_graph_{runtime_key}",
         help="Configure a new source, processing providers, and graph destination.",
-    ):
-        st.session_state["active_page"] = "new"
-        st.session_state["selected_run_id"] = None
-        st.rerun()
+        on_click=_open_page,
+        args=("new",),
+    )
 
     if runtime == RuntimeMode.KUBERNETES:
         # A fleet is rarely one cluster, and machines are added over time, so the
         # target is chosen here rather than fixed in the environment.
         render_cluster_selector(app_state_root(backend, Path.cwd()))
         fleet_label = _fleet_label(cluster, cluster_error)
-        if st.button(
+        st.button(
             fleet_label,
             icon=":material/dns:",
             type="primary" if active_page == "fleet" else "tertiary",
@@ -65,10 +68,9 @@ def render_run_navigation(
                 "Inspect registered nodes, model servers, workers, utilization, and "
                 "on-demand active task assignments."
             ),
-        ):
-            st.session_state["active_page"] = "fleet"
-            st.session_state["selected_run_id"] = None
-            st.rerun()
+            on_click=_open_page,
+            args=("fleet",),
+        )
 
     _render_graph_history_heading(runtime_key, "forget" in backend.capabilities)
     if not runs:
@@ -99,16 +101,16 @@ def render_run_navigation(
     )
     if len(visible_runs) > history_limit:
         remaining = len(visible_runs) - history_limit
-        if st.button(
+        st.button(
             f"Show {min(_HISTORY_PAGE_SIZE, remaining)} older",
             icon=":material/expand_more:",
             type="tertiary",
             width="stretch",
             key=f"more_graphs_{runtime_key}",
             help="Load the next page of older graph runs into the sidebar.",
-        ):
-            st.session_state[history_limit_key] = history_limit + _HISTORY_PAGE_SIZE
-            st.rerun()
+            on_click=st.session_state.__setitem__,
+            args=(history_limit_key, history_limit + _HISTORY_PAGE_SIZE),
+        )
     if can_forget:
         _render_forget_confirmation(backend, runtime_key, runs, selected_id)
         _render_bulk_forget_confirmation(backend, runtime_key, runs, selected_id)
@@ -132,7 +134,7 @@ def _render_graph_history_heading(runtime_key: str, can_forget: bool) -> None:
         return
     with columns[1]:
         bulk_mode = _bulk_mode(runtime_key)
-        if st.button(
+        st.button(
             "",
             icon=":material/close:" if bulk_mode else ":material/checklist:",
             type="tertiary",
@@ -143,11 +145,15 @@ def _render_graph_history_heading(runtime_key: str, can_forget: bool) -> None:
                 if bulk_mode
                 else "Select multiple terminal graphs to remove together."
             ),
-        ):
-            st.session_state[f"bulk_graph_mode_{runtime_key}"] = not bulk_mode
-            if bulk_mode:
-                _clear_bulk_selection(runtime_key)
-            st.rerun()
+            on_click=_toggle_bulk_mode,
+            args=(runtime_key, not bulk_mode),
+        )
+
+
+def _toggle_bulk_mode(runtime_key: str, enabled: bool) -> None:
+    st.session_state[f"bulk_graph_mode_{runtime_key}"] = enabled
+    if not enabled:
+        _clear_bulk_selection(runtime_key)
 
 
 def _render_run_filters(
@@ -214,7 +220,9 @@ def _render_run_list(
                     _render_run_button(runtime_key, run, selected_id, active_page)
             if can_forget and not bulk_mode:
                 with columns[1]:
-                    if st.button(
+                    # Armed before the run so the confirmation dialog opens on
+                    # this click rather than after a second one.
+                    st.button(
                         "",
                         icon=":material/delete_outline:",
                         type="tertiary",
@@ -225,13 +233,9 @@ def _render_run_list(
                             "what is deleted with it. Active runs must be cancelled first."
                         ),
                         key=f"forget_{runtime_key}_{run.run_id}",
-                    ):
-                        st.session_state["pending_forget_run_id"] = run.run_id
-                        # Re-enter the script so the confirmation dialog opens at
-                        # once. Rendering it below a long history list made the
-                        # first click appear inert because the confirmation was
-                        # outside the visible sidebar viewport.
-                        st.rerun()
+                        on_click=st.session_state.__setitem__,
+                        args=("pending_forget_run_id", run.run_id),
+                    )
 
 
 def _render_bulk_actions(
@@ -250,7 +254,7 @@ def _render_bulk_actions(
     }
     st.caption(f"{len(selected)} selected")
     actions = st.columns([1, 1, 5], gap="small")
-    if actions[0].button(
+    actions[0].button(
         "",
         icon=":material/select_all:",
         type="tertiary",
@@ -258,11 +262,10 @@ def _render_bulk_actions(
         disabled=not selectable or len(shown_selected) == len(selectable),
         help="Select every removable graph currently shown in the sidebar.",
         key=f"bulk_select_all_{runtime_key}",
-    ):
-        for run in selectable:
-            st.session_state[_bulk_checkbox_key(runtime_key, run.run_id)] = True
-        st.rerun()
-    if actions[1].button(
+        on_click=_select_bulk,
+        args=(runtime_key, [run.run_id for run in selectable]),
+    )
+    actions[1].button(
         "",
         icon=":material/deselect:",
         type="tertiary",
@@ -270,10 +273,10 @@ def _render_bulk_actions(
         disabled=not selected,
         help="Clear the current graph selection without leaving selection mode.",
         key=f"bulk_select_clear_{runtime_key}",
-    ):
-        _clear_bulk_selection(runtime_key)
-        st.rerun()
-    if actions[2].button(
+        on_click=_clear_bulk_selection,
+        args=(runtime_key,),
+    )
+    actions[2].button(
         f"Remove {len(selected)}",
         icon=":material/delete_outline:",
         type="primary",
@@ -281,9 +284,14 @@ def _render_bulk_actions(
         disabled=not selected,
         help="Review and confirm removal of the selected graphs.",
         key=f"bulk_remove_{runtime_key}",
-    ):
-        st.session_state[f"pending_bulk_forget_{runtime_key}"] = list(selected)
-        st.rerun()
+        on_click=st.session_state.__setitem__,
+        args=(f"pending_bulk_forget_{runtime_key}", list(selected)),
+    )
+
+
+def _select_bulk(runtime_key: str, run_ids: list[str]) -> None:
+    for run_id in run_ids:
+        st.session_state[_bulk_checkbox_key(runtime_key, run_id)] = True
 
 
 def _render_run_button(
@@ -317,6 +325,11 @@ def _select_run(run_id: str) -> None:
 
     st.session_state["active_page"] = "run"
     st.session_state["selected_run_id"] = run_id
+
+
+def _open_page(page: str) -> None:
+    st.session_state["active_page"] = page
+    st.session_state["selected_run_id"] = None
 
 
 def _render_forget_confirmation(
