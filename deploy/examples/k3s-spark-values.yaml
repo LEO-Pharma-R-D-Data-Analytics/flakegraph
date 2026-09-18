@@ -57,6 +57,11 @@ modelServing:
   replicas: 4
   nodeSelector:
     flakegraph.io/node-class: nvidia-spark
+  server:
+    # The draft model the engine speculates with is a path, so something has to
+    # put it there: name an image that carries it, or say a mount already does.
+    draftModelSeed:
+      image: your-registry.example/dflash2:3
 
 # The router and the gateway are cheap next to an engine, so they sit on the
 # control-plane nodes and leave GPU nodes to inference and document parsing.

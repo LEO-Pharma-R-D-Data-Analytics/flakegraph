@@ -254,24 +254,25 @@ def resolve_entity_mentions(  # noqa: PLR0912,PLR0915 - branches record distinct
                         **batch_result.provider_metadata,
                     }
                 )
-            for adjudicated in _batch_decisions(batch_result, llm_merge_min_confidence):
-                decision = adjudicated
-                if decision.same_entity:
-                    if _cluster_initialism_conflict(
-                        union_find,
-                        mentions_by_id,
-                        decision.left_id,
-                        decision.right_id,
-                    ):
-                        decision = decision.model_copy(
+            for decision in _batch_decisions(batch_result, llm_merge_min_confidence):
+                if decision.same_entity and _cluster_initialism_conflict(
+                    union_find,
+                    mentions_by_id,
+                    decision.left_id,
+                    decision.right_id,
+                ):
+                    decisions.append(
+                        decision.model_copy(
                             update={
                                 "same_entity": False,
                                 "canonical_name": None,
                                 "reason": "transitive_initialism_conflict",
                             }
                         )
-                    else:
-                        union_find.union(decision.left_id, decision.right_id)
+                    )
+                    continue
+                if decision.same_entity:
+                    union_find.union(decision.left_id, decision.right_id)
                 decisions.append(decision)
         adjudication_metadata = {"adjudication_batches": batch_metadata}
 

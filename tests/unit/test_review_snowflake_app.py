@@ -30,7 +30,6 @@ def test_put_status_rejects_skipped_stage_objects() -> None:
     """A retry must not COPY an older same-name object after Snowflake skips PUT."""
 
     cursor = SimpleNamespace(
-        description=("PUT",),
         fetchall=lambda: [("src", "target", 1, 1, "NONE", "NONE", "SKIPPED", "")],
     )
 

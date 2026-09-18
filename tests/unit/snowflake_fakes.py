@@ -45,9 +45,6 @@ class FakeCursor:
     ``fetchall`` one list per call. Both answer ``None`` or ``[]`` once spent.
     """
 
-    # Real PUT statements carry a result description alongside their status row.
-    description = ("PUT",)
-
     def __init__(
         self,
         rows: Sequence[Sequence[object] | None] | None = None,

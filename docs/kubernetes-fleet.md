@@ -301,6 +301,10 @@ place its version and settings are pinned. Keep site-specific values,
 endpoints, and Secret references outside Git under the ignored
 `deploy/private/` directory:
 
+The example names a draft-model seed image; point it at your registry (or set
+`modelServing.server.draftModelSeed.providedExternally: true` if a mount
+supplies the model) before the first install.
+
 ```bash
 cp deploy/examples/k3s-spark-values.yaml deploy/private/fleet-values.yaml
 cp configs/app-defaults.yaml deploy/private/fleet-config.yaml

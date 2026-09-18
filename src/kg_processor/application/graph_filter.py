@@ -17,7 +17,7 @@ from kg_processor.application.extraction_grounding import (
     build_surface_text_index,
     indexed_surface_occurs,
 )
-from kg_processor.application.graph_merge import normalize_entity_name
+from kg_processor.application.graph_merge import _set_if_present, normalize_entity_name
 from kg_processor.domain.graph import Chunk, ExtractedEntity, ExtractedRelation
 
 _DEFAULT_BLOCKLIST = [
@@ -292,8 +292,3 @@ def _relation_decision(
 def _reason_counts(decisions: list[FilterDecision]) -> dict[str, int]:
     counter = Counter(decision.reason for decision in decisions if decision.action == "dropped")
     return dict(sorted(counter.items()))
-
-
-def _set_if_present(event: dict[str, object], key: str, value: object) -> None:
-    if value is not None:
-        event[key] = value
