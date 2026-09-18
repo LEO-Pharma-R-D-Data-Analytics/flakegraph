@@ -21,7 +21,10 @@ from typing import Any
 from litellm.integrations.custom_logger import CustomLogger
 
 INSTRUCTION_ROLES = frozenset({"system", "developer"})
-CHAT_CALL_TYPES = frozenset({"completion", "acompletion"})
+# The proxy names the route it is serving: chat completions carry the
+# conversation in ``messages``, the Responses API carries it in ``input``
+# (which may also be a bare string), and both admit instruction items anywhere.
+CONVERSATION_FIELDS = {"completion": "messages", "acompletion": "messages", "aresponses": "input"}
 
 
 def hoist_instructions(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -34,7 +37,7 @@ def hoist_instructions(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 class MessageOrder(CustomLogger):
-    """Reorder chat messages before they reach a model."""
+    """Reorder a conversation before it reaches a model."""
 
     async def async_pre_call_hook(
         self,
@@ -43,11 +46,14 @@ class MessageOrder(CustomLogger):
         data: dict[str, Any],
         call_type: str,
     ) -> dict[str, Any]:
-        """Hoist instruction messages on chat completions; leave other calls alone."""
+        """Hoist instruction items on the conversational routes; leave other calls alone."""
 
-        messages = data.get("messages")
-        if call_type in CHAT_CALL_TYPES and isinstance(messages, list) and messages:
-            data["messages"] = hoist_instructions(messages)
+        field = CONVERSATION_FIELDS.get(call_type)
+        if field is None:
+            return data
+        conversation = data.get(field)
+        if isinstance(conversation, list) and all(isinstance(item, dict) for item in conversation):
+            data[field] = hoist_instructions(conversation)
         return data
 
 

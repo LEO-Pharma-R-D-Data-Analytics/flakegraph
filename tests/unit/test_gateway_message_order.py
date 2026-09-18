@@ -86,6 +86,38 @@ def test_the_hook_rewrites_chat_completions(hook: types.ModuleType, call_type: s
     assert [m["role"] for m in result["messages"]] == ["system", "user"]
 
 
+def test_the_hook_rewrites_the_responses_route_too(hook: types.ModuleType) -> None:
+    """Codex talks the Responses API, whose conversation travels in ``input``."""
+
+    data = {
+        "instructions": "You are terse.",
+        "input": [
+            _message("user", "Hello"),
+            _message("assistant", "Hey!"),
+            _message("developer", "Answer only in French."),
+            {"type": "function_call_output", "call_id": "c1", "output": "{}"},
+            _message("user", "How are you?"),
+        ],
+    }
+
+    result = asyncio.run(hook.instance.async_pre_call_hook(None, None, data, "aresponses"))
+
+    assert [item.get("role") or item["type"] for item in result["input"]] == [
+        "developer",
+        "user",
+        "assistant",
+        "function_call_output",
+        "user",
+    ]
+    assert result["instructions"] == "You are terse."
+
+
+def test_a_bare_string_input_is_left_alone(hook: types.ModuleType) -> None:
+    data = {"input": "Hello"}
+
+    assert asyncio.run(hook.instance.async_pre_call_hook(None, None, data, "aresponses")) == data
+
+
 def test_the_hook_leaves_other_calls_alone(hook: types.ModuleType) -> None:
     data = {"input": "hi", "messages": [_message("user", "hi"), _message("system", "x")]}
 

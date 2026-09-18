@@ -663,9 +663,10 @@ and the engine behind it. The OpenAI chat format admits `system` and
 its instruction updates between turns; the engine's chat template accepts
 instruction messages only while they lead the conversation. A gateway hook
 (`gateway/message_order.py`, loaded from beside the proxy's config) moves
-late instruction messages to the front in the order they arrived, so a resumed
-session works like a fresh one. Nothing is reworded, and a conversation whose
-instructions already lead passes through untouched.
+late instruction messages to the front in the order they arrived, on both the
+chat-completions and the Responses routes, so a resumed session works like a
+fresh one. Nothing is reworded, and a conversation whose instructions already
+lead passes through untouched.
 
 ## Submit And Export
 
