@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, type UIMessage } from "ai";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { getRuntimeHeader } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -37,7 +38,13 @@ export function AskPanel({
     () =>
       new DefaultChatTransport({
         api: "/api/ask",
-        headers: () => ({ "x-flakegraph-runtime": runtimeFromLocation() }),
+        // The same runtime the rest of the console addresses: the one the
+        // URL names, else the server's default, never a local fallback that
+        // would read a fleet run's graph through the local runtime.
+        headers: (): Record<string, string> => {
+          const runtime = getRuntimeHeader();
+          return runtime ? { "x-flakegraph-runtime": runtime } : {};
+        },
         body: () => ({
           runId,
           mode,
@@ -196,14 +203,6 @@ export function AskPanel({
       </CardContent>
     </Card>
   );
-}
-
-function runtimeFromLocation(): string {
-  if (typeof window === "undefined") {
-    return "local";
-  }
-  const runtime = new URLSearchParams(window.location.search).get("runtime");
-  return runtime === "kubernetes" || runtime === "snowflake" ? runtime : "local";
 }
 
 function textFromMessage(message: AskUIMessage): string {

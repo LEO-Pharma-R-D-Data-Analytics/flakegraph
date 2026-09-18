@@ -204,6 +204,11 @@ export class LocalRuntime implements ControlPlane {
         if (!record.runId || record.status === "unknown") {
           throw notFound(`Unknown local run: ${runId}`);
         }
+        // The listing shows only local runs; opening one another runtime owns
+        // would read that runtime's record through this one's rules.
+        if (String(record.runtime || "local") !== "local") {
+          throw notFound(`Run ${runId} belongs to the ${record.runtime} runtime`);
+        }
         return this.catalogSnapshot(directory, record, true);
       },
       catch: (cause) => fromCause(cause, "Unable to load run"),

@@ -15,7 +15,7 @@ export const trpc = createTRPCReact<AppRouter>();
 // The runtime travels as a header only when the address names one; otherwise
 // the server's configured default applies, which on a deployed control plane
 // is the fleet it fronts.
-function getRuntimeHeader(): RuntimeMode | null {
+export function getRuntimeHeader(): RuntimeMode | null {
   if (typeof window === "undefined") {
     return null;
   }
