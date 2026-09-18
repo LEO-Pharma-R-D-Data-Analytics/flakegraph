@@ -23,7 +23,7 @@ import {
 import { lastJsonObject, runFlakegraph } from "../cli";
 import { buildRunConfig, environmentForRequest, redactedConfig, writeRunConfig } from "../config";
 import { appEnv } from "../env";
-import { documentCountsByRun, documentTasksByRun, listPostgresRuns } from "../db/client";
+import { documentCountsByRun, documentTasksByRun, leasedTasks, listPostgresRuns } from "../db/client";
 import { documentStatusesFromEvents, documentStatusesFromTasks, type DocumentStatus } from "../documents";
 import {
   KUBERNETES_CAPABILITIES,
@@ -522,17 +522,34 @@ export class KubernetesRuntime implements ControlPlane {
   ): Effect.Effect<readonly NodeWorkAssignment[], ControlPlaneError> {
     return Effect.tryPromise({
       try: async () => {
-        try {
+        if (this.stubbed) {
           const snapshot = await readJsonFile<{ assignments?: NodeWorkAssignment[] }>(
             path.join(this.stateRoot, "kubernetes", "assignments.json"),
           );
-          void namespace;
           return (snapshot?.assignments ?? []).filter(
             (item) => item.scopeId === nodeName || item.workerId.includes(nodeName),
           );
-        } catch {
+        }
+        // A lease names the worker pod that holds it; the cluster says which
+        // node that pod runs on.
+        const cluster = await Effect.runPromise(this.cluster(namespace));
+        const podsOnNode = new Set(
+          (cluster?.workloads ?? []).filter((workload) => workload.node === nodeName).map((workload) => workload.name),
+        );
+        if (podsOnNode.size === 0) {
           return [];
         }
+        return (await leasedTasks())
+          .filter((row) => podsOnNode.has(row.leaseOwner))
+          .map((row) => ({
+            workerId: row.leaseOwner,
+            runId: row.runId,
+            graphId: row.graphId,
+            taskId: row.taskId,
+            stage: row.stage,
+            scopeId: row.scopeId,
+            updatedAt: row.updatedAt?.toISOString() ?? null,
+          }));
       },
       catch: (cause) => fromCause(cause, "Unable to load node assignments"),
     });
@@ -687,8 +704,8 @@ async function readLiveClusterUnbound(namespace: string): Promise<ClusterSnapsho
       restarts: (pod.status?.containerStatuses ?? []).reduce((sum, status) => sum + (status.restartCount ?? 0), 0),
       cpu: null,
       memory: null,
-      image: pod.spec?.containers?.[0]?.image ?? null,
-      model: pod.metadata?.labels?.["flakegraph/model"] ?? null,
+      image: engineContainer(pod)?.image ?? pod.spec?.containers?.[0]?.image ?? null,
+      model: servedModel(pod),
     }));
     const annotatedNodes = nodeStatuses.map((node) => {
       const onNode = workloads.filter((workload) => workload.node === node.name);
@@ -717,6 +734,39 @@ async function readLiveClusterUnbound(namespace: string): Promise<ClusterSnapsho
       error instanceof Error ? error.message : "Kubernetes API is unavailable",
     ]);
   }
+}
+
+type PodLike = {
+  metadata?: { labels?: Record<string, string> };
+  spec?: { containers?: Array<{ name?: string; image?: string; args?: string[] }> };
+};
+
+/** The container that runs the model, on a pod that serves one. */
+function engineContainer(pod: PodLike) {
+  const containers = pod.spec?.containers ?? [];
+  return containers.find((container) => container.name === "vllm") ?? null;
+}
+
+/**
+ * The model a serving pod answers for: the `--served-model-name` it was
+ * started with, else the checkpoint after `serve`. Nothing on the pod's
+ * labels says it, so the arguments do.
+ */
+function servedModel(pod: PodLike): string | null {
+  const labelled = pod.metadata?.labels?.["flakegraph/model"];
+  if (labelled) {
+    return labelled;
+  }
+  const args = engineContainer(pod)?.args ?? [];
+  const named = args.indexOf("--served-model-name");
+  if (named >= 0 && args[named + 1]) {
+    return args[named + 1] ?? null;
+  }
+  const serve = args.indexOf("serve");
+  if (serve >= 0 && args[serve + 1] && !args[serve + 1]!.startsWith("-")) {
+    return args[serve + 1] ?? null;
+  }
+  return null;
 }
 
 function emptyClusterSnapshot(namespace: string, warnings: string[]): ClusterSnapshot {

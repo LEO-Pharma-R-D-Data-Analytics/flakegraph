@@ -460,15 +460,17 @@ def _use_recovery(monkeypatch: pytest.MonkeyPatch, kubectl: object) -> None:
         monkeypatch.setattr(f"{module}.kubectl_json", kubectl, raising=False)
 
 
-def test_queued_stages_name_the_pools_that_claim_them() -> None:
+def test_claimable_stages_name_the_pools_that_claim_them() -> None:
+    """A finalizer queued behind its documents is not waiting on a pool."""
+
     counts = [
-        {"stage": "prepare_document", "status": "queued", "count": 2},
-        {"stage": "extract_entity_window", "status": "queued", "count": 0},
-        {"stage": "extract_relation_window", "status": "running", "count": 3},
-        {"stage": "finalize_graph", "status": "queued", "count": 1},
+        {"stage": "prepare_document", "status": "queued", "count": 2, "ready": 2},
+        {"stage": "extract_entity_window", "status": "queued", "count": 4, "ready": 1},
+        {"stage": "extract_relation_window", "status": "running", "count": 3, "ready": 0},
+        {"stage": "finalize_graph", "status": "queued", "count": 1, "ready": 0},
     ]
 
-    assert queued_worker_components(counts) == {"worker-prepare", "worker-finalize"}
+    assert queued_worker_components(counts) == {"worker-prepare", "worker-extract"}
     assert recover_workers("flakegraph", set(), ClusterTarget()).startswith("No queued")
 
 

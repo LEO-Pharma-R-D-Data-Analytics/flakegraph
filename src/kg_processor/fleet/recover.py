@@ -19,11 +19,16 @@ _STARTUP_FAILURES = frozenset({"CrashLoopBackOff", "ErrImagePull", "ImagePullBac
 
 
 def queued_worker_components(task_counts: Sequence[Mapping[str, Any]]) -> set[str]:
-    """Name the pools able to claim the stages a run still has queued."""
+    """Name the pools able to claim the stages a run has claimable work in.
+
+    Queued work whose dependencies are unmet - a finalizer queued behind its
+    documents, say - is not waiting on a pool, and scaling one up for it only
+    fights the autoscaler that will scale it back down.
+    """
 
     components: set[str] = set()
     for item in task_counts:
-        if str(item.get("status", "")) != "queued" or not int(item.get("count") or 0):
+        if str(item.get("status", "")) != "queued" or not int(item.get("ready") or 0):
             continue
         components.add(_STAGE_POOLS.get(str(item.get("stage", "")), "worker-extract"))
     return components

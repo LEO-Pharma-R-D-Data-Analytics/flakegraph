@@ -53,6 +53,11 @@ _MAX_RUN_LIST_LIMIT = 500
 # progress payload in the bucket stands for it.
 _TASK_COUNT_SELECT = """
     stage, status, COUNT(*) AS task_count,
+    COUNT(*) FILTER (
+        WHERE status = 'queued'
+          AND remaining_dependencies = 0
+          AND available_at <= CURRENT_TIMESTAMP
+    ) AS ready_count,
     MIN(started_at) AS started_at,
     MAX(completed_at) AS completed_at,
     MAX(updated_at) AS updated_at,
@@ -1997,6 +2002,7 @@ def _task_count(row: dict[str, Any]) -> TaskCount:
         stage=TaskStage(str(row["stage"])),
         status=TaskStatus(str(row["status"])),
         count=int(row["task_count"]),
+        ready=int(row["ready_count"]),
         started_at=row["started_at"],
         completed_at=row["completed_at"],
         progress=(

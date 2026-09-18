@@ -201,6 +201,10 @@ class TaskCount(BaseModel):
     stage: TaskStage
     status: TaskStatus
     count: int = Field(ge=0)
+    # Of a queued bucket, how many a worker could claim right now: their
+    # dependencies are met and no retry delay is pending. The rest wait on
+    # earlier stages, so no pool is short of workers on their account.
+    ready: int = Field(default=0, ge=0)
     started_at: datetime | None = None
     completed_at: datetime | None = None
     progress: TaskProgress | None = None

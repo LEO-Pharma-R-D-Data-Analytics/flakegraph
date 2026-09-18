@@ -87,7 +87,7 @@ export function RunWorkspace({
   });
   const retry = trpc.runs.retry.useMutation({
     onSuccess: async () => {
-      toast.success("Retry submitted");
+      toast.success(run.data?.status.toLowerCase() === "cancelled" ? "Run resumed" : "Retry submitted");
       await Promise.all([run.refetch(), utils.runs.list.invalidate()]);
     },
     onError: (error) => toast.error(error.message),
@@ -134,7 +134,10 @@ export function RunWorkspace({
     },
     onError: (error) => toast.error(error.message),
   });
-  const documents = trpc.runs.documents.useQuery({ runId });
+  const documents = trpc.runs.documents.useQuery(
+    { runId },
+    { refetchInterval: isActiveStatus(run.data?.status ?? "") ? 5_000 : false },
+  );
   const skipFile = trpc.runs.skipFile.useMutation({
     onSuccess: async () => {
       toast.success("File quarantined. Later retries skip it.");

@@ -114,3 +114,36 @@ export async function documentTasksByRun(runId: string): Promise<DocumentTaskRow
     .orderBy(schema.flakegraphTask.scopeId, schema.flakegraphTask.stage);
   return rows;
 }
+
+export interface LeasedTaskRow {
+  taskId: string;
+  runId: string;
+  graphId: string;
+  stage: string;
+  scopeId: string;
+  leaseOwner: string;
+  updatedAt: Date | null;
+}
+
+/** Every task a worker currently holds a lease on, with the run's graph. */
+export async function leasedTasks(): Promise<LeasedTaskRow[]> {
+  const db = createDrizzle();
+  if (!db) {
+    return [];
+  }
+  const rows = await db
+    .select({
+      taskId: schema.flakegraphTask.id,
+      runId: schema.flakegraphTask.runId,
+      graphId: schema.flakegraphRun.graphId,
+      stage: schema.flakegraphTask.stage,
+      scopeId: schema.flakegraphTask.scopeId,
+      leaseOwner: schema.flakegraphTask.leaseOwner,
+      updatedAt: schema.flakegraphTask.updatedAt,
+    })
+    .from(schema.flakegraphTask)
+    .innerJoin(schema.flakegraphRun, eq(schema.flakegraphRun.id, schema.flakegraphTask.runId))
+    .where(eq(schema.flakegraphTask.status, "running"))
+    .orderBy(schema.flakegraphTask.updatedAt);
+  return rows.filter((row): row is LeasedTaskRow => Boolean(row.leaseOwner));
+}
