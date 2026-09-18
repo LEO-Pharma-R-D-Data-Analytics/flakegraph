@@ -657,16 +657,21 @@ curl -so /dev/null -w '%{http_code}\n' "https://llm.$DOMAIN/v1/models"
 curl -sI "https://llm.$DOMAIN/ui" | grep -i '^location:'
 ```
 
-The gateway also reconciles one difference between the contract it advertises
-and the engine behind it. The OpenAI chat format admits `system` and
+The gateway also reconciles two differences between the contract it
+advertises and the engine behind it, in one hook (`gateway/message_order.py`,
+loaded from beside the proxy's config) that runs on both the chat-completions
+and the Responses routes. The OpenAI chat format admits `system` and
 `developer` messages anywhere, and a coding harness resuming a session sends
 its instruction updates between turns; the engine's chat template accepts
-instruction messages only while they lead the conversation. A gateway hook
-(`gateway/message_order.py`, loaded from beside the proxy's config) moves
-late instruction messages to the front in the order they arrived, on both the
-chat-completions and the Responses routes, so a resumed session works like a
-fresh one. Nothing is reworded, and a conversation whose instructions already
-lead passes through untouched.
+instruction messages only while they lead the conversation, so the hook moves
+late instruction messages to the front in the order they arrived. The same
+format lets a tool call carry any string as its arguments, while the engine
+parses them as JSON to render its template; a stream cut off mid tool call (an
+engine restart) leaves the harness holding the prefix it had received, and
+every later turn of that conversation would be refused. The hook keeps such
+arguments, wrapped as `{"partial_arguments": "..."}`, so the conversation can
+go on. Nothing is reworded, and a conversation that already fits passes
+through untouched.
 
 ## Submit And Export
 
