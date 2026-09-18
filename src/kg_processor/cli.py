@@ -15,6 +15,7 @@ from time import perf_counter
 from typing import Annotated, Any
 
 import typer
+import yaml
 
 from kg_processor import __version__
 from kg_processor.adapters.explorer import StaticHtmlGraphExplorer
@@ -77,6 +78,9 @@ from kg_processor.factories import (
     build_local_artifacts_writer,
     build_pipeline,
 )
+from kg_processor.fleet.kubectl import ClusterTarget
+from kg_processor.fleet.preflight import fleet_preflight
+from kg_processor.fleet.profile import fleet_profile
 from kg_processor.serving.ocr_shim import OcrShimConfig
 from kg_processor.serving.ocr_shim import run as run_ocr_shim
 from kg_processor.serving.sidecar import SidecarConfig
@@ -129,12 +133,14 @@ snowflake_app = _typer_app()
 benchmark_app = _typer_app()
 distributed_app = _typer_app()
 serving_app = _typer_app()
+fleet_app = _typer_app()
 app.add_typer(config_app, name="config")
 app.add_typer(inspect_app, name="inspect")
 app.add_typer(snowflake_app, name="snowflake")
 app.add_typer(benchmark_app, name="benchmark")
 app.add_typer(distributed_app, name="distributed")
 app.add_typer(serving_app, name="serving")
+app.add_typer(fleet_app, name="fleet")
 
 
 def _version_callback(value: bool) -> None:
@@ -230,6 +236,48 @@ def preflight(
     # checks/errors directly in CI, local shells, or Snowflake job logs.
     _echo_json(result.model_dump(mode="json"))
     if not result.ok:
+        raise typer.Exit(code=1)
+
+
+@fleet_app.command("profile")
+def fleet_profile_command(
+    namespace: Annotated[str, typer.Option("--namespace", "-n")] = "flakegraph",
+    context: Annotated[str, typer.Option("--context")] = "",
+) -> None:
+    """Print the processing profile the fleet's workers mount.
+
+    A submit host composes runs against this, because a worker claims only a
+    run whose semantic configuration hashes to its own.
+    """
+
+    _echo_json(fleet_profile(ClusterTarget(context=context), namespace))
+
+
+@fleet_app.command("preflight")
+def fleet_preflight_command(
+    config: Annotated[Path, typer.Option("--config", "-c")],
+    namespace: Annotated[str, typer.Option("--namespace", "-n")] = "flakegraph",
+    context: Annotated[str, typer.Option("--context")] = "",
+) -> None:
+    """Validate a run against the fleet it is bound for, then the run itself.
+
+    The fleet checks say whether anything will claim the run: worker pools,
+    their autoscaling, the profile they mount, the model servers, and the
+    credentials the run names. The core preflight then validates the run's own
+    settings the way a submit host must. One JSON result carries both.
+    """
+
+    settings = Settings.load(config)
+    core = run_preflight(settings, orchestrator_mode=True)
+    run = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
+    try:
+        fleet = fleet_preflight(run, namespace, ClusterTarget(context=context))
+    except Exception as exc:  # noqa: BLE001 - the fleet being unreadable is the finding
+        fleet = {"ok": False, "checks": [], "errors": [str(exc)]}
+    checks = [*core.checks, *(str(item) for item in fleet["checks"])]
+    errors = [*core.errors, *(str(item) for item in fleet["errors"])]
+    _echo_json({"ok": not errors, "checks": checks, "errors": errors})
+    if errors:
         raise typer.Exit(code=1)
 
 
