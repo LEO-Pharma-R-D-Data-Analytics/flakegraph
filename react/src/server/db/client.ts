@@ -147,3 +147,61 @@ export async function leasedTasks(): Promise<LeasedTaskRow[]> {
     .orderBy(schema.flakegraphTask.updatedAt);
   return rows.filter((row): row is LeasedTaskRow => Boolean(row.leaseOwner));
 }
+
+export interface GraphVersionRow {
+  graphId: string;
+  runId: string;
+  createdAt: Date;
+  /** Whether this version is the one the graph's head points at. */
+  head: boolean;
+}
+
+/**
+ * Every published version of the given graphs, oldest first, with the head
+ * marked. A run that has not published a graph has no version.
+ */
+export async function graphVersionsByGraph(graphIds: readonly string[]): Promise<Map<string, GraphVersionRow[]>> {
+  const versions = new Map<string, GraphVersionRow[]>();
+  const db = createDrizzle();
+  if (!db || graphIds.length === 0) {
+    return versions;
+  }
+  const rows = await db
+    .select({
+      graphId: schema.flakegraphGraphVersion.graphId,
+      runId: schema.flakegraphGraphVersion.runId,
+      createdAt: schema.flakegraphGraphVersion.createdAt,
+      headVersionId: schema.flakegraphGraphHead.versionId,
+      versionId: schema.flakegraphGraphVersion.id,
+    })
+    .from(schema.flakegraphGraphVersion)
+    .leftJoin(schema.flakegraphGraphHead, eq(schema.flakegraphGraphHead.graphId, schema.flakegraphGraphVersion.graphId))
+    .where(inArray(schema.flakegraphGraphVersion.graphId, [...graphIds]))
+    .orderBy(schema.flakegraphGraphVersion.createdAt, schema.flakegraphGraphVersion.id);
+  for (const row of rows) {
+    const list = versions.get(row.graphId) ?? [];
+    list.push({
+      graphId: row.graphId,
+      runId: row.runId,
+      createdAt: row.createdAt,
+      head: row.headVersionId === row.versionId,
+    });
+    versions.set(row.graphId, list);
+  }
+  return versions;
+}
+
+/** The finalizer's payload of a run, which names the documents a revision kept. */
+export async function finalizerPayload(runId: string): Promise<Record<string, unknown> | null> {
+  const db = createDrizzle();
+  if (!db) {
+    return null;
+  }
+  const rows = await db
+    .select({ payload: schema.flakegraphTask.payloadJson })
+    .from(schema.flakegraphTask)
+    .where(and(eq(schema.flakegraphTask.runId, runId), eq(schema.flakegraphTask.stage, "finalize_graph")))
+    .limit(1);
+  const payload = rows[0]?.payload;
+  return payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null;
+}

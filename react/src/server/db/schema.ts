@@ -36,3 +36,18 @@ export const flakegraphArtifact = pgTable("flakegraph_artifact", {
   metadataJson: jsonb("metadata_json").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
+
+export const flakegraphGraphVersion = pgTable("flakegraph_graph_version", {
+  id: text("id").primaryKey(),
+  graphId: text("graph_id").notNull(),
+  runId: text("run_id").notNull(),
+  artifactId: text("artifact_id").notNull(),
+  mediaType: text("media_type").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const flakegraphGraphHead = pgTable("flakegraph_graph_head", {
+  graphId: text("graph_id").primaryKey(),
+  versionId: text("version_id").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});

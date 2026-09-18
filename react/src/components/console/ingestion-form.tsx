@@ -37,12 +37,26 @@ import { useStorageItem, writeStorage } from "@/lib/browser-storage";
 import { readLastIngestion, useLastIngestion, writeLastIngestion, type LastIngestionDraft } from "@/lib/last-ingestion";
 import { cn } from "@/lib/utils";
 
+/**
+ * The form builds a new version of an existing graph instead of a new graph:
+ * the graph's identity and name are the base run's, the documents it keeps
+ * are decided elsewhere, and this form only adds to them.
+ */
+export interface RevisionTarget {
+  baseRunId: string;
+  graphId: string;
+  graphName: string | null;
+  dropFileIds: string[];
+  keptCount: number;
+}
+
 interface IngestionFormProps {
   runtime: RuntimeMode;
   capabilities: Set<Capability>;
   lastSuccessRuntime?: string | null;
   lastConfigDigest?: string | null;
   suggestionMode?: "off" | "on-request" | "auto-fill";
+  revision?: RevisionTarget | null;
   onSubmitted?: (runId: string) => Promise<void> | void;
 }
 
@@ -71,6 +85,7 @@ export function IngestionForm({
   lastSuccessRuntime,
   lastConfigDigest,
   suggestionMode = "on-request",
+  revision = null,
   onSubmitted,
 }: IngestionFormProps) {
   const session = trpc.auth.session.useQuery();
@@ -78,8 +93,8 @@ export function IngestionForm({
   const clearPromotion = trpc.workspace.clearPromotion.useMutation();
   const runs = trpc.runs.list.useQuery({ limit: 20 });
   const [jobId] = useState(() => cryptoRandom("run"));
-  const [graphId, setGraphId] = useState(() => cryptoRandom("graph"));
-  const [graphName, setGraphName] = useState("");
+  const [graphId, setGraphId] = useState(() => revision?.graphId ?? cryptoRandom("graph"));
+  const [graphName, setGraphName] = useState(revision?.graphName ?? "");
   const [sourceKind, setSourceKind] = useState<SourceKind>(defaultSourceKind(capabilities));
   const [sourcePath, setSourcePath] = useState("");
   const [sourceMode, setSourceMode] = useState<"files" | "sample">("files");
@@ -191,7 +206,10 @@ export function IngestionForm({
     // .flakegraph/app, as before.
     const workspacePath = `${session.data?.stateRoot ?? ""}/graphs/${graphId}`;
     const source = sourcePayload();
-    if (!source) {
+    // A revision that removes documents needs no source: it keeps what it
+    // keeps and adds nothing. One that removes nothing must add something.
+    const dropsOnly = Boolean(revision && revision.dropFileIds.length > 0 && !source);
+    if (!source && !dropsOnly) {
       return null;
     }
     return {
@@ -200,7 +218,10 @@ export function IngestionForm({
       graphId,
       graphName: graphName.trim() || null,
       sourceKind,
-      source,
+      source: source ?? {},
+      revision: revision
+        ? { baseRunId: revision.baseRunId, dropFileIds: revision.dropFileIds, addDocuments: Boolean(source) }
+        : null,
       ocr: effectiveOcr,
       llm: effectiveLlm,
       embedding: effectiveEmbedding,
@@ -258,6 +279,7 @@ export function IngestionForm({
     }
   }, [
     runtime,
+    revision,
     graphName,
     sourceKind,
     sourcePath,
@@ -441,16 +463,18 @@ export function IngestionForm({
       return;
     }
     try {
-      const pii = await scanPii.mutateAsync({ source: request.source, sourceKey });
-      if (pii.blocked) {
-        toast.error("PII hits must be quarantined or acknowledged before embed.");
-        return;
-      }
-      setPreflightRanFor(preflightInputs);
-      const result = await preflight.mutateAsync(request);
-      if (!result.ok) {
-        toast.error(result.errors.join("; ") || "Fix preflight errors before submitting");
-        return;
+      if (request.revision?.addDocuments !== false) {
+        const pii = await scanPii.mutateAsync({ source: request.source, sourceKey });
+        if (pii.blocked) {
+          toast.error("PII hits must be quarantined or acknowledged before embed.");
+          return;
+        }
+        setPreflightRanFor(preflightInputs);
+        const result = await preflight.mutateAsync(request);
+        if (!result.ok) {
+          toast.error(result.errors.join("; ") || "Fix preflight errors before submitting");
+          return;
+        }
       }
       const snapshot = await submit.mutateAsync(request);
       writeLastIngestion({
@@ -463,7 +487,11 @@ export function IngestionForm({
         embeddingProvider: embedding.provider,
         savedAt: new Date().toISOString(),
       });
-      toast.success(`Submitted ${snapshot.graphName || snapshot.graphId}`);
+      toast.success(
+        revision
+          ? `Building a new version of ${snapshot.graphName || snapshot.graphId}`
+          : `Submitted ${snapshot.graphName || snapshot.graphId}`,
+      );
       await onSubmitted?.(snapshot.runId);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to start ingestion");
@@ -504,7 +532,9 @@ export function IngestionForm({
     (sourceKind === "upload" || sourceKind === "local_path") && Boolean(sources.error);
   const envBlocked = envChanged && !envConfirmed;
   const incompleteSource = !request;
-  const startBlocked = grantsBlocked || emptyLocalListing || listingFailed || envBlocked || incompleteSource;
+  const dropsOnly = Boolean(request?.revision && request.revision.addDocuments === false);
+  const startBlocked =
+    grantsBlocked || (!dropsOnly && (emptyLocalListing || listingFailed)) || envBlocked || incompleteSource;
 
   // A preflight verdict describes the inputs it ran against; once any of them
   // changes it is no longer shown, and the next check starts fresh.
@@ -617,15 +647,17 @@ export function IngestionForm({
 
   return (
     <div className="flex min-h-full flex-1 flex-col gap-6">
-      <PageHeader
-        kicker="Ingestion"
-        title="Build a graph"
-        description={`This job runs on ${runtimeLabel(runtime)}. ${
-          canUseSamplePack
-            ? "Drop your files, or switch to a sample pack. OCR, LLM, and embeddings are required; Adaptive layout, Qwen3.8 27B, and MiniLM are filled in."
-            : "Point at a stage or upload the workers can LIST. OCR, LLM, and embeddings are required; Adaptive layout, Qwen3.8 27B, and MiniLM are filled in."
-        } Closing the browser does not cancel a submitted job. Destination is where artifacts are stored, not where workers run.`}
-      />
+      {revision ? null : (
+        <PageHeader
+          kicker="Ingestion"
+          title="Build a graph"
+          description={`This job runs on ${runtimeLabel(runtime)}. ${
+            canUseSamplePack
+              ? "Drop your files, or switch to a sample pack. OCR, LLM, and embeddings are required; Adaptive layout, Qwen3.8 27B, and MiniLM are filled in."
+              : "Point at a stage or upload the workers can LIST. OCR, LLM, and embeddings are required; Adaptive layout, Qwen3.8 27B, and MiniLM are filled in."
+          } Closing the browser does not cancel a submitted job. Destination is where artifacts are stored, not where workers run.`}
+        />
+      )}
 
       {promotionApplied && workspace.data?.pendingPromotion ? (
         <GuideCard
@@ -638,7 +670,7 @@ export function IngestionForm({
           actions={[]}
         />
       ) : null}
-      {showClone ? (
+      {showClone && !revision ? (
         <GuideCard
           title="Run like last time"
           why={
@@ -658,16 +690,18 @@ export function IngestionForm({
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 space-y-1">
-              <CardTitle>Documents</CardTitle>
+              <CardTitle>{revision ? "Documents to add" : "Documents"}</CardTitle>
               <CardDescription>
-                {canUseSamplePack
+                {revision
+                  ? "Only these are parsed and extracted; the documents the graph keeps are read from where the earlier run left them. A file the graph already holds is skipped."
+                  : canUseSamplePack
                   ? sourceMode === "sample"
                     ? "Hosted example corpora. This replaces your files until you switch back."
                     : "Drop files to ingest. Switch to a sample pack only if you want to prove the pipeline first."
                   : "Where workers read documents. Laptop sample packs are not available on this runtime."}
               </CardDescription>
             </div>
-            {canUseSamplePack ? (
+            {canUseSamplePack && !revision ? (
               <div
                 className="grid shrink-0 grid-cols-2 rounded-md border border-border p-0.5"
                 role="group"
@@ -738,6 +772,7 @@ export function IngestionForm({
         </CardContent>
       </Card>
 
+      {revision ? null : (
       <Card>
         <CardHeader>
           <CardTitle>Graph</CardTitle>
@@ -771,6 +806,7 @@ export function IngestionForm({
           </Field>
         </CardContent>
       </Card>
+      )}
 
       <Card data-testid="compose-providers">
         <CardHeader>
@@ -797,7 +833,7 @@ export function IngestionForm({
 
       {runtime === "snowflake" ? <SnowflakeGrantsCard /> : null}
 
-      {fleetProfile ? (
+      {revision ? null : fleetProfile ? (
         <FleetOntologyCard {...fleetOntologyTerms(fleetProfile)} />
       ) : suggestionMode !== "off" ? (
         <OntologyPanel onApply={setOntologyTypes} />
@@ -920,7 +956,14 @@ export function IngestionForm({
           {listingFailed ? (
             <p className="truncate text-sm text-destructive">Listing failed. Start stays disabled until the path lists files.</p>
           ) : null}
-          {listingPending ? (
+          {revision ? (
+            <p className="truncate text-sm text-muted-foreground" data-testid="revision-summary">
+              Keeps {revision.keptCount} document{revision.keptCount === 1 ? "" : "s"}
+              {revision.dropFileIds.length ? ` · removes ${revision.dropFileIds.length}` : ""}
+              {objectCount > 0 ? ` · adds ${objectCount}` : incompleteSource && !revision.dropFileIds.length ? " · add documents or remove some to build a new version" : ""}
+            </p>
+          ) : null}
+          {revision ? null : listingPending ? (
             <p className="truncate text-sm text-muted-foreground">Listing files to estimate cost and time…</p>
           ) : emptyLocalListing || incompleteSource ? (
             <p className="truncate text-sm text-destructive">
@@ -933,7 +976,7 @@ export function IngestionForm({
                   : "No files found at this path. Start stays disabled."}
             </p>
           ) : null}
-          {estimate.data && objectCount > 0 ? (
+          {revision ? null : estimate.data && objectCount > 0 ? (
             <p className="truncate text-sm text-muted-foreground" data-testid="credit-envelope">
               Credit envelope {estimate.data.usdLow}–{estimate.data.usdHigh} usd · {estimate.data.minutesLow}–
               {estimate.data.minutesHigh} min
@@ -972,7 +1015,7 @@ export function IngestionForm({
                   : undefined
             }
           >
-            Start
+            {revision ? "Build new version" : "Start"}
           </Button>
         </div>
       </div>

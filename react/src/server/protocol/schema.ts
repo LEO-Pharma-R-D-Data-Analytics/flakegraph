@@ -94,6 +94,7 @@ export const Capability = Schema.Literal(
   "delete_graph",
   "spcs",
   "model_serving",
+  "revise",
 );
 export type Capability = Schema.Schema.Type<typeof Capability>;
 
@@ -152,6 +153,18 @@ export const OutputDestination = Schema.Struct({
 });
 export type OutputDestination = Schema.Schema.Type<typeof OutputDestination>;
 
+/**
+ * Build a new version of a graph on a finished run of it: keep its documents,
+ * leave out `dropFileIds`, and add what the request's source holds when
+ * `addDocuments` is set. Only durable, distributed runtimes support it.
+ */
+export const GraphRevision = Schema.Struct({
+  baseRunId: Schema.String,
+  dropFileIds: Schema.optionalWith(Schema.Array(Schema.String), { default: () => [] }),
+  addDocuments: Schema.optionalWith(Schema.Boolean, { default: () => true }),
+});
+export type GraphRevision = Schema.Schema.Type<typeof GraphRevision>;
+
 export const IngestionRequest = Schema.Struct({
   runtime: RuntimeMode,
   jobId: Schema.String,
@@ -173,8 +186,19 @@ export const IngestionRequest = Schema.Struct({
     { default: () => DEFAULT_PROVIDER_PARALLELISM },
   ),
   runtimeOptions: Schema.optionalWith(JsonRecord, { default: () => ({}) }),
+  revision: Schema.optionalWith(Schema.NullOr(GraphRevision), { default: () => null }),
 });
 export type IngestionRequest = Schema.Schema.Type<typeof IngestionRequest>;
+
+/** One published version of a graph: the run that built it, in order of publication. */
+export const GraphVersion = Schema.Struct({
+  graphId: Schema.String,
+  runId: Schema.String,
+  number: Schema.Number,
+  createdAt: Schema.String,
+  head: Schema.Boolean,
+});
+export type GraphVersion = Schema.Schema.Type<typeof GraphVersion>;
 
 export const ProgressEvent = Schema.Struct({
   timestamp: Schema.String,
@@ -461,6 +485,7 @@ export const KUBERNETES_CAPABILITIES: Capability[] = [
   "node_assignments",
   "recover",
   "retry",
+  "revise",
 ];
 
 export const SNOWFLAKE_CAPABILITIES: Capability[] = [

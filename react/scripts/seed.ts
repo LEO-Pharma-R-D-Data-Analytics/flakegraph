@@ -301,6 +301,55 @@ async function seedKubernetes(stateRoot: string) {
     error: null,
     owner: "ALICE",
   });
+  const done = path.join(stateRoot, "runs", "run_k8s_done");
+  await writeRunRecord(done, {
+    runId: "run_k8s_done",
+    graphId: "graph_k8s_done",
+    graphName: "Fleet judo",
+    status: "succeeded",
+    runtime: "kubernetes",
+    startedAt: "2026-09-05T00:00:00.000Z",
+    updatedAt: "2026-09-05T01:30:00.000Z",
+    outputPath: path.join(stateRoot, "graphs", "graph_martial_arts"),
+    storageKind: "local_files",
+    storageLocation: path.join(stateRoot, "graphs", "graph_martial_arts"),
+    documentsTotal: 2,
+    documentsCompleted: 2,
+    documentsFailed: 0,
+    sourceKind: "upload",
+    sourcePath: path.join(stateRoot, "uploads", "judo"),
+    ocrProvider: "fallback",
+    llmProvider: "vllm_local",
+    embeddingProvider: "sentence_transformers",
+    owner: "ALICE",
+  });
+  await writeFile(
+    path.join(done, "events.jsonl"),
+    ["judo-history.md", "karate-history.md"]
+      .flatMap((fileId) => [
+        makeProgressRecord({
+          timestamp: "2026-09-05T00:10:00.000Z",
+          stage: "ocr",
+          status: "completed",
+          fileId,
+          message: null,
+          elapsedMs: 100,
+          counts: {},
+        }),
+        makeProgressRecord({
+          timestamp: "2026-09-05T01:00:00.000Z",
+          stage: "extract",
+          status: "completed",
+          fileId,
+          message: null,
+          elapsedMs: 100,
+          counts: {},
+        }),
+      ])
+      .map((event) => JSON.stringify(event))
+      .join("\n") + "\n",
+    "utf8",
+  );
   await writeRunRecord(path.join(stateRoot, "runs", "run_k8s_failed"), {
     runId: "run_k8s_failed",
     graphId: "graph_k8s_failed",

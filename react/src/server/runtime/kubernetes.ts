@@ -23,8 +23,16 @@ import {
 import { lastJsonObject, runFlakegraph } from "../cli";
 import { buildRunConfig, environmentForRequest, redactedConfig, writeRunConfig } from "../config";
 import { appEnv } from "../env";
-import { documentCountsByRun, documentTasksByRun, leasedTasks, listPostgresRuns } from "../db/client";
+import {
+  documentCountsByRun,
+  documentTasksByRun,
+  finalizerPayload,
+  graphVersionsByGraph,
+  leasedTasks,
+  listPostgresRuns,
+} from "../db/client";
 import { documentStatusesFromEvents, documentStatusesFromTasks, type DocumentStatus } from "../documents";
+import { readLocalProgress } from "../progress";
 import {
   KUBERNETES_CAPABILITIES,
   type Capability,
@@ -32,6 +40,7 @@ import {
   type ClusterSnapshot,
   type GraphDataset,
   type GraphShare,
+  type GraphVersion,
   type IngestionRequest,
   type NodeStatus,
   type NodeWorkAssignment,
@@ -119,8 +128,16 @@ export class KubernetesRuntime implements ControlPlane {
           await persistGraphName(this.stateRoot, request.graphId, validateGraphName(request.graphName));
         }
         const directory = runDirectory(this.stateRoot, request.jobId);
+        const revision = request.revision;
+        // A revision that adds nothing has no source to discover; the config
+        // still needs one to load, so it names the run's own directory, which
+        // the planner is told not to read.
+        const configured =
+          revision && !revision.addDocuments
+            ? { ...request, sourceKind: "local_path" as const, source: { kind: "local", path: directory } }
+            : request;
         const configPath = await writeRunConfig(
-          request,
+          configured,
           path.join(directory, "config.yaml"),
           this.stubbed ? null : await this.fleetProfile(),
         );
@@ -139,6 +156,7 @@ export class KubernetesRuntime implements ControlPlane {
             storageKind: request.output.kind,
             storageLocation: request.output.workspacePath,
             owner: await catalogWriterPrincipal(this.stateRoot),
+            baseRunId: revision?.baseRunId ?? null,
             ...cloneFieldsFromRequest(request),
           });
           await appendStubRun(this.stateRoot, {
@@ -148,9 +166,26 @@ export class KubernetesRuntime implements ControlPlane {
           });
         } else {
           const result = await runFlakegraph(
-            ["distributed", "submit", "--config", configPath, "--run-id", request.jobId],
-            { cwd: this.repositoryRoot, env: environmentForRequest(request) },
+            revision
+              ? [
+                  "distributed",
+                  "revise",
+                  "--config",
+                  configPath,
+                  "--run-id",
+                  request.jobId,
+                  "--base-run",
+                  revision.baseRunId,
+                  ...revision.dropFileIds.flatMap((fileId) => ["--drop-file", fileId]),
+                  ...(revision.addDocuments ? [] : ["--no-add-documents"]),
+                ]
+              : ["distributed", "submit", "--config", configPath, "--run-id", request.jobId],
+            { cwd: this.repositoryRoot, env: environmentForRequest(configured) },
           );
+          if (revision && result.exitCode === 2) {
+            // The planner refused before creating anything: nothing to record.
+            throw invalid(result.stderr.trim() || "The revision was refused");
+          }
           const payload = lastJsonObject(result.stdout) ?? {};
           await writeRunRecord(directory, {
             runId: request.jobId,
@@ -166,6 +201,7 @@ export class KubernetesRuntime implements ControlPlane {
             storageLocation: request.output.workspacePath,
             error: result.exitCode === 0 ? null : result.stderr,
             owner: await catalogWriterPrincipal(this.stateRoot),
+            baseRunId: revision?.baseRunId ?? null,
             ...cloneFieldsFromRequest(request),
           });
         }
@@ -210,6 +246,7 @@ export class KubernetesRuntime implements ControlPlane {
         }
         const hidden = await hiddenRunIds(this.stateRoot);
         const counts = await documentCountsByRun(rows.map((row) => row.id).filter((id) => !hidden.has(id)));
+        const versions = await graphVersionsByGraph([...new Set(rows.map((row) => row.graphId))]);
         const seen = new Set<string>();
         const merged: RunSnapshot[] = [];
         for (const row of rows) {
@@ -231,6 +268,7 @@ export class KubernetesRuntime implements ControlPlane {
             documentsTotal: documents.total,
             documentsCompleted: documents.completed,
             documentsFailed: documents.failed,
+            raw: { ...snapshot.raw, version: versionOf(versions.get(row.graphId) ?? [], row.id) },
           });
         }
         for (const snapshot of local) {
@@ -327,7 +365,8 @@ export class KubernetesRuntime implements ControlPlane {
         if (record && record.status !== snapshot.status) {
           await writeRunRecord(runDirectory(this.stateRoot, runId), { status: snapshot.status });
         }
-        return snapshot;
+        const versions = (await graphVersionsByGraph([graphId])).get(graphId) ?? [];
+        return { ...snapshot, raw: { ...snapshot.raw, version: versionOf(versions, runId) } };
       },
       catch: (cause) => fromCause(cause, "Unable to load Kubernetes run"),
     });
@@ -337,10 +376,25 @@ export class KubernetesRuntime implements ControlPlane {
     return Effect.tryPromise({
       try: async () => {
         if (this.stubbed) {
-          const snapshot = await Effect.runPromise(this.getRun(runId));
-          return documentStatusesFromEvents(snapshot.events);
+          // The stub keeps a run's progress beside its record, as a local run does.
+          const progress = await readLocalProgress(path.join(runDirectory(this.stateRoot, runId), "events.jsonl"));
+          return documentStatusesFromEvents(progress.events);
         }
-        return documentStatusesFromTasks(await documentTasksByRun(runId));
+        const own = documentStatusesFromTasks(await documentTasksByRun(runId));
+        // A revision's kept documents live in the runs that processed them;
+        // the finalizer's payload says which, and they are shown as kept.
+        const inherited: DocumentStatus[] = [];
+        for (const entry of inheritedDocuments(await finalizerPayload(runId))) {
+          const kept = new Set(entry.fileIds);
+          for (const status of documentStatusesFromTasks(await documentTasksByRun(entry.runId))) {
+            if (kept.has(status.fileId)) {
+              inherited.push({ ...status, phase: "inherited", detail: `Kept from ${entry.runId}` });
+            }
+          }
+        }
+        return [...own, ...inherited].sort((left, right) =>
+          (left.name ?? left.fileId).localeCompare(right.name ?? right.fileId),
+        );
       },
       catch: (cause) => fromCause(cause, "Unable to list the run's documents"),
     });
@@ -388,6 +442,25 @@ export class KubernetesRuntime implements ControlPlane {
         return Effect.runPromise(this.getRun(runId));
       },
       catch: (cause) => fromCause(cause, "Unable to retry Kubernetes run"),
+    });
+  }
+
+  versions(graphId: string): Effect.Effect<readonly GraphVersion[], ControlPlaneError> {
+    return Effect.tryPromise({
+      try: async () => {
+        if (this.stubbed) {
+          return [];
+        }
+        const rows = (await graphVersionsByGraph([graphId])).get(graphId) ?? [];
+        return rows.map((row, index) => ({
+          graphId,
+          runId: row.runId,
+          number: index + 1,
+          createdAt: row.createdAt.toISOString(),
+          head: row.head,
+        }));
+      },
+      catch: (cause) => fromCause(cause, "Unable to list the graph's versions"),
     });
   }
 
@@ -767,6 +840,38 @@ function servedModel(pod: PodLike): string | null {
     return args[serve + 1] ?? null;
   }
   return null;
+}
+
+/**
+ * Where a run stands among its graph's published versions: its number, how
+ * many there are, and whether the head points at it. Null for a run that has
+ * not published one, whose graph may still have versions from other runs.
+ */
+function versionOf(
+  versions: readonly { runId: string; head: boolean }[],
+  runId: string,
+): { number: number; count: number; head: boolean } | null {
+  const index = versions.findIndex((version) => version.runId === runId);
+  if (index < 0) {
+    return versions.length ? { number: 0, count: versions.length, head: false } : null;
+  }
+  return { number: index + 1, count: versions.length, head: versions[index]!.head };
+}
+
+/** The documents a finalizer's payload says it kept, per run they came from. */
+function inheritedDocuments(payload: Record<string, unknown> | null): Array<{ runId: string; fileIds: string[] }> {
+  const entries = payload?.inherit;
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  return entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    const fileIds = Array.isArray(record.file_ids) ? record.file_ids.map(String) : [];
+    return typeof record.run_id === "string" && fileIds.length ? [{ runId: record.run_id, fileIds }] : [];
+  });
 }
 
 function emptyClusterSnapshot(namespace: string, warnings: string[]): ClusterSnapshot {

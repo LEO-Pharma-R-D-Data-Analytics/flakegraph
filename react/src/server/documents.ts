@@ -9,7 +9,8 @@ export type DocumentPhase =
   | "extracted-0"
   | "indexed"
   | "poison"
-  | "cancelled";
+  | "cancelled"
+  | "inherited";
 
 export interface DocumentStatus {
   fileId: string;

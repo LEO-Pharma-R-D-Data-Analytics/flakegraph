@@ -302,6 +302,12 @@ function ConsoleInner() {
               await setRunId(null);
               await setPage("new");
             }}
+            onOpenRun={async (id) => {
+              setJumpSearch("");
+              await utils.runs.list.invalidate();
+              await setPage("run");
+              await setRunId(id);
+            }}
           />
         ) : null}
         {page === "run" && !runId ? (

@@ -205,6 +205,9 @@ export const appRouter = router({
       }),
   }),
   graphs: router({
+    versions: publicProcedure
+      .input(z.object({ graphId: z.string().min(1) }))
+      .query(({ ctx, input }) => runEffect(ctx.controlPlane.versions(input.graphId))),
     load: publicProcedure
       .input(z.object({ location: z.string().min(1), graphId: z.string().nullable().optional() }))
       .query(({ ctx, input }) => runEffect(ctx.controlPlane.loadGraph(input.location, input.graphId))),

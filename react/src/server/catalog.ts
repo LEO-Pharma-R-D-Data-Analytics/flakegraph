@@ -33,6 +33,8 @@ export interface CatalogRecord {
   llmProvider?: string | null;
   embeddingProvider?: string | null;
   owner?: string | null;
+  /** The run this one revised, when it is a new version of that run's graph. */
+  baseRunId?: string | null;
   [key: string]: unknown;
 }
 
@@ -280,6 +282,7 @@ export function snapshotFromRecord(
       llmProvider: record.llmProvider ?? null,
       embeddingProvider: record.embeddingProvider ?? null,
       owner: record.owner ?? (extras.raw as Record<string, unknown> | undefined)?.owner ?? null,
+      baseRunId: record.baseRunId ?? (extras.raw as Record<string, unknown> | undefined)?.baseRunId ?? null,
     },
   };
 }

@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/console/sidebar";
 import { GraphExplorer } from "@/components/console/graph-explorer";
 import { GuideCard } from "@/components/console/guide-card";
+import { GraphEditor, GraphVersionsCard } from "@/components/console/graph-editor";
 import { PageHeader } from "@/components/console/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AskPanel, ReviewPanel, VersionsPanel, WatchPanel } from "@/components/console/workspace-panels";
@@ -45,6 +46,7 @@ export function RunWorkspace({
   onDeleted,
   onNewGraph,
   onPromote,
+  onOpenRun,
 }: {
   runId: string;
   capabilities: Set<Capability>;
@@ -56,6 +58,8 @@ export function RunWorkspace({
   onDeleted?: () => Promise<void> | void;
   onNewGraph?: () => Promise<void> | void;
   onPromote?: (runtime: "local" | "kubernetes" | "snowflake") => Promise<void> | void;
+  /** Open another run of this catalog, such as another version of the graph. */
+  onOpenRun?: (runId: string) => Promise<void> | void;
 }) {
   const utils = trpc.useUtils();
   const run = trpc.runs.get.useQuery(
@@ -207,6 +211,7 @@ export function RunWorkspace({
   const snapshot = run.data;
   const status = snapshot.status.toLowerCase();
   const operator = role !== "analyst";
+  const canRevise = operator && capabilities.has("revise") && isSuccessStatus(status);
   const nodeCount = graph.data ? graphCounts(graph.data).nodes : null;
   const sentence = statusSentence(snapshot, { nodeCount });
   const shareBlocked = quality.data?.shareBlockedReason;
@@ -240,6 +245,7 @@ export function RunWorkspace({
           <>
             {snapshot.graphId} · {snapshot.storageKind === "snowflake" ? snapshot.storageLocation : snapshot.outputPath} ·{" "}
             {formatRelativeTime(snapshot.updatedAt)}
+            {versionLine(snapshot) ? <> · {versionLine(snapshot)}</> : null}
           </>
         }
         actions={
@@ -344,6 +350,7 @@ export function RunWorkspace({
             <TabsTrigger value="quality">Quality</TabsTrigger>
             <TabsTrigger value="review">Review</TabsTrigger>
             <TabsTrigger value="versions">Versions</TabsTrigger>
+            {canRevise ? <TabsTrigger value="edit">Edit</TabsTrigger> : null}
             <TabsTrigger value="details">Run details</TabsTrigger>
             {operator && capabilities.has("share") ? <TabsTrigger value="sharing">Sharing</TabsTrigger> : null}
           </TabsList>
@@ -399,8 +406,22 @@ export function RunWorkspace({
           <TabsContent value="review">
               <ReviewPanel graphId={snapshot.graphId} runId={runId} canExport={!capabilities.has("share")} />
           </TabsContent>
+          {canRevise ? (
+            <TabsContent value="edit">
+              <GraphEditor
+                snapshot={snapshot}
+                documents={documents.data ?? []}
+                runtime={runtime}
+                capabilities={capabilities}
+                onSubmitted={onOpenRun}
+              />
+            </TabsContent>
+          ) : null}
           <TabsContent value="versions">
             <div className="space-y-4">
+              {capabilities.has("revise") ? (
+                <GraphVersionsCard graphId={snapshot.graphId} runId={runId} onOpenRun={onOpenRun} />
+              ) : null}
               <VersionsPanel graphId={snapshot.graphId} canPublish={operator} />
               {operator ? (
                 <WatchPanel
@@ -1037,6 +1058,22 @@ function RunDetails({
       ) : null}
     </div>
   );
+}
+
+/** "Version 2 of 3 · head", from what the runtime knows of the graph's versions. */
+function versionLine(snapshot: RunSnapshot): string | null {
+  const version = snapshot.raw.version;
+  if (!version || typeof version !== "object") {
+    return null;
+  }
+  const { number, count, head } = version as { number: number; count: number; head: boolean };
+  if (!count) {
+    return null;
+  }
+  if (!number) {
+    return `${count} published version${count === 1 ? "" : "s"} of this graph`;
+  }
+  return `Version ${number} of ${count}${head ? " · head" : ""}`;
 }
 
 function watchPrefixFrom(snapshot: RunSnapshot): string {

@@ -30,6 +30,7 @@ import {
   type IngestionRequest,
   type NodeWorkAssignment,
   type PreflightResult,
+  type GraphVersion,
   type RunSnapshot,
   type SourceObject,
   type Viewer,
@@ -211,6 +212,10 @@ export class LocalRuntime implements ControlPlane {
 
   documents(runId: string): Effect.Effect<readonly DocumentStatus[], ControlPlaneError> {
     return Effect.map(this.getRun(runId), (snapshot) => documentStatusesFromEvents(snapshot.events));
+  }
+
+  versions(_graphId: string): Effect.Effect<readonly GraphVersion[], ControlPlaneError> {
+    return Effect.succeed([]);
   }
 
   cancel(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError> {

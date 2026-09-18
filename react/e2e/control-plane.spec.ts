@@ -252,6 +252,41 @@ test.describe("kubernetes fleet", () => {
     await expect(page.getByRole("main").getByText("queued", { exact: false }).first()).toBeVisible();
   });
 
+  test("builds a new version of a finished fleet graph from its Edit tab", async ({ page }) => {
+    await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_done");
+    await expect(page.getByRole("heading", { name: "Fleet judo" })).toBeVisible();
+    await page.getByRole("tab", { name: "Edit" }).click();
+    const editor = page.getByTestId("graph-editor");
+    await expect(editor.getByText("karate-history.md")).toBeVisible();
+    const confirm = page.getByRole("button", { name: "Confirm environment" });
+    if (await confirm.isVisible()) {
+      await confirm.click();
+    }
+    // Nothing removed and nothing added: there is no version to build yet.
+    await expect(page.getByTestId("revision-summary")).toContainText("Keeps 2 documents");
+    await expect(page.getByRole("button", { name: "Build new version" })).toBeDisabled();
+    // Removing one is enough on its own.
+    await page.getByLabel("Remove karate-history.md").check();
+    await expect(page.getByTestId("removal-summary")).toContainText("1 of 2 documents will be left out");
+    await expect(page.getByTestId("revision-summary")).toContainText("removes 1");
+    await expect(page.getByRole("button", { name: "Build new version" })).toBeEnabled();
+    // Adding a file is counted too, and the form is the compose form: no name, no ontology.
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "aikido.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from("Aikido was developed by Morihei Ueshiba.\n"),
+    });
+    await expect(page.getByTestId("revision-summary")).toContainText("adds 1", { timeout: 20_000 });
+    await expect(page.getByLabel("Display name")).toHaveCount(0);
+    await page.getByRole("button", { name: "Build new version" }).click();
+    await expect(page.getByText(/Building a new version of Fleet judo/)).toBeVisible();
+    // The new run keeps the graph's name and identity and is queued on the fleet.
+    await expect(page.getByRole("heading", { name: "Fleet judo" })).toBeVisible({ timeout: 30_000 });
+    await expect(page).not.toHaveURL(/run=run_k8s_done/);
+    await expect(page.getByRole("main").getByText("queued", { exact: false }).first()).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("graph_k8s_done");
+  });
+
   test("cancels an in-flight fleet run and retries a failed one", async ({ page }) => {
     await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_martial");
     await expect(page.getByRole("heading", { name: "Fleet martial arts" })).toBeVisible();

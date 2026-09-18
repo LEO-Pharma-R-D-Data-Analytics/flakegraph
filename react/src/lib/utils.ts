@@ -87,6 +87,7 @@ const DOCUMENT_PHASES: Record<string, string> = {
   skipped: "Skipped",
   poison: "Poisoned file",
   cancelled: "Cancelled",
+  inherited: "Kept from an earlier version",
   scanned: "Parsed",
   indexed: "Indexed",
   queued: "Queued",

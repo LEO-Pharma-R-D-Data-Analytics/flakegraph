@@ -569,6 +569,7 @@ function RunRow({
         <p className="mt-0.5 truncate text-xs text-muted-foreground">{statusSentence(run, { nodeCount: asCount(run.raw?.nodeCount) })}</p>
         <p className="truncate text-[11px] text-muted-foreground">
           {run.storageKind === "snowflake" ? "Snowflake" : "Local files"} · {formatRelativeTime(run.updatedAt)}
+          {versionBadge(run)}
         </p>
       </button>
       {canForget && !isActiveStatus(run.status) ? (
@@ -659,6 +660,19 @@ function suggestionLabel(mode: "off" | "on-request" | "auto-fill"): string {
     return "Auto-fill";
   }
   return "Off";
+}
+
+/** " · v2 · head" for a run whose graph has more than one published version. */
+function versionBadge(run: RunSnapshot): string {
+  const version = run.raw?.version;
+  if (!version || typeof version !== "object") {
+    return "";
+  }
+  const { number, count, head } = version as { number: number; count: number; head: boolean };
+  if (count < 2 || !number) {
+    return "";
+  }
+  return ` · v${number}${head ? " · head" : ""}`;
 }
 
 function statusAccent(run: RunSnapshot): string {

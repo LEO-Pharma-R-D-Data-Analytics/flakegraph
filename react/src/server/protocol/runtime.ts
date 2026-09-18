@@ -4,6 +4,7 @@ import {
   type ClusterSnapshot,
   type GraphDataset,
   type GraphShare,
+  type GraphVersion,
   type IngestionRequest,
   type NodeWorkAssignment,
   type PreflightResult,
@@ -30,6 +31,8 @@ export interface ControlPlane {
   getRun(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError>;
   /** Where each of a run's documents stands, by whatever the runtime records. */
   documents(runId: string): Effect.Effect<readonly DocumentStatus[], ControlPlaneError>;
+  /** The published versions of a graph, oldest first; empty where a runtime keeps none. */
+  versions(graphId: string): Effect.Effect<readonly GraphVersion[], ControlPlaneError>;
   cancel(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError>;
   retry(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError>;
   recover(runId: string): Effect.Effect<string, ControlPlaneError>;
