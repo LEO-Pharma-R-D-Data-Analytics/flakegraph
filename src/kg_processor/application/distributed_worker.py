@@ -12,9 +12,8 @@ from pathlib import Path
 from time import sleep
 from typing import Any
 
-from kg_processor.application.bibliography import is_reference_text
 from kg_processor.application.distributed_planner import distributed_processing_config_digest
-from kg_processor.application.extraction_windows import build_extraction_windows
+from kg_processor.application.extraction_windows import build_extraction_windows, window_skip_reason
 from kg_processor.application.lease_heartbeat import LeaseHeartbeat, heartbeat_interval_seconds
 from kg_processor.application.progress import error_metadata
 from kg_processor.application.spark_finalization import (
@@ -463,7 +462,7 @@ class DistributedWorker:
                 self.settings.graph.extraction_window_tokens,
                 self.settings.graph.max_chunks_per_llm_call,
             )
-            if not is_reference_text("\n".join(chunk.content for chunk in window.chunks))
+            if window_skip_reason(window) is None
         ]
         follow_up_tasks: list[TaskDefinition] = []
         entity_task_ids: list[str] = []

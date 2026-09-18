@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -356,3 +357,50 @@ def test_mineru_api_ocr_tolerates_non_dict_content_list_items(
     assert [page.page_number for page in document.pages] == [1, 2]
     assert document.pages[0].raw_text == "loose paragraph"
     assert document.pages[1].raw_text == "Second page paragraph"
+
+
+def test_mineru_api_ocr_reads_pages_and_blocks_from_the_content_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The content list keeps each item's page and kind; the markdown keeps neither.
+
+    Read from the flat markdown, a thirty-page scan cited page 1 for every
+    quote. Furniture MinerU leaves out of its own markdown stays out here.
+    """
+
+    input_path = tmp_path / "sample.pdf"
+    input_path.write_bytes(b"%PDF")
+    content_list = [
+        {"type": "text", "text": "Long Short-Term Memory", "text_level": 1, "page_idx": 0},
+        {"type": "text", "text": "Recurrent networks forget.", "page_idx": 0},
+        {"type": "page_number", "text": "1", "page_idx": 0},
+        {"type": "aside_text", "text": "ar 11[0 ::015", "page_idx": 0},
+        {"type": "equation", "text": "$$\\alpha$$", "text_format": "latex", "page_idx": 1},
+        {
+            "type": "table",
+            "table_caption": ["Table 1: Error rates"],
+            "table_body": "<table><tr><td>0.1</td></tr></table>",
+            "table_footnote": [],
+            "img_path": "images/t.jpg",
+            "page_idx": 1,
+        },
+    ]
+    client = StreamingClient(
+        {"data": {"md_content": "# flattened", "content_list": json.dumps(content_list)}}
+    )
+    monkeypatch.setattr(httpx, "Client", client.open)
+
+    document = MineruApiOcrProvider("https://mineru.example").parse(
+        input_file(input_path), OcrOptions()
+    )
+
+    assert [page.page_number for page in document.pages] == [1, 2]
+    assert document.pages[0].markdown == "# Long Short-Term Memory\n\nRecurrent networks forget."
+    assert [block.kind for block in document.pages[0].blocks] == ["text", "text"]
+    assert [block.kind for block in document.pages[1].blocks] == ["equation", "table"]
+    assert document.pages[1].blocks[1].text == (
+        "Table 1: Error rates\n<table><tr><td>0.1</td></tr></table>"
+    )
+    assert document.pages[1].blocks[1].metadata["img_path"] == "images/t.jpg"
+    assert "ar 11" not in document.pages[0].markdown

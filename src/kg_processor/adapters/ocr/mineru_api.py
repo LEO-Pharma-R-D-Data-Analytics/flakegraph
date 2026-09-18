@@ -144,32 +144,66 @@ def _pages_from_result(file: InputFile, result: dict[str, Any]) -> list[ParsedPa
         pages = _pages_from_raw_pages(file, middle_json.get("pages"))
         if pages:
             return pages
+    # The content list is the parse with its structure intact: every item
+    # names its page and what it is. The flat markdown loses both, and a
+    # document read from it cites page 1 for everything.
+    content_list = result.get("content_list")
+    if isinstance(content_list, str):
+        content_list = _maybe_json_list(content_list)
+    if isinstance(content_list, list):
+        pages = _pages_from_content_list(file, content_list)
+        if pages:
+            return pages
     markdown = first_string(result, ["md_content", "markdown", "md", "content", "text"])
     if markdown:
         return [_page(file, 1, markdown, result)]
-    content_list = result.get("content_list")
-    if isinstance(content_list, list):
-        grouped: dict[int, list[str]] = {}
-        for item in content_list:
-            page_index = (
-                first_int(item, ["page_idx", "page_index", "index"])
-                if isinstance(item, dict)
-                else None
-            )
-            grouped.setdefault((page_index or 0) + 1, []).append(_content_list_text(item))
-        pages = [
-            _page(
-                file,
-                page_number,
-                "\n\n".join(part for part in parts if part).strip(),
-                {"content_list_items": len(parts)},
-            )
-            for page_number, parts in sorted(grouped.items())
-            if any(part for part in parts)
-        ]
-        if pages:
-            return pages
     raise RuntimeError("MinerU API response did not include markdown, content_list, or pages")
+
+
+# Layout furniture MinerU itself leaves out of its markdown.
+_SILENT_CONTENT_TYPES = frozenset({"page_number", "aside_text", "discarded"})
+
+
+def _pages_from_content_list(file: InputFile, content_list: list[Any]) -> list[ParsedPage]:
+    """Rebuild each page from its typed items, the way MinerU writes its markdown."""
+
+    grouped: dict[int, list[Any]] = {}
+    for item in content_list:
+        page_index = (
+            first_int(item, ["page_idx", "page_index", "index"]) if isinstance(item, dict) else None
+        )
+        grouped.setdefault((page_index or 0) + 1, []).append(item)
+    pages: list[ParsedPage] = []
+    for page_number, items in sorted(grouped.items()):
+        blocks: list[LayoutBlock] = []
+        for index, item in enumerate(items):
+            kind = str(item.get("type") or "text") if isinstance(item, dict) else "text"
+            if kind in _SILENT_CONTENT_TYPES:
+                continue
+            text = _content_list_text(item)
+            if not text.strip():
+                continue
+            metadata = (
+                {key: value for key, value in item.items() if key not in _CONTENT_TEXT_KEYS}
+                if isinstance(item, dict)
+                else {}
+            )
+            blocks.append(
+                LayoutBlock(
+                    id=stable_id("mineru_api_block", file.id, page_number, index, text[:256]),
+                    page_number=page_number,
+                    kind=kind,
+                    text=text,
+                    metadata=metadata,
+                )
+            )
+        if not blocks:
+            continue
+        text = "\n\n".join(block.text for block in blocks)
+        pages.append(
+            ParsedPage(page_number=page_number, markdown=text, raw_text=text, blocks=blocks)
+        )
+    return pages
 
 
 def _require_text(file: InputFile, pages: list[ParsedPage]) -> list[ParsedPage]:
@@ -235,20 +269,31 @@ def _page(file: InputFile, page_number: int, text: str, metadata: dict[str, Any]
     )
 
 
+_PRIMARY_TEXT_KEYS = ("text", "content", "markdown", "md")
+_PART_TEXT_KEYS = (
+    "list_items",
+    "image_caption",
+    "image_footnote",
+    "table_caption",
+    "table_body",
+    "table_footnote",
+    "chart_caption",
+    "chart_footnote",
+    "code_caption",
+    "code_body",
+    "code_footnote",
+)
+_CONTENT_TEXT_KEYS = _PRIMARY_TEXT_KEYS + _PART_TEXT_KEYS
+
+
 def _content_list_text(item: object) -> str:
     if isinstance(item, dict):
         values: list[str] = []
-        primary = first_string(item, ["text", "content", "markdown", "md"])
+        primary = first_string(item, list(_PRIMARY_TEXT_KEYS))
         if primary:
-            values.append(primary)
-        for key in (
-            "list_items",
-            "image_caption",
-            "image_footnote",
-            "table_caption",
-            "table_body",
-            "table_footnote",
-        ):
+            level = first_int(item, ["text_level"])
+            values.append(f"{'#' * level} {primary}" if level else primary)
+        for key in _PART_TEXT_KEYS:
             value = item.get(key)
             if isinstance(value, list):
                 values.extend(str(part) for part in value if str(part).strip())
@@ -256,6 +301,14 @@ def _content_list_text(item: object) -> str:
                 values.append(str(value))
         return "\n".join(values)
     return str(item)
+
+
+def _maybe_json_list(value: str) -> list[Any] | None:
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
 def _maybe_json_object(value: object) -> dict[str, Any] | None:

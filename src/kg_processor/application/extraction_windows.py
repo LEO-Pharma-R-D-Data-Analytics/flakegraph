@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from kg_processor.application.bibliography import is_reference_text
+from kg_processor.application.formula import is_display_math_text
 from kg_processor.domain.extraction import ExtractionWindow
 from kg_processor.domain.graph import Chunk
 from kg_processor.domain.ids import stable_id
@@ -111,3 +113,20 @@ def _window(document_id: str, chunks: list[Chunk]) -> ExtractionWindow:
         chunks=list(chunks),
         token_count=sum(chunk.token_count for chunk in chunks),
     )
+
+
+def window_skip_reason(window: ExtractionWindow) -> str | None:
+    """Name why a window holds nothing to extract, or ``None`` when it does.
+
+    A bibliography yields citation metadata, not entities; a page of
+    derivations yields symbols whose quotes ground in nothing. Either would
+    cost a model call and, for the equations, fail the window outright when
+    every record it returned was discarded.
+    """
+
+    content = "\n".join(chunk.content for chunk in window.chunks)
+    if is_reference_text(content):
+        return "bibliography_only"
+    if is_display_math_text(content):
+        return "display_math_only"
+    return None

@@ -9,6 +9,7 @@ from documents import chunk, window
 
 from kg_processor.adapters.embeddings.hash import HashEmbeddingProvider
 from kg_processor.adapters.llm.fake import FakeLlmProvider
+from kg_processor.application.extraction_windows import window_skip_reason
 from kg_processor.application.llm_extractors import LlmRelationExtractor
 from kg_processor.application.ontology import load_ontology
 from kg_processor.application.two_pass_extraction import (
@@ -798,6 +799,44 @@ The experiments ran from 2018 through 2021.
     assert is_reference_only_window(_window(author_year_bibliography))
     assert not is_reference_only_window(_window(cited_prose))
     assert not is_reference_only_window(_window(historical_prose))
+
+
+def test_a_window_of_derivations_is_skipped_but_prose_with_formulas_is_not() -> None:
+    """A page of LaTeX holds nothing to ground a quote in.
+
+    A formula recogniser renders an appendix as equations with a sentence of
+    connective prose between them; the model's records for such a window were
+    all rejected as ungrounded, and the retried window failed a 49-document
+    run. Prose that merely contains formulas keeps its words and is extracted.
+    """
+
+    derivation = (
+        "$$\\begin{array}{rcl} \\frac{\\partial s_{c_j}(t)}{\\partial w_{lm}} & = & "
+        "\\frac{\\partial s_{c_j}(t-1)}{\\partial w_{lm}} + \\frac{\\partial y^{in_j}(t)}"
+        "{\\partial w_{lm}} g(net_{c_j}(t)) \\end{array}\\tag{14}$$\n"
+        "where the truncated derivatives that need to be stored are\n"
+        "$$\\delta_{in,i} \\frac{\\partial \\eta(t)}{\\partial u_{in}} \\approx_{tr} "
+        "\\left( n e t _ { \\sigma _ { i } ^ { * } } ( t ) \\right) \\tag{15}$$"
+    )
+    prose_with_formulas = (
+        "Batch Normalization allows much higher learning rates. Each activation is "
+        "normalized as $\\hat{x}_i = \\frac{x_i - \\mu}{\\sigma}$, where $\\mu$ is the "
+        "mini-batch mean and $\\sigma^2$ its variance; Ioffe and Szegedy report that "
+        "the Inception network then trains fourteen times faster."
+    )
+
+    assert window_skip_reason(_window(derivation)) == "display_math_only"
+    assert window_skip_reason(_window(prose_with_formulas)) is None
+    assert window_skip_reason(_window(bibliography_text())) == "bibliography_only"
+
+
+def bibliography_text() -> str:
+    return """References
+[19] S. Li et al. Composing simple image descriptions. 2011.
+[20] T. Lin et al. Microsoft COCO. 2014.
+[21] J. Mao et al. Explain images with neural networks. 2014.
+[22] T. Mikolov et al. Word representations. 2013.
+"""
 
 
 def test_relation_extraction_grounds_document_context_through_explicit_pronoun() -> None:

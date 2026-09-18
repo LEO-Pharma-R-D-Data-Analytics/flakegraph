@@ -124,7 +124,7 @@ def test_a_cut_off_tool_call_is_kept_readable_on_both_routes(hook: types.ModuleT
             {"type": "function_call", "call_id": "c3", "name": "shell", "arguments": ""},
         ]
     }
-    chat = {
+    chat: dict[str, Any] = {
         "messages": [
             {
                 "role": "assistant",

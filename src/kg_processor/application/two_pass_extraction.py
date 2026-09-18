@@ -19,7 +19,7 @@ from kg_processor.application.extraction_grounding import (
     surface_spans,
 )
 from kg_processor.application.extraction_results import dedupe_extraction_result
-from kg_processor.application.extraction_windows import build_extraction_windows
+from kg_processor.application.extraction_windows import build_extraction_windows, window_skip_reason
 from kg_processor.application.llm_extractors import (
     LlmEntityExtractor,
     LlmRelationExtractor,
@@ -486,7 +486,8 @@ def _extract_window_entities(
 
     trace: list[dict[str, object]] = []
 
-    if is_reference_only_window(window):
+    skip_reason = window_skip_reason(window)
+    if skip_reason is not None:
         return _WindowResult(
             entities=document_context_entities,
             relations=[],
@@ -495,7 +496,7 @@ def _extract_window_entities(
                     "stage": "reference_filter",
                     "window_id": window.id,
                     "skipped": True,
-                    "reason": "bibliography_only",
+                    "reason": skip_reason,
                 }
             ],
         )
@@ -586,7 +587,7 @@ def _extract_window_relations(  # noqa: PLR0912
 ) -> _WindowResult:
     """Extract and verify relations against locally groundable document identities."""
 
-    if is_reference_only_window(window):
+    if window_skip_reason(window) is not None:
         return _WindowResult(entities=[], relations=[], trace=[])
     trace: list[dict[str, object]] = []
 
