@@ -40,6 +40,12 @@ config:
       # at least that long, or it gives up on a parse the pool then finishes
       # for nobody and retries it from the start.
       timeout_seconds: 3600
+      # The parsing pool has no GPU, and formula recognition is the one MinerU
+      # stage that is prohibitive without one: a 32-page scanned paper took
+      # over an hour with it and six minutes without, and the LaTeX it yields
+      # is nothing the graph extracts from. Tables stay; they are cheap and
+      # carry entities.
+      mineru_formula: false
     llm:
       # vllm_local rather than openai_compatible: the adapter disables the chat
       # template's free-form reasoning before strict JSON generation. vLLM counts
