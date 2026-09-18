@@ -51,7 +51,7 @@ class GenericHttpOcrProvider:
                 timeout=options.timeout_seconds,
             ) as response,
         ):
-            response.raise_for_status()
+            raise_for_status(response, "generic_http")
             payload = _json_payload(response, self.settings.max_response_bytes)
         result = _select_result(payload, self.settings.result_path)
         _raise_if_failed(result, file.source_uri, self.settings)
@@ -83,6 +83,25 @@ def _headers(settings: GenericHttpOcrSettings) -> dict[str, str]:
     if not settings.api_key:
         return {}
     return {settings.api_key_header: f"{settings.api_key_prefix}{settings.api_key}"}
+
+
+# Enough of an error body to say why the parser refused a file, not enough to
+# echo a document back into a log line.
+_ERROR_EXCERPT_BYTES = 300
+
+
+def raise_for_status(response: httpx.Response, provider: str) -> None:
+    """Refuse a non-2xx parser answer with the reason the parser gave.
+
+    httpx's own message names the status and a documentation URL; the body is
+    where a parser says what was wrong with the file, and that is what an
+    operator reading a failed task needs to see.
+    """
+
+    if response.is_success:
+        return
+    excerpt = response.read()[:_ERROR_EXCERPT_BYTES].decode("utf-8", errors="replace").strip()
+    raise RuntimeError(f"{provider} returned HTTP {response.status_code}: {excerpt or 'no body'}")
 
 
 def _json_payload(response: httpx.Response, max_response_bytes: int) -> object:

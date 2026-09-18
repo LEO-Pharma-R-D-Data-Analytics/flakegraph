@@ -298,14 +298,14 @@ def test_mineru_api_ocr_raises_for_a_rejected_upload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rejected upload must fail rather than be parsed as a document."""
+    """A rejected upload fails with the parser's own reason, not a status line."""
 
     input_path = tmp_path / "sample.pdf"
     input_path.write_bytes(b"%PDF")
     client = StreamingClient({"detail": "unsupported media type"}, status_code=415)
     monkeypatch.setattr(httpx, "Client", client.open)
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(RuntimeError, match="HTTP 415: .*unsupported media type"):
         MineruApiOcrProvider("https://mineru.example").parse(input_file(input_path), OcrOptions())
 
 

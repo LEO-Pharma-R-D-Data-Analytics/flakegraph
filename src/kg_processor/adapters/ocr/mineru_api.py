@@ -11,6 +11,7 @@ from kg_processor.adapters.ocr.generic_http import (
     _json_payload,
     _optional_bool_text,
     _set_if_present,
+    raise_for_status,
 )
 from kg_processor.adapters.ocr.mineru_common import (
     first_int,
@@ -61,7 +62,7 @@ class MineruApiOcrProvider:
                 timeout=options.timeout_seconds,
             ) as response,
         ):
-            response.raise_for_status()
+            raise_for_status(response, "mineru_api")
             payload = _json_payload(response, _MAX_RESPONSE_BYTES)
         result = _select_result(payload)
         _raise_if_failed(result, file.source_uri)

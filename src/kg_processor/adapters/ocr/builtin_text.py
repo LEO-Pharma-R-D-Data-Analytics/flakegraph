@@ -84,9 +84,14 @@ class BuiltinTextOcrProvider:
             raise ValueError(f"builtin_text OCR does not support {suffix}")
         pages = _select_pages(pages, options.page_range)
         # A scanned PDF has pages and no text layer. Returning it as a parsed
-        # document records the file as successfully OCR'd while it contributes
-        # nothing, so the empty result is a failure the caller can route or see.
-        if not any(page.raw_text.strip() or page.markdown.strip() for page in pages):
+        # document would record the file as successfully OCR'd while it
+        # contributes nothing, so the empty result is a failure the caller can
+        # route to a parser that reads pixels. A text-native file with nothing
+        # in it has nowhere to be routed: it is simply an empty document, and
+        # the pipeline records it as one.
+        if suffix == ".pdf" and not any(
+            page.raw_text.strip() or page.markdown.strip() for page in pages
+        ):
             raise RuntimeError(f"builtin_text extracted no text from {file.source_uri}")
         return ParsedDocument(
             file_id=file.id,

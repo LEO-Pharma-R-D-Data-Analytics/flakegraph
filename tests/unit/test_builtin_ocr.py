@@ -12,6 +12,7 @@ from defusedxml.common import EntitiesForbidden
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from pypdf import PdfWriter
 from pypdf.errors import LimitReachedError
 
 from kg_processor.adapters.files.local import LocalFileSource
@@ -32,20 +33,36 @@ def test_builtin_text_ocr_parses_text_fixture() -> None:
     assert parsed.provider_metadata["provider"] == "builtin_text"
 
 
-def test_builtin_text_ocr_rejects_a_document_with_no_text_layer(tmp_path: Path) -> None:
+def test_builtin_text_ocr_rejects_a_pdf_with_no_text_layer(tmp_path: Path) -> None:
     """A scanned page has no text layer, and an empty parse is not a success.
 
     Accepting it records the file as OCR'd while it contributes nothing to the
     graph, which is indistinguishable from a document that genuinely says
-    nothing until the graph is inspected.
+    nothing until the graph is inspected. Raising is what lets the fallback
+    provider hand the file to a parser that reads pixels.
     """
 
-    text_file = tmp_path / "scanned.txt"
-    text_file.write_text("   \n\n\t\n", encoding="utf-8")
-    file = LocalFileSource(text_file).list_files()[0]
+    pdf_file = tmp_path / "scanned.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    with pdf_file.open("wb") as handle:
+        writer.write(handle)
+    file = LocalFileSource(pdf_file).list_files()[0]
 
     with pytest.raises(RuntimeError, match="extracted no text"):
         BuiltinTextOcrProvider().parse(file, OcrOptions())
+
+
+def test_builtin_text_ocr_returns_an_empty_text_file_as_an_empty_document(tmp_path: Path) -> None:
+    """Nothing can read more out of a blank text file, so it is not an error."""
+
+    text_file = tmp_path / "empty.txt"
+    text_file.write_text("   \n\n\t\n", encoding="utf-8")
+    file = LocalFileSource(text_file).list_files()[0]
+
+    parsed = BuiltinTextOcrProvider().parse(file, OcrOptions())
+
+    assert [page.raw_text.strip() for page in parsed.pages] == [""]
 
 
 def test_builtin_text_ocr_decodes_latin1_without_replacement(tmp_path: Path) -> None:
