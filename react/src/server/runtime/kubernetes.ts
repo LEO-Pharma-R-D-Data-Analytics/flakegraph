@@ -376,12 +376,26 @@ export class KubernetesRuntime implements ControlPlane {
   recover(runId: string): Effect.Effect<string, ControlPlaneError> {
     return Effect.tryPromise({
       try: async () => {
-        const directory = runDirectory(this.stateRoot, runId);
-        if (!runRecordExists(directory)) {
-          throw notFound(`Unknown Kubernetes run: ${runId}`);
+        const record = await this.record(runId);
+        if (this.stubbed) {
+          if (!record) {
+            throw notFound(`Unknown Kubernetes run: ${runId}`);
+          }
+          await writeRunRecord(runDirectory(this.stateRoot, runId), { status: "queued", cancellationRequestedAt: null });
+          return `Reconciled infrastructure for ${runId}`;
         }
-        await writeRunRecord(directory, { status: "queued", cancellationRequestedAt: null });
-        return `Reconciled infrastructure for ${runId}`;
+        // The CLI restarts only a pool with no available worker, after checking
+        // for the failures a restart cannot fix; task state is never touched.
+        const args = ["fleet", "recover", "--run-id", runId, ...(await this.fleetArguments())];
+        if (record?.configPath) {
+          args.push("--config", record.configPath);
+        }
+        const result = await runFlakegraph(args, { cwd: this.repositoryRoot });
+        const payload = lastJsonObject(result.stdout);
+        if (result.exitCode !== 0 || !payload) {
+          throw new Error(lastLine(result.stderr) || `Unable to recover the workers of ${runId}`);
+        }
+        return String(payload.message ?? `Reconciled infrastructure for ${runId}`);
       },
       catch: (cause) => fromCause(cause, "Unable to recover Kubernetes run"),
     });
@@ -715,6 +729,15 @@ function validateCluster(profile: ClusterProfile): void {
   if (!NAMESPACE_PATTERN.test(profile.namespace) && profile.namespace.length > 1) {
     throw invalid("Namespace must be a valid Kubernetes namespace");
   }
+}
+
+// A CLI failure ends with its cause; the traceback above it is not for the page.
+function lastLine(text: string): string {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines[lines.length - 1] ?? "";
 }
 
 function asStrings(value: unknown): string[] {

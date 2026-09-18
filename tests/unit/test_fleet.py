@@ -11,6 +11,7 @@ import yaml
 from kg_processor.fleet.kubectl import ClusterTarget
 from kg_processor.fleet.preflight import fleet_preflight, placeholder_names
 from kg_processor.fleet.profile import fleet_profile, semantic_mismatches
+from kg_processor.fleet.recover import queued_worker_components, recover_workers
 
 _RUN: dict[str, Any] = {
     "ocr": {"provider": "fallback"},
@@ -396,3 +397,151 @@ def test_fleet_profile_reports_what_the_workers_mount(monkeypatch: pytest.Monkey
     assert profile["config"]["ocr"] == {"provider": "fallback"}
     assert profile["ontology"] == dict(ontology)
     assert profile["parsing_endpoint"] is None
+
+
+def _recovery_kubectl(
+    *,
+    available_replicas: int,
+    pods: list[dict[str, Any]],
+    calls: list[list[str]] | None = None,
+    desired: int = 1,
+) -> object:
+    """Return a kubectl adapter for recovering one finalizer deployment.
+
+    Raw calls are the restarts recovery performs; a test that passes no
+    ``calls`` list expects none.
+    """
+
+    deployment = {
+        "metadata": {
+            "name": "flakegraph-finalize",
+            "labels": {"app.kubernetes.io/component": "worker-finalize"},
+        },
+        "spec": {
+            "replicas": desired,
+            "template": {
+                "spec": {
+                    "serviceAccountName": "flakegraph-spark",
+                    "nodeSelector": {"flakegraph.io/node-class": "nvidia-spark"},
+                }
+            },
+        },
+        "status": {"availableReplicas": available_replicas},
+    }
+
+    def kubectl(arguments: list[str], *, target: object, raw: bool = False) -> object:
+        if raw:
+            assert calls is not None, f"Unexpected rollout: {arguments}"
+            calls.append(arguments)
+            return ""
+        resource = arguments[1]
+        if resource == "deployments":
+            return {"items": [deployment]}
+        if resource == "serviceaccounts":
+            return {"items": [{"metadata": {"name": "flakegraph-spark"}}]}
+        if resource == "nodes":
+            return {
+                "items": [
+                    {
+                        "metadata": {"labels": {"flakegraph.io/node-class": "nvidia-spark"}},
+                        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+                    }
+                ]
+            }
+        if resource == "pods":
+            return {"items": pods}
+        raise AssertionError(f"Unexpected kubectl arguments: {arguments}")
+
+    return kubectl
+
+
+def _use_recovery(monkeypatch: pytest.MonkeyPatch, kubectl: object) -> None:
+    for module in ("kg_processor.fleet.kubectl", "kg_processor.fleet.recover"):
+        monkeypatch.setattr(f"{module}.kubectl_json", kubectl, raising=False)
+
+
+def test_queued_stages_name_the_pools_that_claim_them() -> None:
+    counts = [
+        {"stage": "prepare_document", "status": "queued", "count": 2},
+        {"stage": "extract_entity_window", "status": "queued", "count": 0},
+        {"stage": "extract_relation_window", "status": "running", "count": 3},
+        {"stage": "finalize_graph", "status": "queued", "count": 1},
+    ]
+
+    assert queued_worker_components(counts) == {"worker-prepare", "worker-finalize"}
+    assert recover_workers("flakegraph", set(), ClusterTarget()).startswith("No queued")
+
+
+def test_recovery_does_not_restart_healthy_shared_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave a healthy finalizer untouched when another graph currently owns it."""
+
+    _use_recovery(monkeypatch, _recovery_kubectl(available_replicas=1, pods=[]))
+
+    message = recover_workers("flakegraph", {"worker-finalize"}, ClusterTarget())
+
+    assert "worker-finalize" in message
+    assert "waiting for shared capacity" in message
+
+
+def test_recovery_does_not_interrupt_reconciling_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let Kubernetes replace an unavailable active pod without forcing a rollout."""
+
+    running_pod = {
+        "metadata": {"labels": {"app.kubernetes.io/component": "worker-finalize"}},
+        "status": {"phase": "Running", "containerStatuses": []},
+    }
+    calls: list[list[str]] = []
+    _use_recovery(
+        monkeypatch, _recovery_kubectl(available_replicas=0, pods=[running_pod], calls=calls)
+    )
+
+    message = recover_workers("flakegraph", {"worker-finalize"}, ClusterTarget())
+
+    assert "already reconciling" in message
+    assert calls == []
+
+
+def test_recovery_restarts_a_pool_with_nothing_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pool at zero is scaled up; a stuck one is restarted."""
+
+    scaled: list[list[str]] = []
+    _use_recovery(
+        monkeypatch, _recovery_kubectl(available_replicas=0, pods=[], calls=scaled, desired=0)
+    )
+    assert "Restarted unavailable worker pools: worker-finalize" in recover_workers(
+        "flakegraph", {"worker-finalize"}, ClusterTarget()
+    )
+    assert scaled == [
+        ["scale", "deployment", "flakegraph-finalize", "-n", "flakegraph", "--replicas=1"]
+    ]
+
+    restarted: list[list[str]] = []
+    _use_recovery(
+        monkeypatch, _recovery_kubectl(available_replicas=0, pods=[], calls=restarted, desired=1)
+    )
+    recover_workers("flakegraph", {"worker-finalize"}, ClusterTarget())
+    assert restarted == [
+        ["rollout", "restart", "deployment/flakegraph-finalize", "-n", "flakegraph"]
+    ]
+
+
+def test_recovery_reports_a_pod_that_cannot_start_instead_of_restarting_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken_pod = {
+        "metadata": {"labels": {"app.kubernetes.io/component": "worker-finalize"}},
+        "status": {
+            "phase": "Pending",
+            "containerStatuses": [
+                {
+                    "state": {
+                        "waiting": {"reason": "ImagePullBackOff", "message": "manifest unknown"}
+                    }
+                }
+            ],
+        },
+    }
+    _use_recovery(monkeypatch, _recovery_kubectl(available_replicas=0, pods=[broken_pod]))
+
+    with pytest.raises(RuntimeError, match="pod startup failed: manifest unknown"):
+        recover_workers("flakegraph", {"worker-finalize"}, ClusterTarget())

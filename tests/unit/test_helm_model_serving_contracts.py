@@ -499,6 +499,18 @@ def test_the_control_plane_can_see_what_preflight_asks_about() -> None:
     }
     assert ("keda.sh", "scaledobjects") in granted
     assert ("apps", "statefulsets") in granted
+    # Recovery may restart the worker pools and nothing else: the write grant
+    # names them.
+    writes = [
+        rule for rule in role["rules"] if "patch" in rule["verbs"] or "update" in rule["verbs"]
+    ]
+    assert len(writes) == 1
+    assert set(writes[0]["resources"]) == {"deployments", "deployments/scale"}
+    assert set(writes[0]["resourceNames"]) == {
+        f"{_FULLNAME}-prepare",
+        f"{_FULLNAME}-extract",
+        f"{_FULLNAME}-finalize",
+    }
 
 
 def test_document_parsing_holds_work_rather_than_letting_it_fail() -> None:

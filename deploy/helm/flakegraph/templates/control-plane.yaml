@@ -38,6 +38,16 @@ rules:
   - apiGroups: ["keda.sh"]
     resources: ["scaledobjects"]
     verbs: ["get", "list"]
+  # Recovery restarts a worker pool that has no available worker, and only
+  # those: the three pools are the whole write surface, by name. Task state
+  # is never touched; queued work is durable and resumes when a pool is back.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    resourceNames:
+      - {{ include "flakegraph.fullname" . }}-prepare
+      - {{ include "flakegraph.fullname" . }}-extract
+      - {{ include "flakegraph.fullname" . }}-finalize
+    verbs: ["patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

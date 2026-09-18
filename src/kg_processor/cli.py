@@ -81,6 +81,7 @@ from kg_processor.factories import (
 from kg_processor.fleet.kubectl import ClusterTarget
 from kg_processor.fleet.preflight import fleet_preflight
 from kg_processor.fleet.profile import fleet_profile
+from kg_processor.fleet.recover import queued_worker_components, recover_workers
 from kg_processor.serving.ocr_shim import OcrShimConfig
 from kg_processor.serving.ocr_shim import run as run_ocr_shim
 from kg_processor.serving.sidecar import SidecarConfig
@@ -279,6 +280,32 @@ def fleet_preflight_command(
     _echo_json({"ok": not errors, "checks": checks, "errors": errors})
     if errors:
         raise typer.Exit(code=1)
+
+
+@fleet_app.command("recover")
+def fleet_recover_command(
+    run_id: Annotated[str, typer.Option("--run-id")],
+    config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
+    namespace: Annotated[str, typer.Option("--namespace", "-n")] = "flakegraph",
+    context: Annotated[str, typer.Option("--context")] = "",
+) -> None:
+    """Restart the worker pools a queued run is waiting on, if they are down.
+
+    Task state is never touched: queued work is durable and resumes when a
+    pool comes back. A healthy pool is left alone, since it may be busy with
+    another graph, and a pool that cannot start for a reason a restart will
+    not fix is reported instead.
+    """
+
+    settings = Settings.load(config)
+    store = build_distributed_store(settings)
+    store.initialize()
+    summary = store.get_run_summary(run_id)
+    counts = [item.model_dump(mode="json") for item in summary.task_counts]
+    message = recover_workers(
+        namespace, queued_worker_components(counts), ClusterTarget(context=context)
+    )
+    _echo_json({"run_id": run_id, "message": message})
 
 
 @distributed_app.command("init")
