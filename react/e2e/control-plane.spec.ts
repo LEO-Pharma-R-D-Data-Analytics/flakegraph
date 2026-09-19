@@ -947,7 +947,32 @@ test.describe("remaining report journeys", () => {
     await page.goto("/?runtime=local&page=new");
     await page.getByLabel("Describe the graph you want").fill("people, schools, and techniques in these histories");
     await page.getByRole("button", { name: "Suggest types" }).click();
-    await expect(page.getByTestId("ontology-proposal")).toBeVisible();
+    const proposal = page.getByTestId("ontology-proposal");
+    await expect(proposal).toBeVisible();
+    // The review panel marks what the lists do not hold yet, and only that.
+    const editor = page.getByTestId("ontology-editor");
+    const entityTypes = editor.getByTestId("entity-types");
+    await expect(proposal).toContainText("SCHOOL");
+    await expect(proposal.getByText("new", { exact: true }).first()).toBeVisible();
+    await proposal.getByRole("button", { name: "Add to mine" }).click();
+    await expect(entityTypes.getByRole("button", { name: "SCHOOL", exact: true })).toBeVisible();
+    await expect(proposal.getByText("new", { exact: true })).toHaveCount(0);
+    await expect(editor).toContainText("Changed from the default profile.");
+    // A description is saved with Enter and abandoned with Cancel.
+    await entityTypes.getByRole("button", { name: "SCHOOL", exact: true }).click();
+    await entityTypes.getByLabel("Description of SCHOOL").fill("A named place of instruction.");
+    await entityTypes.getByLabel("Description of SCHOOL").press("Enter");
+    await expect(entityTypes.getByLabel("Description of SCHOOL")).toHaveCount(0);
+    await expect(entityTypes.getByRole("button", { name: "SCHOOL", exact: true })).toHaveAttribute(
+      "title",
+      "A named place of instruction.",
+    );
+    await entityTypes.getByRole("button", { name: "SCHOOL", exact: true }).click();
+    await entityTypes.getByRole("button", { name: "Cancel" }).click();
+    await expect(entityTypes.getByLabel("Description of SCHOOL")).toHaveCount(0);
+    // The panel can be put away without taking anything from it.
+    await proposal.getByRole("button", { name: "Dismiss suggestion" }).click();
+    await expect(page.getByTestId("ontology-proposal")).toHaveCount(0);
   });
 
   test("shows a 1-hop neighborhood from a selected relation", async ({ page }) => {
