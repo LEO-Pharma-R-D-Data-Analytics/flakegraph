@@ -537,6 +537,21 @@ test.describe("remaining report journeys", () => {
     await expect(page.getByPlaceholder("Entity name or description")).toHaveValue("judo");
   });
 
+  test("saves a named perspective and reopens it", async ({ page }) => {
+    await page.goto("/?runtime=local&page=run&run=run_martial_arts");
+    const save = page.getByRole("button", { name: "Save as perspective" });
+    // Nothing to save until the perspective is named.
+    await expect(save).toBeDisabled();
+    await page.getByPlaceholder("Entity name or description").fill("judo");
+    await page.getByLabel("Perspective name").fill("Judo lens");
+    await save.click();
+    await expect(page.getByText("Perspective saved as draft", { exact: false })).toBeVisible();
+    await expect(page.getByLabel("Perspective name")).toHaveValue("");
+    await page.getByPlaceholder("Entity name or description").fill("");
+    await page.getByRole("button", { name: "Judo lens · draft" }).click();
+    await expect(page.getByPlaceholder("Entity name or description")).toHaveValue("judo");
+  });
+
   test("shows a credit envelope on compose", async ({ page }) => {
     await page.goto("/?runtime=local&page=new");
     await useSamplePack(page);

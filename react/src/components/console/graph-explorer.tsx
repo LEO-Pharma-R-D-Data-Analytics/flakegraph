@@ -81,7 +81,9 @@ export function GraphExplorer({
   const [showNeighborhood, setShowNeighborhood] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [perspectiveId, setPerspectiveId] = useState<string>("");
-  const [perspectiveName, setPerspectiveName] = useState("New perspective");
+  // Empty until named: a pre-filled name invites typing into the middle of
+  // it, and a perspective is worth naming for what it shows.
+  const [perspectiveName, setPerspectiveName] = useState("");
   const [colorMode, setColorMode] = useState<ColorMode>("type");
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
   const [focusDepth, setFocusDepth] = useState<FocusDepth>(null);
@@ -90,11 +92,20 @@ export function GraphExplorer({
   const [pathEndpoints, setPathEndpoints] = useState<string[]>([]);
   const [hover, setHover] = useState<GraphHover | null>(null);
   const [flashNonce, setFlashNonce] = useState(0);
+  // The chips above the canvas read the workspace; a saved or promoted
+  // perspective has to reach them without a reload.
+  const utils = trpc.useUtils();
   const savePerspective = trpc.workspace.perspective.useMutation({
-    onSuccess: () => toast.success("Perspective saved as draft. Publish to production after gold is green."),
+    onSuccess: async () => {
+      toast.success("Perspective saved as draft. Publish to production after gold is green.");
+      await utils.workspace.get.invalidate();
+    },
   });
   const promotePerspective = trpc.workspace.promotePerspective.useMutation({
-    onSuccess: () => toast.success("Perspective lifecycle updated."),
+    onSuccess: async () => {
+      toast.success("Perspective lifecycle updated.");
+      await utils.workspace.get.invalidate();
+    },
   });
   const namedPerspectives = analyst
     ? perspectives.filter((item) => item.lifecycle === "production")
@@ -283,15 +294,20 @@ export function GraphExplorer({
             <Button
               size="sm"
               variant="outline"
+              disabled={!perspectiveName.trim() || savePerspective.isPending}
+              title={perspectiveName.trim() ? undefined : "Name the perspective before saving it"}
               onClick={() =>
-                savePerspective.mutate({
-                  graphId: dataset.graphId,
-                  name: perspectiveName.trim() || "Untitled perspective",
-                  lifecycle: "draft",
-                  search,
-                  communityIds,
-                  suggestedQuestions: search ? [`What connects to ${search}?`] : [],
-                })
+                savePerspective.mutate(
+                  {
+                    graphId: dataset.graphId,
+                    name: perspectiveName.trim(),
+                    lifecycle: "draft",
+                    search,
+                    communityIds,
+                    suggestedQuestions: search ? [`What connects to ${search}?`] : [],
+                  },
+                  { onSuccess: () => setPerspectiveName("") },
+                )
               }
             >
               Save as perspective
