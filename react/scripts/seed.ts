@@ -197,80 +197,157 @@ async function seedFailedRun(stateRoot: string) {
   });
 }
 
+type StubNode = {
+  name: string;
+  ready: boolean;
+  nodeClass: string;
+  gpuCount: number;
+  gpuModel: string | null;
+  cpuCapacity: string | null;
+  memoryCapacity: string | null;
+  gpuPercent: string | null;
+  cpuUsage: string | null;
+  cpuPercent: string | null;
+  memoryUsage: string | null;
+  memoryPercent: string | null;
+  workloadCount: number;
+  workerCount: number;
+  modelServerReady: boolean;
+  model: string | null;
+  modelImage: string | null;
+};
+
+type StubWorkload = {
+  name: string;
+  component: string;
+  phase: string;
+  node: string | null;
+  ready: boolean;
+  restarts: number;
+  cpu: string | null;
+  memory: string | null;
+  image: string | null;
+  model: string | null;
+};
+
+function stubNode(name: string, ready: boolean, gpuModel: string | null): StubNode {
+  return {
+    name,
+    ready,
+    nodeClass: gpuModel ? "gb10" : "cpu",
+    gpuCount: gpuModel ? 1 : 0,
+    gpuModel,
+    cpuCapacity: "20",
+    memoryCapacity: "128Gi",
+    gpuPercent: null,
+    cpuUsage: null,
+    cpuPercent: null,
+    memoryUsage: null,
+    memoryPercent: null,
+    workloadCount: 0,
+    workerCount: 0,
+    modelServerReady: false,
+    model: null,
+    modelImage: null,
+  };
+}
+
+function stubWorkload(
+  name: string,
+  component: string,
+  node: string | null,
+  overrides: Partial<StubWorkload> = {},
+): StubWorkload {
+  return {
+    name,
+    component,
+    phase: "Running",
+    node,
+    ready: true,
+    restarts: 0,
+    cpu: null,
+    memory: null,
+    image: null,
+    model: null,
+    ...overrides,
+  };
+}
+
+/**
+ * A fleet the size a real deployment reaches: four nodes (one not ready),
+ * some sixty pods over every component family, a few in trouble and a few
+ * finished Jobs. The workload list must stay readable at this size, and the
+ * e2e journey uses these counts to prove its filters, order and paging.
+ */
+function stubFleet(): { nodes: StubNode[]; workloads: StubWorkload[] } {
+  const model = "unsloth/Qwen3.8-27B-NVFP4";
+  const gpuNodes = ["gpu-a", "gpu-b", "gpu-c"];
+  const workloads: StubWorkload[] = [
+    stubWorkload("worker-a", "worker-extraction", "gpu-a", { cpu: "2", memory: "8Gi", image: "flakegraph:mineru-oss" }),
+    stubWorkload("vllm-a", "model-server", "gpu-a", { cpu: "4", memory: "24Gi", image: "vllm/vllm-openai", model }),
+    stubWorkload("vllm-b", "model-serving", "gpu-b", { image: "vllm/vllm-openai", model }),
+    stubWorkload("vllm-c", "model-serving", "gpu-c", { image: "vllm/vllm-openai", model }),
+    stubWorkload("inference-router-0", "inference-router", "gpu-a"),
+    stubWorkload("mineru-0", "document-parsing", "gpu-b"),
+    stubWorkload("ocr-shim-0", "ocr-shim", "gpu-b"),
+    stubWorkload("gateway-0", "gateway", "gpu-a"),
+    stubWorkload("auth-proxy-0", "auth-proxy", "gpu-a"),
+    stubWorkload("console-0", "control-plane", "gpu-a"),
+    stubWorkload("control-plane-api-0", "control-plane", "gpu-c"),
+    stubWorkload("grafana-0", "monitoring", "gpu-c"),
+    stubWorkload("prometheus-0", "monitoring", "gpu-c"),
+    stubWorkload("monitoring-db-0", "monitoring", "gpu-c"),
+    // Spark executors carry no FlakeGraph component label and land in "other".
+    ...Array.from({ length: 4 }, (_, index) => stubWorkload(`spark-exec-${index}`, "workload", gpuNodes[index % 3]!)),
+    // The KEDA-scaled worker pools, spread over the ready GPU nodes.
+    ...Array.from({ length: 24 }, (_, index) =>
+      stubWorkload(`worker-extract-${String(index).padStart(2, "0")}`, "worker-extract", gpuNodes[index % 3]!),
+    ),
+    ...Array.from({ length: 12 }, (_, index) =>
+      stubWorkload(`worker-prepare-${String(index).padStart(2, "0")}`, "worker-prepare", gpuNodes[index % 3]!),
+    ),
+    // Trouble: two workers waiting for a node, one out of memory, one crashlooping.
+    stubWorkload("worker-extract-24", "worker-extract", null, { phase: "Pending", ready: false }),
+    stubWorkload("worker-extract-25", "worker-extract", null, { phase: "Pending", ready: false }),
+    stubWorkload("worker-extract-oom-7", "worker-extract", "gpu-b", { phase: "Failed", ready: false, restarts: 3 }),
+    stubWorkload("ocr-shim-1", "ocr-shim", "gpu-c", { ready: false, restarts: 5 }),
+    // Finished one-off Jobs that linger until their TTL.
+    stubWorkload("bench-export-p8k2z", "workload", "gpu-a", { phase: "Succeeded", ready: false }),
+    stubWorkload("vllm28-probe-x1q9r", "model-serving", "gpu-b", { phase: "Succeeded", ready: false }),
+    stubWorkload("database-bootstrap-1", "database-bootstrap", "gpu-c", { phase: "Succeeded", ready: false }),
+    stubWorkload("spark-driver-4f1c2", "workload", "gpu-c", { phase: "Succeeded", ready: false }),
+  ];
+  const nodes = [
+    { ...stubNode("gpu-a", true, "NVIDIA GB10"), gpuPercent: "41%", cpuUsage: "4", cpuPercent: "20%", memoryUsage: "32Gi", memoryPercent: "25%" },
+    stubNode("gpu-b", true, "NVIDIA GB10"),
+    stubNode("gpu-c", true, "NVIDIA GB10"),
+    stubNode("gpu-d", false, "NVIDIA GB10"),
+  ].map((node) => {
+    const onNode = workloads.filter((workload) => workload.node === node.name);
+    const server = onNode.find((workload) => workload.model);
+    return {
+      ...node,
+      workloadCount: onNode.length,
+      workerCount: onNode.filter((workload) => workload.component.startsWith("worker")).length,
+      modelServerReady: Boolean(server?.ready),
+      model: server?.model ?? null,
+      modelImage: server?.image ?? null,
+    };
+  });
+  return { nodes, workloads };
+}
+
 async function seedKubernetes(stateRoot: string) {
   const directory = path.join(stateRoot, "kubernetes");
   await mkdir(directory, { recursive: true });
+  const fleet = stubFleet();
   await atomicWriteJson(path.join(directory, "cluster.json"), {
     context: "lab",
     namespace: "flakegraph",
-    nodesReady: 2,
-    nodesTotal: 2,
-    nodes: [
-      {
-        name: "gpu-a",
-        ready: true,
-        nodeClass: "gb10",
-        gpuCount: 1,
-        gpuModel: "NVIDIA GB10",
-        cpuCapacity: "20",
-        memoryCapacity: "128Gi",
-        gpuPercent: "41%",
-        cpuUsage: "4",
-        cpuPercent: "20%",
-        memoryUsage: "32Gi",
-        memoryPercent: "25%",
-        workloadCount: 2,
-        workerCount: 1,
-        modelServerReady: true,
-        model: "unsloth/Qwen3.8-27B-NVFP4",
-        modelImage: "vllm/vllm-openai",
-      },
-      {
-        name: "gpu-b",
-        ready: true,
-        nodeClass: "gb10",
-        gpuCount: 1,
-        gpuModel: "NVIDIA GB10",
-        cpuCapacity: "20",
-        memoryCapacity: "128Gi",
-        gpuPercent: null,
-        cpuUsage: null,
-        cpuPercent: null,
-        memoryUsage: null,
-        memoryPercent: null,
-        workloadCount: 0,
-        workerCount: 0,
-        modelServerReady: false,
-        model: null,
-        modelImage: null,
-      },
-    ],
-    workloads: [
-      {
-        name: "worker-a",
-        component: "worker-extraction",
-        phase: "Running",
-        node: "gpu-a",
-        ready: true,
-        restarts: 0,
-        cpu: "2",
-        memory: "8Gi",
-        image: "flakegraph:mineru-oss",
-        model: null,
-      },
-      {
-        name: "vllm-a",
-        component: "model-server",
-        phase: "Running",
-        node: "gpu-a",
-        ready: true,
-        restarts: 0,
-        cpu: "4",
-        memory: "24Gi",
-        image: "vllm/vllm-openai",
-        model: "unsloth/Qwen3.8-27B-NVFP4",
-      },
-    ],
+    nodesReady: fleet.nodes.filter((node) => node.ready).length,
+    nodesTotal: fleet.nodes.length,
+    nodes: fleet.nodes,
+    workloads: fleet.workloads,
     warnings: [],
     observedAt: new Date().toISOString(),
   });
@@ -285,6 +362,16 @@ async function seedKubernetes(stateRoot: string) {
         scopeId: "gpu-a",
         updatedAt: new Date().toISOString(),
       },
+      // gpu-b holds more leases than a card lists, so the card has to say "N more".
+      ...Array.from({ length: 23 }, (_, index) => ({
+        workerId: `worker-extract-gpu-b-${String(index).padStart(2, "0")}`,
+        runId: "run_k8s_martial",
+        graphId: "graph_k8s_martial",
+        taskId: `task-b-${index}`,
+        stage: "extract_entity_window",
+        scopeId: `doc-${String(index).padStart(3, "0")}`,
+        updatedAt: new Date().toISOString(),
+      })),
     ],
   });
   await writeRunRecord(path.join(stateRoot, "runs", "run_k8s_martial"), {
