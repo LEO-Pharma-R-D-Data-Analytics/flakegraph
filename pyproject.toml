@@ -105,6 +105,12 @@ ignore = ["PLR0913"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["PLR2004", "D100", "D101", "D102", "D103"]
 "deploy/**/*.py" = ["D100", "D101", "D102", "D103"]
+# The CLI and the composition root import each backend inside the command or
+# builder that needs it: every subcommand would otherwise pay for pandas,
+# boto3, Azure, psycopg and FastAPI at startup, and the console shells out to
+# the CLI for status polling, preflight and source listings.
+"src/kg_processor/cli.py" = ["PLC0415"]
+"src/kg_processor/factories.py" = ["PLC0415"]
 
 [tool.mypy]
 python_version = "3.14"

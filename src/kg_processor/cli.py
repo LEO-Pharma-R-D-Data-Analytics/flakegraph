@@ -12,87 +12,25 @@ from dataclasses import asdict
 from enum import StrEnum
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 import yaml
 
 from kg_processor import __version__
-from kg_processor.adapters.explorer import StaticHtmlGraphExplorer
-from kg_processor.adapters.jobs.snowflake import SnowflakeJobFileProgressSink, SnowflakeJobManager
-from kg_processor.adapters.progress import RichTerminalProgressSink, WorkerProgressContext
-from kg_processor.application.benchmarking import build_benchmark_report
-from kg_processor.application.consumption import ConsumptionCollector
-from kg_processor.application.distributed_diagnostics import (
-    run_status_payload,
-    worker_ready_payload,
-)
-from kg_processor.application.distributed_planner import DistributedRunPlanner
-from kg_processor.application.distributed_worker import DistributedWorker, WorkerIteration
-from kg_processor.application.graph_dataset import GraphDatasetReader
-from kg_processor.application.graph_evaluation import (
-    evaluate_graph_artifacts,
-    graph_signatures,
-)
-from kg_processor.application.graph_explorer import build_graph_explorer_dataset
-from kg_processor.application.inspect import compare_local_graph_artifacts, inspect_local_graph
-from kg_processor.application.lease_heartbeat import LeaseHeartbeat, heartbeat_interval_seconds
-from kg_processor.application.pipeline import KgProcessorPipeline
-from kg_processor.application.progress import (
-    CompositeProgressSink,
-    JsonLineProgressSink,
-    NullProgressSink,
-    ProgressSink,
-    error_metadata,
-)
-from kg_processor.application.redaction import redact_sensitive_data, redact_sensitive_text
-from kg_processor.application.snowflake_access import run_snowflake_access_check
-from kg_processor.application.snowflake_deployment import (
-    render_execute_job_service_sql,
-    render_kubernetes_job_yaml,
-    render_snowflake_image_reference,
-    render_snowflake_objects_sql,
-    render_snowflake_setup_sql,
-    render_spcs_service_spec_yaml,
-)
-from kg_processor.application.snowflake_export import export_snowflake_graph
-from kg_processor.application.snowflake_schema import render_snowflake_schema_sql
-from kg_processor.config.preflight import run_preflight
-from kg_processor.config.provider_registry import (
-    provider_catalog,
-    provider_catalog_for_kind,
-    provider_kinds,
-)
 from kg_processor.config.settings import Settings
 from kg_processor.domain.distributed import ArtifactKind, RevisionRequest, TaskStage, TaskStatus
 from kg_processor.domain.finalization import GraphDatasetManifest
 from kg_processor.domain.graph import GraphWriteBatch
 from kg_processor.domain.jobs import JobFileClaim, JobFileResult
-from kg_processor.factories import (
-    build_blob_store,
-    build_distributed_pipeline,
-    build_distributed_store,
-    build_file_source,
-    build_graph_manifest_publisher,
-    build_job_manager,
-    build_local_artifacts_writer,
-    build_pipeline,
-)
-from kg_processor.fleet.kubectl import ClusterTarget
-from kg_processor.fleet.preflight import fleet_preflight
-from kg_processor.fleet.profile import fleet_profile
-from kg_processor.fleet.recover import queued_worker_components, recover_workers
-from kg_processor.ports.file_source import BrowsableFileSource
-from kg_processor.serving.ocr_shim import OcrShimConfig
-from kg_processor.serving.ocr_shim import run as run_ocr_shim
-from kg_processor.serving.sidecar import SidecarConfig
-from kg_processor.serving.sidecar import run as run_sidecar
-from kg_processor.serving.sizing import (
-    BYTES_PER_GIB,
-    DeviceBudget,
-    ModelGeometry,
-    compute_sizing,
-)
+
+if TYPE_CHECKING:
+    from kg_processor.adapters.jobs.snowflake import SnowflakeJobManager
+    from kg_processor.application.consumption import ConsumptionCollector
+    from kg_processor.application.distributed_worker import WorkerIteration
+    from kg_processor.application.lease_heartbeat import LeaseHeartbeat
+    from kg_processor.application.pipeline import KgProcessorPipeline
+    from kg_processor.application.progress import ProgressSink
 
 APP_DISPLAY_NAME = "FlakeGraph"
 
@@ -177,6 +115,8 @@ def print_config(
 ) -> None:
     """Print the resolved redacted configuration as JSON."""
 
+    from kg_processor.application.redaction import redact_sensitive_data
+
     settings = Settings.load(config)
     _echo_json(redact_sensitive_data(settings.model_dump(mode="json", by_alias=True)))
 
@@ -186,6 +126,12 @@ def print_providers(
     kind: Annotated[str | None, typer.Option("--kind")] = None,
 ) -> None:
     """Print the provider catalog, optionally filtered by provider kind."""
+
+    from kg_processor.config.provider_registry import (
+        provider_catalog,
+        provider_catalog_for_kind,
+        provider_kinds,
+    )
 
     if kind is None:
         _echo_json(provider_catalog())
@@ -228,6 +174,8 @@ def preflight(
     OCR/LLM calls or starting a long Snowflake Container Services job.
     """
 
+    from kg_processor.config.preflight import run_preflight
+
     settings = Settings.load(config)
     result = run_preflight(
         settings,
@@ -252,6 +200,9 @@ def fleet_profile_command(
     run whose semantic configuration hashes to its own.
     """
 
+    from kg_processor.fleet.kubectl import ClusterTarget
+    from kg_processor.fleet.profile import fleet_profile
+
     _echo_json(fleet_profile(ClusterTarget(context=context), namespace))
 
 
@@ -268,6 +219,10 @@ def fleet_preflight_command(
     credentials the run names. The core preflight then validates the run's own
     settings the way a submit host must. One JSON result carries both.
     """
+
+    from kg_processor.config.preflight import run_preflight
+    from kg_processor.fleet.kubectl import ClusterTarget
+    from kg_processor.fleet.preflight import fleet_preflight
 
     settings = Settings.load(config)
     core = run_preflight(settings, orchestrator_mode=True)
@@ -298,6 +253,10 @@ def fleet_recover_command(
     not fix is reported instead.
     """
 
+    from kg_processor.factories import build_distributed_store
+    from kg_processor.fleet.kubectl import ClusterTarget
+    from kg_processor.fleet.recover import queued_worker_components, recover_workers
+
     settings = Settings.load(config)
     store = build_distributed_store(settings)
     store.initialize()
@@ -325,6 +284,9 @@ def sources_list(
     quietly downloaded.
     """
 
+    from kg_processor.factories import build_file_source
+    from kg_processor.ports.file_source import BrowsableFileSource
+
     settings = Settings.load(config)
     source = build_file_source(settings)
     if not isinstance(source, BrowsableFileSource):
@@ -346,6 +308,8 @@ def distributed_init(
 ) -> None:
     """Create the durable PostgreSQL coordination schema idempotently."""
 
+    from kg_processor.factories import build_distributed_store
+
     settings = Settings.load(config)
     store = build_distributed_store(settings)
     store.initialize()
@@ -358,6 +322,9 @@ def distributed_submit(
     run_id: Annotated[str | None, typer.Option("--run-id")] = None,
 ) -> None:
     """Discover sources and submit the initial dynamically expanded graph run."""
+
+    from kg_processor.application.distributed_planner import DistributedRunPlanner
+    from kg_processor.factories import build_distributed_store, build_file_source
 
     settings = Settings.load(config)
     store = build_distributed_store(settings)
@@ -395,6 +362,9 @@ def distributed_revise(
     the graph's head moves to the new version once it succeeds.
     """
 
+    from kg_processor.application.distributed_planner import DistributedRunPlanner
+    from kg_processor.factories import build_distributed_store, build_file_source
+
     settings = Settings.load(config)
     store = build_distributed_store(settings)
     store.initialize()
@@ -422,6 +392,15 @@ def distributed_worker(
     once: Annotated[bool, typer.Option("--once")] = False,
 ) -> None:
     """Claim eligible stages until signalled, or process one poll with ``--once``."""
+
+    from kg_processor.application.distributed_diagnostics import worker_ready_payload
+    from kg_processor.application.distributed_worker import DistributedWorker
+    from kg_processor.application.progress import JsonLineProgressSink
+    from kg_processor.factories import (
+        build_distributed_pipeline,
+        build_distributed_store,
+        build_graph_manifest_publisher,
+    )
 
     settings = Settings.load(config)
     store = build_distributed_store(settings)
@@ -491,6 +470,9 @@ def distributed_status(
 ) -> None:
     """Print bounded run progress, with detailed task state only when requested."""
 
+    from kg_processor.application.distributed_diagnostics import run_status_payload
+    from kg_processor.factories import build_distributed_store
+
     settings = Settings.load(config)
     store = build_distributed_store(settings)
     store.initialize()
@@ -509,6 +491,8 @@ def distributed_list(
 ) -> None:
     """List recent distributed runs without loading task payloads or run configuration."""
 
+    from kg_processor.factories import build_distributed_store
+
     settings = Settings.load(config)
     store = build_distributed_store(settings)
     store.initialize()
@@ -521,6 +505,8 @@ def distributed_cancel(
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
 ) -> None:
     """Cancel queued/running tasks without deleting completed audit artifacts."""
+
+    from kg_processor.factories import build_distributed_store
 
     settings = Settings.load(config)
     store = build_distributed_store(settings)
@@ -536,6 +522,8 @@ def distributed_retry(
 ) -> None:
     """Requeue a failed run's failed tasks, or resume a cancelled run where it stopped."""
 
+    from kg_processor.factories import build_distributed_store
+
     settings = Settings.load(config)
     store = build_distributed_store(settings)
     store.initialize()
@@ -550,6 +538,13 @@ def distributed_export(
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
 ) -> None:
     """Materialize a completed fleet graph as standard local inspection artifacts."""
+
+    from kg_processor.application.graph_dataset import GraphDatasetReader
+    from kg_processor.factories import (
+        build_blob_store,
+        build_distributed_store,
+        build_local_artifacts_writer,
+    )
 
     settings = Settings.load(config)
     store = build_distributed_store(settings)
@@ -609,6 +604,10 @@ def worker(
     isolated behind ports and factories rather than branching through the
     application pipeline.
     """
+
+    from kg_processor.application.progress import error_metadata
+    from kg_processor.application.redaction import redact_sensitive_data, redact_sensitive_text
+    from kg_processor.factories import build_job_manager, build_pipeline
 
     settings = Settings.load(config)
     progress_sink = _build_worker_progress_sink(settings, progress)
@@ -674,6 +673,11 @@ def _run_file_queue_worker(
     progress_sink: ProgressSink | None = None,
 ) -> dict[str, Any]:
     """Claim and process Snowflake job-file batches until no work remains."""
+
+    from kg_processor.application.consumption import ConsumptionCollector
+    from kg_processor.application.progress import error_metadata
+    from kg_processor.application.redaction import redact_sensitive_text
+    from kg_processor.factories import build_pipeline
 
     if not settings.job.lease_owner:
         raise ValueError("job.use_file_queue requires job.lease_owner")
@@ -814,6 +818,8 @@ def _fail_job_file_results(
 ) -> None:
     """Persist per-file failures collected by the pipeline queue adapter."""
 
+    from kg_processor.application.redaction import redact_sensitive_data, redact_sensitive_text
+
     if not failed_results:
         return
     if not settings.job.lease_owner:
@@ -838,6 +844,8 @@ def _job_heartbeat(
     settings: Settings,
     job_manager: SnowflakeJobManager,
 ) -> LeaseHeartbeat:
+    from kg_processor.application.lease_heartbeat import LeaseHeartbeat, heartbeat_interval_seconds
+
     lease_owner = settings.job.lease_owner
     if not lease_owner:
         raise ValueError("job heartbeat requires job.lease_owner")
@@ -856,6 +864,8 @@ def _job_file_heartbeat(
     job_manager: SnowflakeJobManager,
     claimed_files: list[JobFileClaim],
 ) -> LeaseHeartbeat:
+    from kg_processor.application.lease_heartbeat import LeaseHeartbeat, heartbeat_interval_seconds
+
     lease_owner = settings.job.lease_owner
     if not lease_owner:
         raise ValueError("file heartbeat requires job.lease_owner")
@@ -879,6 +889,9 @@ def _file_queue_progress_sink(
     display_sink: ProgressSink | None = None,
     consumption: ConsumptionCollector | None = None,
 ) -> ProgressSink:
+    from kg_processor.adapters.jobs.snowflake import SnowflakeJobFileProgressSink
+    from kg_processor.application.progress import CompositeProgressSink, JsonLineProgressSink
+
     lease_owner = settings.job.lease_owner
     if not lease_owner:
         raise ValueError("file progress persistence requires job.lease_owner")
@@ -907,6 +920,9 @@ def _build_worker_progress_sink(
 ) -> ProgressSink:
     """Select an interactive or machine-readable sink for this process."""
 
+    from kg_processor.adapters.progress import RichTerminalProgressSink, WorkerProgressContext
+    from kg_processor.application.progress import JsonLineProgressSink, NullProgressSink
+
     mode = requested_mode
     if mode == WorkerProgressMode.AUTO:
         mode = WorkerProgressMode.RICH if sys.stdout.isatty() else WorkerProgressMode.JSON
@@ -932,6 +948,8 @@ def _build_worker_progress_sink(
 def _start_worker_progress(progress_sink: ProgressSink) -> None:
     """Start live rendering before expensive provider construction."""
 
+    from kg_processor.adapters.progress import RichTerminalProgressSink
+
     if isinstance(progress_sink, RichTerminalProgressSink):
         progress_sink.start()
 
@@ -942,6 +960,8 @@ def _finish_worker_progress(
 ) -> None:
     """Print a terminal summary or preserve the existing JSON report contract."""
 
+    from kg_processor.adapters.progress import RichTerminalProgressSink
+
     if isinstance(progress_sink, RichTerminalProgressSink):
         progress_sink.finish(report)
         return
@@ -950,6 +970,8 @@ def _finish_worker_progress(
 
 def _fail_worker_progress(progress_sink: ProgressSink, exc: Exception) -> None:
     """Close a live terminal safely when provider or pipeline work fails."""
+
+    from kg_processor.adapters.progress import RichTerminalProgressSink
 
     if isinstance(progress_sink, RichTerminalProgressSink):
         progress_sink.fail(exc)
@@ -967,6 +989,8 @@ def inspect_graph(
     and relations, and reports trace/run metadata without re-running OCR or LLM
     extraction.
     """
+
+    from kg_processor.application.inspect import inspect_local_graph
 
     _echo_json(inspect_local_graph(output))
 
@@ -987,6 +1011,9 @@ def inspect_html(
     without invoking OCR, LLM, embedding, or Snowflake providers again.
     """
 
+    from kg_processor.adapters.explorer import StaticHtmlGraphExplorer
+    from kg_processor.application.graph_explorer import build_graph_explorer_dataset
+
     destination = html_path or output / "flakegraph-explorer.html"
     dataset = build_graph_explorer_dataset(output)
     result = StaticHtmlGraphExplorer().write(dataset, destination)
@@ -1001,6 +1028,8 @@ def inspect_compare(
     right: Annotated[Path, typer.Option("--right")] = Path("out/kg-right"),
 ) -> None:
     """Compare two local artifact directories for deterministic parity."""
+
+    from kg_processor.application.inspect import compare_local_graph_artifacts
 
     result = compare_local_graph_artifacts(left, right)
     _echo_json(result)
@@ -1026,6 +1055,8 @@ def inspect_evaluate(
     the fixture's explicit acceptance thresholds are missed.
     """
 
+    from kg_processor.application.graph_evaluation import evaluate_graph_artifacts
+
     result = evaluate_graph_artifacts(output, gold)
     _echo_json(result)
     if fail and not result["ok"]:
@@ -1047,6 +1078,11 @@ def benchmark_extraction(
     Each repetition writes an isolated snapshot, evaluates it against gold data, and
     contributes normalized graph signatures to pairwise stability metrics.
     """
+
+    from kg_processor.application.benchmarking import build_benchmark_report
+    from kg_processor.application.graph_evaluation import evaluate_graph_artifacts, graph_signatures
+    from kg_processor.application.progress import NullProgressSink
+    from kg_processor.factories import build_pipeline
 
     output.mkdir(parents=True, exist_ok=True)
     run_reports: list[dict[str, Any]] = []
@@ -1098,6 +1134,8 @@ def snowflake_ddl(
 ) -> None:
     """Render canonical Snowflake table DDL."""
 
+    from kg_processor.application.snowflake_schema import render_snowflake_schema_sql
+
     settings = Settings.load(config)
     dim = embedding_dim if embedding_dim is not None else settings.embedding.dimension
     typer.echo(render_snowflake_schema_sql(dim).strip())
@@ -1110,6 +1148,8 @@ def snowflake_service_spec(
 ) -> None:
     """Render a Snowpark Container Services job spec."""
 
+    from kg_processor.application.snowflake_deployment import render_spcs_service_spec_yaml
+
     settings = Settings.load(config)
     typer.echo(render_spcs_service_spec_yaml(settings, config_path).strip())
 
@@ -1119,6 +1159,8 @@ def snowflake_image_reference(
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
 ) -> None:
     """Render the fully qualified Snowflake image repository reference."""
+
+    from kg_processor.application.snowflake_deployment import render_snowflake_image_reference
 
     settings = Settings.load(config)
     typer.echo(render_snowflake_image_reference(settings))
@@ -1131,6 +1173,8 @@ def snowflake_execute_job_sql(
     async_execution: Annotated[bool, typer.Option("--async")] = False,
 ) -> None:
     """Render SQL for executing the SPCS job service."""
+
+    from kg_processor.application.snowflake_deployment import render_execute_job_service_sql
 
     settings = Settings.load(config)
     typer.echo(render_execute_job_service_sql(settings, spec_file, async_execution).strip())
@@ -1150,6 +1194,8 @@ def snowflake_kubernetes_job(
     gpu_count: Annotated[int | None, typer.Option("--gpu-count")] = None,
 ) -> None:
     """Render an on-prem Kubernetes Job manifest using the same settings model."""
+
+    from kg_processor.application.snowflake_deployment import render_kubernetes_job_yaml
 
     settings = Settings.load(config)
     typer.echo(
@@ -1172,6 +1218,8 @@ def snowflake_setup_sql(
 ) -> None:
     """Render admin-oriented Snowflake setup SQL including grants."""
 
+    from kg_processor.application.snowflake_deployment import render_snowflake_setup_sql
+
     settings = Settings.load(config)
     typer.echo(render_snowflake_setup_sql(settings, role_name).strip())
 
@@ -1181,6 +1229,8 @@ def snowflake_objects_sql(
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
 ) -> None:
     """Render schema-object Snowflake setup SQL for lower-privilege execution."""
+
+    from kg_processor.application.snowflake_deployment import render_snowflake_objects_sql
 
     settings = Settings.load(config)
     typer.echo(render_snowflake_objects_sql(settings).strip())
@@ -1192,6 +1242,8 @@ def snowflake_access_check(
     skip_cortex: Annotated[bool, typer.Option("--skip-cortex")] = False,
 ) -> None:
     """Check current Snowflake access to required objects and optional Cortex calls."""
+
+    from kg_processor.application.snowflake_access import run_snowflake_access_check
 
     settings = Settings.load(config)
     report = run_snowflake_access_check(settings, check_cortex=not skip_cortex)
@@ -1213,6 +1265,8 @@ def snowflake_export(
     Snowflake run can be compared against a gold fixture or a local run.
     """
 
+    from kg_processor.application.snowflake_export import export_snowflake_graph
+
     settings = Settings.load(config)
     _echo_json(export_snowflake_graph(settings, graph_id, output))
 
@@ -1232,6 +1286,8 @@ def snowflake_retry(
     relaunched service would otherwise drain immediately without doing any work.
     Rows past the attempt budget stay failed and are reported as exhausted.
     """
+
+    from kg_processor.factories import build_job_manager
 
     settings = Settings.load(config)
     if not settings.job.use_file_queue:
@@ -1258,6 +1314,9 @@ def snowflake_submit(
     invoke OCR, LLMs, embeddings, or start a compute pool, so operators can verify
     the exact queued file count before launching a cost-bearing job service.
     """
+
+    from kg_processor.application.redaction import redact_sensitive_data
+    from kg_processor.factories import build_file_source, build_job_manager
 
     settings = Settings.load(config)
     if not settings.job.use_file_queue:
@@ -1291,6 +1350,9 @@ def serving_sidecar() -> None:
     batch work mid-flight under KV pressure.
     """
 
+    from kg_processor.serving.sidecar import SidecarConfig
+    from kg_processor.serving.sidecar import run as run_sidecar
+
     run_sidecar(SidecarConfig.from_env())
 
 
@@ -1302,6 +1364,9 @@ def serving_ocr_shim() -> None:
     work rather than refusing it, because MinerU answers 409 when busy and the
     pipeline's HTTP transport does not retry.
     """
+
+    from kg_processor.serving.ocr_shim import OcrShimConfig
+    from kg_processor.serving.ocr_shim import run as run_ocr_shim
 
     run_ocr_shim(OcrShimConfig.from_env())
 
@@ -1331,6 +1396,13 @@ def serving_sizing(
     Exits non-zero when it does not, so the same arithmetic can gate a pipeline
     as well as answer an operator sizing a new GPU.
     """
+
+    from kg_processor.serving.sizing import (
+        BYTES_PER_GIB,
+        DeviceBudget,
+        ModelGeometry,
+        compute_sizing,
+    )
 
     verdict = compute_sizing(
         ModelGeometry(

@@ -8,54 +8,8 @@ application modules dependent only on ports.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
-from kg_processor.adapters.cache.local_json import LocalJsonCache
-from kg_processor.adapters.cache.snowflake import SnowflakeCache
-from kg_processor.adapters.distributed.local_blob import LocalBlobStore
-from kg_processor.adapters.distributed.postgres import PostgresDistributedStore
-from kg_processor.adapters.distributed.s3_blob import S3BlobStore, S3BlobStoreConfig
-from kg_processor.adapters.embeddings.azure_openai import AzureOpenAIEmbeddingProvider
-from kg_processor.adapters.embeddings.hash import HashEmbeddingProvider
-from kg_processor.adapters.embeddings.openai_compatible import OpenAICompatibleEmbeddingProvider
-from kg_processor.adapters.embeddings.sentence_transformers import (
-    SentenceTransformersEmbeddingProvider,
-)
-from kg_processor.adapters.embeddings.snowflake_cortex import SnowflakeCortexEmbeddingProvider
-from kg_processor.adapters.extraction.gliner import GlinerEntityExtractor
-from kg_processor.adapters.files.azure_blob import AzureBlobFileSource, AzureBlobFileSourceConfig
-from kg_processor.adapters.files.local import LocalFileSource
-from kg_processor.adapters.files.manifest import ManifestFileSource
-from kg_processor.adapters.files.s3 import S3FileSource, S3FileSourceConfig
-from kg_processor.adapters.files.snowflake_stage import SnowflakeStageFileSource
-from kg_processor.adapters.jobs.snowflake import SnowflakeJobManager
-from kg_processor.adapters.llm.azure_openai import AzureOpenAILlmProvider
-from kg_processor.adapters.llm.fake import FakeLlmProvider
-from kg_processor.adapters.llm.ollama import OllamaLlmProvider
-from kg_processor.adapters.llm.openai_compatible import OpenAICompatibleLlmProvider
-from kg_processor.adapters.llm.snowflake_cortex import SnowflakeCortexLlmProvider
-from kg_processor.adapters.llm.vllm_local import VllmLocalLlmProvider
-from kg_processor.adapters.ocr.builtin_text import BuiltinTextOcrProvider
-from kg_processor.adapters.ocr.fallback import FallbackOcrProvider
-from kg_processor.adapters.ocr.generic_http import GenericHttpOcrProvider
-from kg_processor.adapters.ocr.mineru_api import MineruApiOcrProvider
-from kg_processor.adapters.ocr.mineru_internal import MineruInternalOcrProvider
-from kg_processor.adapters.ocr.snowflake_cortex import SnowflakeCortexOcrProvider
-from kg_processor.adapters.ocr.tesseract_internal import TesseractInternalOcrProvider
-from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
-from kg_processor.adapters.writers.local_artifacts import LocalArtifactsWriter
-from kg_processor.adapters.writers.snowflake_bulk import SnowflakeBulkWriter
-from kg_processor.adapters.writers.snowflake_direct import SnowflakeDirectWriter
-from kg_processor.adapters.writers.snowflake_manifest import TaskConfiguredManifestPublisher
-from kg_processor.application.consumption import ConsumptionCollector
-from kg_processor.application.llm_extractors import (
-    LlmEntityExtractor,
-    LlmRelationExtractor,
-    LlmRelationVerifier,
-)
-from kg_processor.application.metered_llm import MeteredLlmProvider
-from kg_processor.application.pipeline import KgProcessorPipeline
-from kg_processor.application.progress import JsonLineProgressSink, ProgressSink
 from kg_processor.config.settings import Settings
 from kg_processor.domain.distributed import TaskStage
 from kg_processor.domain.jobs import JobFileClaim
@@ -69,9 +23,19 @@ from kg_processor.ports.graph_writer import GraphWriter
 from kg_processor.ports.llm import LlmProvider, StructuredCompletionProvider
 from kg_processor.ports.ocr import OCR_SUPPORTED_SUFFIXES, OcrProvider
 
+if TYPE_CHECKING:
+    from kg_processor.adapters.distributed.postgres import PostgresDistributedStore
+    from kg_processor.adapters.jobs.snowflake import SnowflakeJobManager
+    from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
+    from kg_processor.application.consumption import ConsumptionCollector
+    from kg_processor.application.pipeline import KgProcessorPipeline
+    from kg_processor.application.progress import ProgressSink
+
 
 def build_distributed_store(settings: Settings) -> PostgresDistributedStore:
     """Build the durable coordination/artifact adapter for distributed commands."""
+
+    from kg_processor.adapters.distributed.postgres import PostgresDistributedStore
 
     if not settings.distributed.database_url:
         raise ValueError(
@@ -88,6 +52,9 @@ def build_distributed_store(settings: Settings) -> PostgresDistributedStore:
 
 def build_blob_store(settings: Settings) -> BlobStore | None:
     """Build shared immutable object storage when a distributed URI is configured."""
+
+    from kg_processor.adapters.distributed.local_blob import LocalBlobStore
+    from kg_processor.adapters.distributed.s3_blob import S3BlobStore, S3BlobStoreConfig
 
     uri = settings.distributed.artifact_uri
     if not uri:
@@ -113,11 +80,15 @@ def build_graph_manifest_publisher(
 ) -> GraphManifestPublisher | None:
     """Bind partitioned output publication at the adapter-composition boundary."""
 
+    from kg_processor.adapters.writers.snowflake_manifest import TaskConfiguredManifestPublisher
+
     return TaskConfiguredManifestPublisher(settings, blob_store) if blob_store else None
 
 
 def build_local_artifacts_writer(output_path: Path) -> GraphWriter:
     """Build the canonical local writer for explicit export operations."""
+
+    from kg_processor.adapters.writers.local_artifacts import LocalArtifactsWriter
 
     return LocalArtifactsWriter(output_path)
 
@@ -135,6 +106,10 @@ def build_pipeline(
     Kubernetes workers, and direct application tests construct the same graph
     behavior. Concrete provider selection remains confined to this module.
     """
+
+    from kg_processor.application.consumption import ConsumptionCollector
+    from kg_processor.application.pipeline import KgProcessorPipeline
+    from kg_processor.application.progress import JsonLineProgressSink
 
     collector = consumption or ConsumptionCollector(
         settings.job.graph_id, job_id=settings.job.job_id
@@ -189,6 +164,9 @@ def build_distributed_pipeline(
     lightweight queue worker process.
     """
 
+    from kg_processor.application.pipeline import KgProcessorPipeline
+    from kg_processor.application.progress import JsonLineProgressSink
+
     unused = _UnusedDistributedDependency()
     needs_prepare = TaskStage.PREPARE_DOCUMENT in stages
     needs_extract = bool(
@@ -228,6 +206,15 @@ def build_distributed_pipeline(
 
 def build_file_source(settings: Settings, *, content_hash: bool | None = None) -> FileSource:
     """Build the configured file-source adapter."""
+
+    from kg_processor.adapters.files.azure_blob import (
+        AzureBlobFileSource,
+        AzureBlobFileSourceConfig,
+    )
+    from kg_processor.adapters.files.local import LocalFileSource
+    from kg_processor.adapters.files.manifest import ManifestFileSource
+    from kg_processor.adapters.files.s3 import S3FileSource, S3FileSourceConfig
+    from kg_processor.adapters.files.snowflake_stage import SnowflakeStageFileSource
 
     # Provider construction is intentionally explicit. Missing credentials or
     # unknown provider names fail here instead of silently swapping to a test or
@@ -283,6 +270,8 @@ def build_file_source(settings: Settings, *, content_hash: bool | None = None) -
 def build_ocr_provider(settings: Settings) -> OcrProvider:
     """Build the configured OCR provider adapter."""
 
+    from kg_processor.adapters.ocr.fallback import FallbackOcrProvider
+
     if settings.ocr.provider == "fallback":
         primary_name = settings.ocr.fallback_primary_provider
         secondary_name = settings.ocr.fallback_secondary_provider
@@ -306,6 +295,13 @@ def build_ocr_provider(settings: Settings) -> OcrProvider:
 
 def _build_named_ocr_provider(settings: Settings, provider: str) -> OcrProvider:
     """Construct one concrete OCR adapter for direct or composed selection."""
+
+    from kg_processor.adapters.ocr.builtin_text import BuiltinTextOcrProvider
+    from kg_processor.adapters.ocr.generic_http import GenericHttpOcrProvider
+    from kg_processor.adapters.ocr.mineru_api import MineruApiOcrProvider
+    from kg_processor.adapters.ocr.mineru_internal import MineruInternalOcrProvider
+    from kg_processor.adapters.ocr.snowflake_cortex import SnowflakeCortexOcrProvider
+    from kg_processor.adapters.ocr.tesseract_internal import TesseractInternalOcrProvider
 
     # OCR providers all normalize into ParsedDocument, so the pipeline never
     # needs provider-specific branches after this factory boundary.
@@ -340,6 +336,8 @@ def build_llm_provider(
     never needs provider-specific branches.
     """
 
+    from kg_processor.application.metered_llm import MeteredLlmProvider
+
     provider = _build_raw_llm_provider(settings)
     if consumption is None:
         return provider
@@ -358,6 +356,13 @@ def build_llm_provider(
 
 def _build_raw_llm_provider(settings: Settings) -> LlmProvider:
     """Select the configured adapter before any decoration."""
+
+    from kg_processor.adapters.llm.azure_openai import AzureOpenAILlmProvider
+    from kg_processor.adapters.llm.fake import FakeLlmProvider
+    from kg_processor.adapters.llm.ollama import OllamaLlmProvider
+    from kg_processor.adapters.llm.openai_compatible import OpenAICompatibleLlmProvider
+    from kg_processor.adapters.llm.snowflake_cortex import SnowflakeCortexLlmProvider
+    from kg_processor.adapters.llm.vllm_local import VllmLocalLlmProvider
 
     # Fake/vLLM/OpenAI/Azure/Cortex all implement the same structured LLM port;
     # selection stays in configuration rather than prompt/extraction code.
@@ -420,6 +425,9 @@ def build_entity_extractor(settings: Settings, llm: LlmProvider) -> EntityExtrac
     LLM and GLiNER implementations expose the same grounded mention contract.
     """
 
+    from kg_processor.adapters.extraction.gliner import GlinerEntityExtractor
+    from kg_processor.application.llm_extractors import LlmEntityExtractor
+
     if settings.extractors.entity_provider == "llm":
         return LlmEntityExtractor(_structured_llm(llm), settings.graph.deterministic_seed)
     if settings.extractors.entity_provider == "gliner":
@@ -436,6 +444,8 @@ def build_relation_extractor(settings: Settings, llm: LlmProvider) -> RelationEx
     This boundary permits future relation engines without changing pipeline orchestration.
     """
 
+    from kg_processor.application.llm_extractors import LlmRelationExtractor
+
     if settings.extractors.relation_provider == "llm":
         return LlmRelationExtractor(_structured_llm(llm), settings.graph.deterministic_seed)
     raise ValueError(f"Unsupported relation extractor: {settings.extractors.relation_provider}")
@@ -446,6 +456,8 @@ def build_relation_verifier(settings: Settings, llm: LlmProvider) -> RelationVer
 
     Verification stays replaceable and cannot introduce new relation candidates.
     """
+
+    from kg_processor.application.llm_extractors import LlmRelationVerifier
 
     if settings.extractors.verifier_provider == "llm":
         return LlmRelationVerifier(_structured_llm(llm), settings.graph.deterministic_seed)
@@ -465,6 +477,14 @@ def _structured_llm(llm: LlmProvider) -> StructuredCompletionProvider:
 
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
     """Build the configured embedding provider adapter."""
+
+    from kg_processor.adapters.embeddings.azure_openai import AzureOpenAIEmbeddingProvider
+    from kg_processor.adapters.embeddings.hash import HashEmbeddingProvider
+    from kg_processor.adapters.embeddings.openai_compatible import OpenAICompatibleEmbeddingProvider
+    from kg_processor.adapters.embeddings.sentence_transformers import (
+        SentenceTransformersEmbeddingProvider,
+    )
+    from kg_processor.adapters.embeddings.snowflake_cortex import SnowflakeCortexEmbeddingProvider
 
     # Embedding providers are dimension-checked later by quality/inspect logic;
     # this factory only enforces the credentials needed to call the provider.
@@ -495,6 +515,10 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
 def build_writer(settings: Settings) -> GraphWriter:
     """Build the configured graph writer adapter."""
 
+    from kg_processor.adapters.writers.local_artifacts import LocalArtifactsWriter
+    from kg_processor.adapters.writers.snowflake_bulk import SnowflakeBulkWriter
+    from kg_processor.adapters.writers.snowflake_direct import SnowflakeDirectWriter
+
     # Writers receive the same GraphWriteBatch shape. Local artifacts and
     # Snowflake tables should therefore stay schema-parity concerns, not
     # separate pipeline implementations.
@@ -520,6 +544,9 @@ def build_writer(settings: Settings) -> GraphWriter:
 def build_cache(settings: Settings) -> PipelineCache | None:
     """Build the optional cache adapter, or None when caching is disabled."""
 
+    from kg_processor.adapters.cache.local_json import LocalJsonCache
+    from kg_processor.adapters.cache.snowflake import SnowflakeCache
+
     if settings.cache.provider == "none":
         return None
     if settings.cache.provider == "local":
@@ -532,10 +559,14 @@ def build_cache(settings: Settings) -> PipelineCache | None:
 def build_job_manager(settings: Settings) -> SnowflakeJobManager | None:
     """Build a Snowflake job manager when leasing or file queues are enabled."""
 
+    from kg_processor.adapters.jobs.snowflake import SnowflakeJobManager
+
     if not settings.job.use_lease and not settings.job.use_file_queue:
         return None
     return SnowflakeJobManager(_snowflake_config(settings))
 
 
 def _snowflake_config(settings: Settings) -> SnowflakeConnectionConfig:
+    from kg_processor.adapters.snowflake import SnowflakeConnectionConfig
+
     return SnowflakeConnectionConfig.from_settings(settings.snowflake)

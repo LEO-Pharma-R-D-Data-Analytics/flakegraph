@@ -110,7 +110,9 @@ def test_cli_sources_list_reports_a_backend_refusal_in_one_line(
             )
             yield  # pragma: no cover - makes this a generator like the real sources
 
-    monkeypatch.setattr("kg_processor.cli.build_file_source", lambda settings: _RefusingSource())
+    monkeypatch.setattr(
+        "kg_processor.factories.build_file_source", lambda settings: _RefusingSource()
+    )
 
     result = runner.invoke(app, ["sources", "list", "--config", str(config)])
 
@@ -349,7 +351,9 @@ def test_distributed_status_keeps_the_fleet_warning_when_tasks_are_included(
                 updated_at=now,
             )
 
-    monkeypatch.setattr("kg_processor.cli.build_distributed_store", lambda _settings: FleetStore())
+    monkeypatch.setattr(
+        "kg_processor.factories.build_distributed_store", lambda _settings: FleetStore()
+    )
     monkeypatch.setattr("kg_processor.cli.Settings.load", lambda _config: settings)
 
     result = runner.invoke(app, ["distributed", "status", "--run-id", "run-1", "--include-tasks"])
@@ -395,7 +399,7 @@ def test_file_queue_worker_drains_claimed_batches(monkeypatch: pytest.MonkeyPatc
         _ = write_scope_override, consumption
         return _FakeQueuePipeline(claimed_files or [], progress_sink)
 
-    monkeypatch.setattr("kg_processor.cli.build_pipeline", fake_build_pipeline)
+    monkeypatch.setattr("kg_processor.factories.build_pipeline", fake_build_pipeline)
 
     summary = _run_file_queue_worker(settings, cast(SnowflakeJobManager, manager))
 
@@ -452,7 +456,7 @@ def test_file_queue_worker_publishes_snapshot_for_complete_queue_claim(
         write_scopes.append(write_scope_override)
         return _FakeQueuePipeline(claimed_files or [], progress_sink)
 
-    monkeypatch.setattr("kg_processor.cli.build_pipeline", fake_build_pipeline)
+    monkeypatch.setattr("kg_processor.factories.build_pipeline", fake_build_pipeline)
 
     summary = _run_file_queue_worker(settings, cast(SnowflakeJobManager, manager))
 
@@ -516,8 +520,10 @@ def test_file_queue_worker_heartbeats_claimed_batch(
         def raise_if_unhealthy(self) -> None:
             """Model the healthy heartbeat contract used by the worker."""
 
-    monkeypatch.setattr("kg_processor.cli.build_pipeline", fake_build_pipeline)
-    monkeypatch.setattr("kg_processor.cli.LeaseHeartbeat", ImmediateHeartbeat)
+    monkeypatch.setattr("kg_processor.factories.build_pipeline", fake_build_pipeline)
+    monkeypatch.setattr(
+        "kg_processor.application.lease_heartbeat.LeaseHeartbeat", ImmediateHeartbeat
+    )
 
     summary = _run_file_queue_worker(settings, cast(SnowflakeJobManager, manager))
 
@@ -555,7 +561,7 @@ def test_file_queue_worker_fails_claims_when_pipeline_construction_fails(
         _ = (claimed_files, progress_sink, write_scope_override)
         raise RuntimeError("missing provider credentials")
 
-    monkeypatch.setattr("kg_processor.cli.build_pipeline", failing_build_pipeline)
+    monkeypatch.setattr("kg_processor.factories.build_pipeline", failing_build_pipeline)
 
     with pytest.raises(RuntimeError, match="missing provider credentials"):
         _run_file_queue_worker(settings, cast(SnowflakeJobManager, manager))
@@ -602,7 +608,7 @@ def test_file_queue_worker_fails_only_pipeline_reported_file_failures(
         _ = write_scope_override, consumption
         return _PartiallyFailedQueuePipeline(claimed_files or [], progress_sink)
 
-    monkeypatch.setattr("kg_processor.cli.build_pipeline", fake_build_pipeline)
+    monkeypatch.setattr("kg_processor.factories.build_pipeline", fake_build_pipeline)
 
     summary = _run_file_queue_worker(settings, cast(SnowflakeJobManager, manager))
 
@@ -969,7 +975,9 @@ snowflake:
             ],
         )
 
-    monkeypatch.setattr("kg_processor.cli.run_snowflake_access_check", fake_access_check)
+    monkeypatch.setattr(
+        "kg_processor.application.snowflake_access.run_snowflake_access_check", fake_access_check
+    )
 
     result = runner.invoke(app, ["snowflake", "access-check", "--config", str(config)])
 
@@ -1037,8 +1045,8 @@ snowflake:
             return len(submitted_files)
 
     manager = FakeManager()
-    monkeypatch.setattr("kg_processor.cli.build_file_source", lambda _settings: FakeSource())
-    monkeypatch.setattr("kg_processor.cli.build_job_manager", lambda _settings: manager)
+    monkeypatch.setattr("kg_processor.factories.build_file_source", lambda _settings: FakeSource())
+    monkeypatch.setattr("kg_processor.factories.build_job_manager", lambda _settings: manager)
 
     result = runner.invoke(app, ["snowflake", "submit", "--config", str(config)])
 
