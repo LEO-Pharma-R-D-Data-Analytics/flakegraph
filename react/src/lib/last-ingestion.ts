@@ -8,6 +8,8 @@ export interface LastIngestionDraft {
   graphName: string;
   sourceKind: string;
   sourcePath: string;
+  /** The source as it was named (bucket, prefix, endpoint…), for kinds a path alone cannot restore. */
+  source?: Record<string, unknown>;
   ocrProvider: string;
   llmProvider: string;
   embeddingProvider: string;

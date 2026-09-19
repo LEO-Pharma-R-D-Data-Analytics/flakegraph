@@ -231,6 +231,11 @@ export function RunWorkspace({
       graphName: snapshot.graphName || last?.graphName || "",
       sourceKind: String(raw.sourceKind || last?.sourceKind || "local_path"),
       sourcePath: String(raw.sourcePath || watchPrefixFrom(snapshot) || last?.sourcePath || ""),
+      ...(raw.source && typeof raw.source === "object"
+        ? { source: raw.source as Record<string, unknown> }
+        : last?.source
+          ? { source: last.source }
+          : {}),
       ocrProvider: String(raw.ocrProvider || last?.ocrProvider || "fallback"),
       llmProvider: String(raw.llmProvider || last?.llmProvider || "vllm_local"),
       embeddingProvider: String(raw.embeddingProvider || last?.embeddingProvider || "sentence_transformers"),

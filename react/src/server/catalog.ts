@@ -29,6 +29,7 @@ export interface CatalogRecord {
   documentsFailed?: number | null;
   sourceKind?: string | null;
   sourcePath?: string | null;
+  source?: Record<string, unknown> | null;
   ocrProvider?: string | null;
   llmProvider?: string | null;
   embeddingProvider?: string | null;
@@ -43,6 +44,10 @@ export function cloneFieldsFromRequest(request: IngestionRequest) {
   return {
     sourceKind: request.sourceKind,
     sourcePath: String(source.path ?? source.prefix ?? source.stage ?? ""),
+    // The whole source, so a bucket or container can be run again as it
+    // was named: kind, bucket, prefix, endpoint. Credentials never travel
+    // in it - they come from the environment.
+    source: { ...source },
     ocrProvider: request.ocr.provider,
     llmProvider: request.llm.provider,
     embeddingProvider: request.embedding.provider,
@@ -278,6 +283,7 @@ export function snapshotFromRecord(
       nodeCount: record.nodeCount ?? (extras.raw as Record<string, unknown> | undefined)?.nodeCount ?? null,
       sourceKind: record.sourceKind ?? null,
       sourcePath: record.sourcePath ?? null,
+      source: record.source ?? (extras.raw as Record<string, unknown> | undefined)?.source ?? null,
       ocrProvider: record.ocrProvider ?? null,
       llmProvider: record.llmProvider ?? null,
       embeddingProvider: record.embeddingProvider ?? null,
@@ -315,6 +321,7 @@ function normalizeRecord(value: Record<string, unknown>, fallbackId: string): Ca
     documentsFailed: (value.documentsFailed ?? value.documents_failed ?? 0) as number,
     sourceKind: (value.sourceKind ?? value.source_kind ?? null) as string | null,
     sourcePath: (value.sourcePath ?? value.source_path ?? null) as string | null,
+    source: (value.source && typeof value.source === "object" ? value.source : null) as Record<string, unknown> | null,
     ocrProvider: (value.ocrProvider ?? value.ocr_provider ?? null) as string | null,
     llmProvider: (value.llmProvider ?? value.llm_provider ?? null) as string | null,
     embeddingProvider: (value.embeddingProvider ?? value.embedding_provider ?? null) as string | null,

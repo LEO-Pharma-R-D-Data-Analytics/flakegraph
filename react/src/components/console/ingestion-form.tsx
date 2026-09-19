@@ -371,6 +371,8 @@ export function IngestionForm({
   function applyClone(draft: LastIngestionDraft) {
     setGraphName(draft.graphName);
     const kind = (draft.sourceKind as SourceKind) || "local_path";
+    const source = draft.source ?? {};
+    const field = (name: string, fallback = "") => (typeof source[name] === "string" ? source[name] : fallback);
     setSourceKind(kind);
     setSourcePath(draft.sourcePath);
     if (kind === "upload") {
@@ -380,6 +382,22 @@ export function IngestionForm({
       setSourceMode("sample");
     } else {
       setSourceMode("files");
+    }
+    if (kind === "s3") {
+      setS3({
+        bucket: field("bucket"),
+        prefix: field("prefix", draft.sourcePath),
+        endpointUrl: field("endpointUrl", field("endpoint_url")),
+        region: field("region"),
+      });
+    } else if (kind === "azure_blob") {
+      setAzure({
+        accountUrl: field("accountUrl", field("account_url")),
+        container: field("container"),
+        prefix: field("prefix", draft.sourcePath),
+      });
+    } else if (kind === "snowflake_stage") {
+      setStage({ stage: field("stage", draft.sourcePath), prefix: field("prefix") });
     }
     setOcr(providerSelection("ocr", draft.ocrProvider));
     setLlm(providerSelection("llm", draft.llmProvider));
@@ -501,6 +519,7 @@ export function IngestionForm({
         graphName: graphName.trim(),
         sourceKind,
         sourcePath: resolvedPath(),
+        source: request.source,
         ocrProvider: ocr.provider,
         llmProvider: llm.provider,
         embeddingProvider: embedding.provider,

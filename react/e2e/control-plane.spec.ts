@@ -305,6 +305,32 @@ test.describe("kubernetes fleet", () => {
     await expect(page.getByRole("main").getByText("queued", { exact: false }).first()).toBeVisible();
   });
 
+  test("clones a bucket source back into compose with every field", async ({ page }) => {
+    await page.goto("/?runtime=kubernetes&page=new");
+    await confirmEnvironmentIfNeeded(page);
+    await openMoreSources(page);
+    await page.getByLabel("Source kind").click();
+    await page.getByRole("option", { name: "S3-compatible bucket" }).click();
+    await page.getByLabel("Bucket", { exact: true }).fill("test-corpora");
+    await page.getByLabel("Prefix", { exact: true }).fill("martial_arts/");
+    await page.getByLabel("Endpoint", { exact: true }).fill("http://minio.local:9000");
+    await page.getByLabel("Region", { exact: true }).fill("us-east-1");
+    await page.getByLabel("Display name").fill("Bucket clone");
+    await expect(page.getByTestId("source-count")).toContainText("2 selectable objects", { timeout: 20_000 });
+    await page.getByRole("button", { name: "Start", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Bucket clone" })).toBeVisible({ timeout: 30_000 });
+    // Back on compose, "Clone last config" restores the bucket as it was named,
+    // not just its kind.
+    await page.goto("/?runtime=kubernetes&page=new");
+    await page.getByRole("button", { name: "Clone last config" }).click();
+    await expect(page.getByLabel("Bucket", { exact: true })).toHaveValue("test-corpora");
+    await expect(page.getByLabel("Prefix", { exact: true })).toHaveValue("martial_arts/");
+    await expect(page.getByLabel("Endpoint", { exact: true })).toHaveValue("http://minio.local:9000");
+    await expect(page.getByLabel("Region", { exact: true })).toHaveValue("us-east-1");
+    await expect(page.getByLabel("Display name")).toHaveValue("Bucket clone");
+    await expect(page.getByTestId("source-count")).toContainText("2 selectable objects", { timeout: 20_000 });
+  });
+
   test("builds a new version of a finished fleet graph from its Edit tab", async ({ page }) => {
     await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_done");
     await expect(page.getByRole("heading", { name: "Fleet judo" })).toBeVisible();
