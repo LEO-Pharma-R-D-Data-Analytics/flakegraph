@@ -154,9 +154,11 @@ export function IngestionForm({
   // the pipeline's own listing. A Snowflake stage is only known to the
   // Snowflake runtime.
   const browseSource = useDebouncedValue(browsableSource(), 600);
+  // No placeholder from the previous source: a count belongs to the source
+  // it was read from, and Start must not open on another bucket's listing.
   const sources = trpc.ingestion.sources.list.useQuery(
     { source: browseSource ?? { kind: "local", path: "" } },
-    { enabled: browseSource !== null, placeholderData: (previous) => previous },
+    { enabled: browseSource !== null },
   );
 
   const lastDraft = useLastIngestion(runtime);
@@ -543,8 +545,10 @@ export function IngestionForm({
   // A source the console can name ahead of the run is held to what it lists:
   // Start waits for the listing, and an empty or failed one keeps it closed
   // for the same reason the run itself would stop.
+  // A listing whose retry is paused (the tab lost focus between attempts)
+  // has neither answered nor failed yet, so it counts as pending too.
   const browsable = browseSource !== null;
-  const listingPending = browsable && sources.isFetching && !sources.data;
+  const listingPending = browsable && (sources.isFetching || sources.isPaused) && !sources.data;
   const emptyLocalListing =
     listingPending ||
     (sourceKind === "upload" && !uploadPath) ||
@@ -649,14 +653,13 @@ export function IngestionForm({
   const listing = (
     <>
       {browsable ? (
-        sources.isFetching && !sources.data ? (
+        listingPending ? (
           <p className="text-sm text-muted-foreground">Listing {sourceNoun}…</p>
         ) : sources.data ? (
           <p className="text-sm text-muted-foreground" data-testid="source-count">
             {sources.data.length} selectable {sources.data.length === 1 ? "object" : "objects"}
             {sources.data.length === 0 ? ` ${sourcePlace}` : totalBytes > 0 ? ` · ${formatBytes(totalBytes)}` : ""}
             {largerThanSample ? " · larger than a typical sample (10 files / 50 MB)" : ""}
-            {sources.isFetching ? " · refreshing…" : ""}
           </p>
         ) : null
       ) : sourceKind === "snowflake_stage" ? (
@@ -1016,7 +1019,7 @@ export function IngestionForm({
           ) : !startBlocked ? (
             <p className="truncate text-sm text-muted-foreground">
               {objectCount === 0
-                ? sources.isFetching
+                ? sources.isFetching || sources.isPaused
                   ? `Listing ${sourceNoun} to estimate cost and time…`
                   : browsable
                     ? `No ${sourceNoun} found ${sourcePlace}.`

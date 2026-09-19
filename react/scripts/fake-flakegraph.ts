@@ -60,6 +60,10 @@ async function sourcesList(configPath: string, limit: number) {
     process.stderr.write(`${kind} file source requires a bucket\n`);
     process.exit(1);
   }
+  if (container === "missing") {
+    process.stderr.write("NoSuchBucket: The specified bucket does not exist\n");
+    process.exit(1);
+  }
   const prefix = String(backend.prefix ?? "");
   const scheme = kind === "s3" ? "s3" : "az";
   const rows = [

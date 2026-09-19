@@ -330,7 +330,14 @@ def sources_list(
     if not isinstance(source, BrowsableFileSource):
         typer.echo(f"{settings.files.source} sources cannot be listed without fetching", err=True)
         raise typer.Exit(code=2)
-    _echo_json([item.model_dump(mode="json") for item in source.browse(limit)])
+    try:
+        listing = [item.model_dump(mode="json") for item in source.browse(limit)]
+    except Exception as exc:  # noqa: BLE001 - the backend's refusal is the answer here
+        # A missing bucket, a wrong endpoint or a rejected credential should
+        # read as one line to whoever asked, not as the SDK's stack.
+        typer.echo(f"{settings.files.source} source could not be listed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _echo_json(listing)
 
 
 @distributed_app.command("init")

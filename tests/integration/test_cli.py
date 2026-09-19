@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -27,7 +27,7 @@ from kg_processor.domain.distributed import (
     TaskStage,
     TaskStatus,
 )
-from kg_processor.domain.documents import InputFile
+from kg_processor.domain.documents import InputFile, SourceListing
 from kg_processor.domain.graph import GraphWriteBatch
 from kg_processor.domain.jobs import JobFileClaim, JobFileResult
 
@@ -95,6 +95,28 @@ def test_cli_sources_list_names_local_documents_as_json(tmp_path: Path) -> None:
     assert rows[0]["uri"] == (corpus / "judo.md").resolve().as_uri()
     assert rows[0]["size_bytes"] == 32
     assert rows[0]["checksum"] is None
+
+
+def test_cli_sources_list_reports_a_backend_refusal_in_one_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("files:\n  source: local\n  input_path: /tmp\n", encoding="utf-8")
+
+    class _RefusingSource:
+        def browse(self, limit: int) -> Iterator[SourceListing]:
+            raise RuntimeError(
+                "An error occurred (NoSuchBucket): The specified bucket does not exist"
+            )
+            yield  # pragma: no cover - makes this a generator like the real sources
+
+    monkeypatch.setattr("kg_processor.cli.build_file_source", lambda settings: _RefusingSource())
+
+    result = runner.invoke(app, ["sources", "list", "--config", str(config)])
+
+    assert result.exit_code == 1
+    assert "local source could not be listed: An error occurred (NoSuchBucket)" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_cli_sources_list_refuses_a_source_that_can_only_be_fetched(tmp_path: Path) -> None:

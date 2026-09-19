@@ -35,6 +35,16 @@ async function openMoreSources(page: Page) {
   }
 }
 
+// React Query parks retries while the document is hidden; this flips what
+// it reads without needing a second window.
+async function setVisibility(page: Page, state: "hidden" | "visible") {
+  await page.evaluate((next) => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => next });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => next === "hidden" });
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+  }, state);
+}
+
 async function useFolderPath(page: Page, path: string) {
   await openMoreSources(page);
   await page.getByLabel("Source kind").click();
@@ -204,7 +214,21 @@ test.describe("ingestion", () => {
     await expect(page.getByTestId("source-count")).toContainText("41 KB");
     await expect(page.getByTestId("credit-envelope")).toBeVisible({ timeout: 20_000 });
     await expect(start).toBeEnabled();
-    // Naming a bucket that cannot be listed closes Start again with the reason.
+    // A bucket that cannot be listed closes Start again and says why. The
+    // tab is hidden while the first attempt fails, which parks the retry:
+    // a parked listing is still pending, never "no objects" with Start open.
+    await setVisibility(page, "hidden");
+    await page.getByLabel("Bucket").fill("missing");
+    await expect(page.getByText("Listing objects…")).toBeVisible({ timeout: 20_000 });
+    await expect(start).toBeDisabled();
+    await page.waitForTimeout(1_500);
+    await expect(page.getByText("Listing objects…")).toBeVisible();
+    await expect(start).toBeDisabled();
+    await setVisibility(page, "visible");
+    await expect(page.getByText(/NoSuchBucket/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Listing failed/)).toBeVisible();
+    await expect(start).toBeDisabled();
+    // And clearing the bucket leaves nothing to list.
     await page.getByLabel("Bucket").fill("   ");
     await expect(page.getByText("Objects are listed once a bucket is named.")).toBeVisible();
     await expect(start).toBeDisabled();
