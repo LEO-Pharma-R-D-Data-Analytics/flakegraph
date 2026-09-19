@@ -35,7 +35,8 @@ import {
 import { fleetOntologyTerms } from "@/lib/fleet-ontology";
 import { useStorageItem, writeStorage } from "@/lib/browser-storage";
 import { readLastIngestion, useLastIngestion, writeLastIngestion, type LastIngestionDraft } from "@/lib/last-ingestion";
-import { cn } from "@/lib/utils";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
+import { cn, formatBytes } from "@/lib/utils";
 
 /**
  * The form builds a new version of an existing graph instead of a new graph:
@@ -148,11 +149,14 @@ export function IngestionForm({
       }
     },
   });
+  // What the run would read, named before it starts: local paths list at
+  // once; a bucket or container lists once its fields stop changing, through
+  // the pipeline's own listing. A Snowflake stage is only known to the
+  // Snowflake runtime.
+  const browseSource = useDebouncedValue(browsableSource(), 600);
   const sources = trpc.ingestion.sources.list.useQuery(
-    {
-      source: { kind: sourceKind === "local_path" || sourceKind === "upload" ? "local" : sourceKind, path: resolvedPath() },
-    },
-    { enabled: sourceKind === "local_path" || sourceKind === "upload" ? Boolean(resolvedPath()) : false },
+    { source: browseSource ?? { kind: "local", path: "" } },
+    { enabled: browseSource !== null, placeholderData: (previous) => previous },
   );
 
   const lastDraft = useLastIngestion(runtime);
@@ -321,6 +325,19 @@ export function IngestionForm({
 
   function resolvedPath() {
     return sourceKind === "upload" ? uploadPath ?? "" : sourcePath;
+  }
+
+  function browsableSource(): Record<string, unknown> | null {
+    if (sourceKind === "upload" || sourceKind === "local_path") {
+      return resolvedPath() ? { kind: "local", path: resolvedPath() } : null;
+    }
+    if (sourceKind === "s3") {
+      return s3.bucket.trim() ? { kind: "s3", ...s3 } : null;
+    }
+    if (sourceKind === "azure_blob") {
+      return azure.accountUrl.trim() && azure.container.trim() ? { kind: "azure_blob", ...azure } : null;
+    }
+    return runtime === "snowflake" && stage.stage.trim() ? { kind: "snowflake_stage", ...stage } : null;
   }
 
   function applySample(sample: (typeof SAMPLE_CORPORA)[number]) {
@@ -517,19 +534,22 @@ export function IngestionForm({
     { enabled: objectCount > 0, placeholderData: (previous) => previous },
   );
   const totalBytes = (sources.data ?? []).reduce((sum, item) => sum + item.sizeBytes, 0);
+  const sourceNoun = sourceKind === "s3" ? "objects" : sourceKind === "azure_blob" ? "blobs" : "files";
+  const sourcePlace = sourceKind === "s3" || sourceKind === "azure_blob" ? "under this prefix" : "at this path";
   const largerThanSample = objectCount > 10 || totalBytes > 50 * 1024 * 1024;
   const envChanged = Boolean(lastSuccessRuntime && lastSuccessRuntime !== runtime);
   const digestMismatch = Boolean(lastDraft && lastConfigDigest && lastDraft && lastConfigDigest !== `${lastDraft.sourceKind}:${lastDraft.sourcePath}`);
   const grantsBlocked = runtime === "snowflake" && Boolean(session.data?.grants?.some((grant) => !grant.ok));
-  const listingPending =
-    (sourceKind === "upload" || sourceKind === "local_path") && Boolean(resolvedPath()) && sources.isFetching && !sources.data;
+  // A source the console can name ahead of the run is held to what it lists:
+  // Start waits for the listing, and an empty or failed one keeps it closed
+  // for the same reason the run itself would stop.
+  const browsable = browseSource !== null;
+  const listingPending = browsable && sources.isFetching && !sources.data;
   const emptyLocalListing =
     listingPending ||
-    (sourceKind === "upload"
-      ? !uploadPath || (Array.isArray(sources.data) && sources.data.length === 0)
-      : sourceKind === "local_path" && Array.isArray(sources.data) && sources.data.length === 0);
-  const listingFailed =
-    (sourceKind === "upload" || sourceKind === "local_path") && Boolean(sources.error);
+    (sourceKind === "upload" && !uploadPath) ||
+    (browsable && Array.isArray(sources.data) && sources.data.length === 0);
+  const listingFailed = browsable && Boolean(sources.error);
   const envBlocked = envChanged && !envConfirmed;
   const incompleteSource = !request;
   const dropsOnly = Boolean(request?.revision && request.revision.addDocuments === false);
@@ -628,18 +648,27 @@ export function IngestionForm({
   );
   const listing = (
     <>
-      {sourceKind === "local_path" || sourceKind === "upload" ? (
+      {browsable ? (
         sources.isFetching && !sources.data ? (
-          <p className="text-sm text-muted-foreground">Listing files…</p>
+          <p className="text-sm text-muted-foreground">Listing {sourceNoun}…</p>
         ) : sources.data ? (
           <p className="text-sm text-muted-foreground" data-testid="source-count">
             {sources.data.length} selectable {sources.data.length === 1 ? "object" : "objects"}
-            {sources.data.length === 0 ? " at this path" : ""}
+            {sources.data.length === 0 ? ` ${sourcePlace}` : totalBytes > 0 ? ` · ${formatBytes(totalBytes)}` : ""}
             {largerThanSample ? " · larger than a typical sample (10 files / 50 MB)" : ""}
+            {sources.isFetching ? " · refreshing…" : ""}
           </p>
         ) : null
+      ) : sourceKind === "snowflake_stage" ? (
+        <p className="text-sm text-muted-foreground">Stage contents are confirmed when the job starts.</p>
       ) : (
-        <p className="text-sm text-muted-foreground">File count for cloud sources is confirmed when the job starts.</p>
+        <p className="text-sm text-muted-foreground">
+          {sourceKind === "s3"
+            ? "Objects are listed once a bucket is named."
+            : sourceKind === "azure_blob"
+              ? "Blobs are listed once an account URL and container are named."
+              : "Point at files to list them."}
+        </p>
       )}
       {sources.error ? <Alert variant="destructive">{sources.error.message}</Alert> : null}
     </>
@@ -954,7 +983,9 @@ export function IngestionForm({
             </p>
           ) : null}
           {listingFailed ? (
-            <p className="truncate text-sm text-destructive">Listing failed. Start stays disabled until the path lists files.</p>
+            <p className="truncate text-sm text-destructive">
+              Listing failed. Start stays disabled until the source lists {sourceNoun}.
+            </p>
           ) : null}
           {revision ? (
             <p className="truncate text-sm text-muted-foreground" data-testid="revision-summary">
@@ -973,7 +1004,7 @@ export function IngestionForm({
                   : "Drop files before Start."
                 : incompleteSource
                   ? "Fill the required source fields before Start."
-                  : "No files found at this path. Start stays disabled."}
+                  : `No ${sourceNoun} found ${sourcePlace}. Start stays disabled.`}
             </p>
           ) : null}
           {revision ? null : estimate.data && objectCount > 0 ? (
@@ -986,12 +1017,12 @@ export function IngestionForm({
             <p className="truncate text-sm text-muted-foreground">
               {objectCount === 0
                 ? sources.isFetching
-                  ? "Listing files to estimate cost and time…"
-                  : sourceKind === "local_path" || sourceKind === "upload"
-                    ? resolvedPath()
-                      ? "No files found at this path."
+                  ? `Listing ${sourceNoun} to estimate cost and time…`
+                  : browsable
+                    ? `No ${sourceNoun} found ${sourcePlace}.`
+                    : sourceKind === "snowflake_stage"
+                      ? "Cost is estimated after Start lists the stage."
                       : "Point at files to estimate cost and time."
-                    : "Cost is estimated after Start lists the objects."
                 : "Estimating cost and time…"}
             </p>
           ) : null}

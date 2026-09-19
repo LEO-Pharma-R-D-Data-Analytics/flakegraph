@@ -11,7 +11,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     restoreMocks: true,
     env: {
       FLAKEGRAPH_ASK_IGNORE_HUB_SECRETS: "1",

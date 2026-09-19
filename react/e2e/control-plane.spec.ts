@@ -183,9 +183,31 @@ test.describe("ingestion", () => {
     await page.getByLabel("Source kind").click();
     await page.getByRole("option", { name: "Azure Blob" }).click();
     await expect(page.getByLabel("Account URL")).toBeVisible();
+    await expect(page.getByText("Blobs are listed once an account URL and container are named.")).toBeVisible();
     await page.getByLabel("Source kind").click();
     await page.getByRole("option", { name: "S3-compatible bucket" }).click();
     await expect(page.getByLabel("Bucket")).toBeVisible();
+    await expect(page.getByText("Objects are listed once a bucket is named.")).toBeVisible();
+  });
+
+  test("lists a bucket before Start and holds Start to what it lists", async ({ page }) => {
+    await page.goto("/?runtime=local&page=new");
+    await openMoreSources(page);
+    await page.getByLabel("Source kind").click();
+    await page.getByRole("option", { name: "S3-compatible bucket" }).click();
+    const start = page.getByRole("button", { name: "Start", exact: true });
+    await expect(start).toBeDisabled();
+    await page.getByLabel("Bucket").fill("test-corpora");
+    await page.getByLabel("Prefix").fill("martial_arts/");
+    // The fake CLI answers `sources list` with two supported objects.
+    await expect(page.getByTestId("source-count")).toContainText("2 selectable objects", { timeout: 20_000 });
+    await expect(page.getByTestId("source-count")).toContainText("41 KB");
+    await expect(page.getByTestId("credit-envelope")).toBeVisible({ timeout: 20_000 });
+    await expect(start).toBeEnabled();
+    // Naming a bucket that cannot be listed closes Start again with the reason.
+    await page.getByLabel("Bucket").fill("   ");
+    await expect(page.getByText("Objects are listed once a bucket is named.")).toBeVisible();
+    await expect(start).toBeDisabled();
   });
 });
 
