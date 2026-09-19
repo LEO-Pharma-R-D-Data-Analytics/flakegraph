@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 
 async function confirmEnvironmentIfNeeded(page: Page) {
@@ -85,6 +86,28 @@ test.describe("local martial arts graph", () => {
     await page.getByRole("button", { name: "Show minimap" }).click();
     await expect(page.getByTestId("graph-minimap")).toBeVisible();
     await expect(page.getByRole("button", { name: "Export GraphML" })).toBeVisible();
+  });
+
+  test("exports the focused subgraph as JSON and GraphML", async ({ page }) => {
+    await page.goto("/?runtime=local&page=run&run=run_martial_arts");
+    await page.getByPlaceholder("Entity name or description").fill("judo");
+    const [json] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: "Export subgraph" }).click(),
+    ]);
+    expect(json.suggestedFilename()).toMatch(/-subgraph\.json$/);
+    const subgraph = JSON.parse(await readFile(await json.path(), "utf8")) as { nodes: unknown[]; edges: unknown[] };
+    expect(subgraph.nodes.length).toBeGreaterThan(0);
+    expect(subgraph.nodes.length).toBeLessThan(20);
+    const [graphml] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: "Export GraphML" }).click(),
+    ]);
+    expect(graphml.suggestedFilename()).toMatch(/\.graphml$/);
+    const xml = await readFile(await graphml.path(), "utf8");
+    expect(xml).toContain("<graphml");
+    expect(xml.match(/<node /g)?.length).toBe(subgraph.nodes.length);
+    expect(xml.match(/<edge /g)?.length).toBe(subgraph.edges.length);
   });
 
   test("renames a graph from the workspace", async ({ page }) => {
