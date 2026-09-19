@@ -1,0 +1,46 @@
+FlakeGraph worker pools are configured for release {{ .Release.Name }}.
+{{- if .Values.database.bootstrap.enabled }}
+The database bootstrap hook completed before Helm marked this release ready.
+KEDA can now read the dependency-aware worker-demand view.
+{{- else }}
+Database bootstrap was disabled. Ensure the FlakeGraph coordination schema exists
+before submitting work or enabling queue-driven autoscaling.
+{{- end }}
+
+Submit from a trusted client that can reach the same PostgreSQL service:
+  flakegraph distributed submit --config /path/to/config.yaml
+
+Inspect progress:
+  flakegraph distributed status --run-id <run-id> --config /path/to/config.yaml
+
+{{- if .Values.modelServing.enabled }}
+
+Local model serving is enabled. Check replicas and the served model:
+  kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "flakegraph.modelServingName" . }} --timeout=60m
+
+Every engine pod runs behind an authenticating sidecar. Map bearer keys to
+consumer classes in Secret {{ .Values.modelServing.sidecar.keySecret.name }}, key
+{{ .Values.modelServing.sidecar.keySecret.key }}; an unlisted key is refused and
+an unlisted class is served last.
+{{- else }}
+
+Local model serving is disabled. Configure external provider endpoints and models
+in the mounted FlakeGraph config, map credentials through providerSecret.env, or
+enable modelServing in a private values file.
+{{- end }}
+{{- if .Values.gateway.enabled }}
+
+Every consumer resolves one URL: {{ include "flakegraph.gatewayEndpoint" . }}
+Priority class is which alias a virtual key may call —
+{{ .Values.gateway.litellm.aliases.interactive }}, {{ .Values.gateway.litellm.aliases.dev }}, or {{ .Values.gateway.litellm.aliases.batch }}.
+The worker pools hold the batch key, so pipeline consumption is metered beside
+every interactive tenant.
+
+The endpoint picker selects engine pods by label, so no Gateway API Inference
+Extension CRDs are required.
+{{- end }}
+{{- if .Values.documentParsing.enabled }}
+
+Documents are parsed through {{ include "flakegraph.ocrShimEndpoint" . }}, which
+holds and orders work so the parsing pool never returns 409 to a client.
+{{- end }}
