@@ -102,7 +102,11 @@ export function ReviewPanel({
         <p className="text-sm text-muted-foreground">{pins.length} looks-wrong pins. Pins are not deletes.</p>
       ) : null}
       {visible.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No uncertain triples in this confidence window.</p>
+        <p className="text-sm text-muted-foreground">
+          {items.length === 0
+            ? "Nothing is queued for review yet. Sample high-confidence edges here, or flag an edge that looks wrong in Explore."
+            : `All ${items.length} queued triples sit above the ${ceiling.toFixed(2)} ceiling.`}
+        </p>
       ) : null}
       {visible.map((item) => (
         <Card key={item.id}>
