@@ -47,6 +47,7 @@ const child = spawn("bun", ["run", "dev", "--port", port, "--hostname", "127.0.0
     FLAKEGRAPH_APP_STATE_ROOT: stateRoot,
     FLAKEGRAPH_REPOSITORY_ROOT: repo,
     FLAKEGRAPH_STUB_RUNTIMES: "1",
+    FLAKEGRAPH_APP_GRAFANA_URL: "https://grafana.example.test",
     FLAKEGRAPH_CLI: `bun ${path.join(root, "scripts/fake-flakegraph.ts")}`,
   },
 });

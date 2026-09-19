@@ -284,6 +284,8 @@ test.describe("kubernetes fleet", () => {
   test("shows stub nodes and cluster catalog", async ({ page }) => {
     await page.goto("/?runtime=kubernetes&page=fleet");
     await expect(page.getByRole("heading", { name: "Compute fleet" })).toBeVisible();
+    // The dashboards are one click away when the deployment names them.
+    await expect(page.getByRole("link", { name: "Open Grafana" })).toHaveAttribute("href", "https://grafana.example.test");
     await expect(page.getByRole("heading", { name: "gpu-a" })).toBeVisible();
     await expect(page.getByText("Fleet martial arts")).toBeVisible();
     await page.getByRole("button", { name: "Clusters" }).click();

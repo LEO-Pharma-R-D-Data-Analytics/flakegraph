@@ -11,7 +11,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export function FleetView() {
   const cluster = trpc.fleet.cluster.useQuery(undefined, { refetchInterval: 15_000 });
+  const session = trpc.auth.session.useQuery();
   const selected = cluster.data;
+  const grafanaUrl = session.data?.grafanaUrl ?? null;
 
   return (
     <div className="space-y-6">
@@ -20,9 +22,18 @@ export function FleetView() {
         title="Compute fleet"
         description="Registered Kubernetes nodes, colocated model servers, and FlakeGraph workers."
         actions={
-          <Button size="sm" variant="outline" onClick={() => void cluster.refetch()}>
-            Refresh
-          </Button>
+          <>
+            {grafanaUrl ? (
+              <Button size="sm" variant="outline" asChild>
+                <a href={grafanaUrl} target="_blank" rel="noreferrer">
+                  Open Grafana
+                </a>
+              </Button>
+            ) : null}
+            <Button size="sm" variant="outline" onClick={() => void cluster.refetch()}>
+              Refresh
+            </Button>
+          </>
         }
       />
       {cluster.isLoading && !selected ? (

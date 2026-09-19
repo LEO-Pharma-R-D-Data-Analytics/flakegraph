@@ -62,6 +62,7 @@ export const appRouter = router({
         identified: Boolean(ctx.viewer.userName),
         identityFromGate: appEnv().trustIdentityHeaders,
         signOutUrl: process.env.FLAKEGRAPH_APP_SIGN_OUT_URL?.trim() || null,
+        grafanaUrl: process.env.FLAKEGRAPH_APP_GRAFANA_URL?.trim() || null,
         snowflakeHosted: appEnv().snowflakeHosted,
         availableRuntimes: availableRuntimes(),
         repositoryRoot: appEnv().repositoryRoot,

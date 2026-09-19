@@ -11,8 +11,11 @@ from typing import Any
 import yaml
 from helm import FULLNAME as _FULLNAME
 from helm import NAMESPACE as _NAMESPACE
+from helm import container as _container
+from helm import env as _env
 from helm import fails as _fails
 from helm import one as _one
+from helm import pod as _pod
 from helm import render as _render
 from helm import schema as _schema
 from helm import values as _values
@@ -286,6 +289,17 @@ def test_grafana_shares_the_fleets_front_door() -> None:
         *values["controlPlane"]["networkPolicy"]["from"],
         {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "prometheus"}}},
     ]
+
+    # The console's fleet page links to the dashboards by that same host, and
+    # only when they exist to link to.
+    console = _env(
+        _container(_pod(_one(rendered, "Deployment", f"{_FULLNAME}-app")), "control-plane")
+    )
+    assert console["FLAKEGRAPH_APP_GRAFANA_URL"]["value"] == f"https://{grafana_host}"
+    without = _env(
+        _container(_pod(_one(_render(()), "Deployment", f"{_FULLNAME}-app")), "control-plane")
+    )
+    assert "FLAKEGRAPH_APP_GRAFANA_URL" not in without
 
 
 def test_alerts_cover_each_plane_and_take_every_threshold_from_values(tmp_path: Path) -> None:
