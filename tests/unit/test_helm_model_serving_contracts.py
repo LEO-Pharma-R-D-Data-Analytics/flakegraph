@@ -470,6 +470,9 @@ def test_the_console_runs_the_fleet_the_way_the_workers_do() -> None:
         "name": "ask",
         "key": values["controlPlane"]["ask"]["secretKey"],
     }
+    # Helper calls (planning, scoring, suggestions) ask the reasoning model
+    # for no reasoning: measured 15 s against 2.7 s for one plan.
+    assert env["FLAKEGRAPH_ASK_STRUCTURED_REASONING"]["value"] == "none"
     assert {
         probe["httpGet"]["path"]
         for probe in (console["startupProbe"], console["readinessProbe"], console["livenessProbe"])

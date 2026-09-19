@@ -922,7 +922,7 @@
         "ask": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["secretName", "secretKey", "model"],
+          "required": ["secretName", "secretKey", "model", "structuredReasoning"],
           "properties": {
             "secretName": {
               "type": "string"
@@ -934,6 +934,10 @@
             "model": {
               "type": "string",
               "minLength": 1
+            },
+            "structuredReasoning": {
+              "type": "string",
+              "enum": ["none", "minimal", "low", "medium", "high", "inherit"]
             }
           }
         },

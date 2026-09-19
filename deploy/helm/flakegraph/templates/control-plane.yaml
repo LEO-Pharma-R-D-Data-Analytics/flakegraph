@@ -219,6 +219,8 @@ spec:
               value: {{ include "flakegraph.gatewayEndpoint" . | quote }}
             - name: FLAKEGRAPH_ASK_MODEL
               value: {{ $controlPlane.ask.model | quote }}
+            - name: FLAKEGRAPH_ASK_STRUCTURED_REASONING
+              value: {{ $controlPlane.ask.structuredReasoning | quote }}
             - name: FLAKEGRAPH_ASK_API_KEY
               valueFrom:
                 secretKeyRef:

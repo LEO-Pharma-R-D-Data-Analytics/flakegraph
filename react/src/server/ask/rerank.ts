@@ -147,6 +147,7 @@ async function rerankWithLlm<T>(args: {
       const result = await generateText({
         model: model.languageModel,
         output: Output.object({ schema: RelevanceSchema }),
+        ...model.structuredOptions,
         temperature: 0,
         abortSignal: AbortSignal.timeout(RERANK_LLM_CALL_TIMEOUT_MS),
         instructions: prompt.system,

@@ -39,6 +39,7 @@ export async function planQueryRetrieval(query: string): Promise<QueryRetrievalP
     const result = await generateText({
       model: model.languageModel,
       output: Output.object({ schema: QueryPlanSchema }),
+      ...model.structuredOptions,
       instructions: `You plan retrieval for a graph-based RAG system. Given a user question, return JSON with:
 
 - mode: "local" for questions about specific named entities / relationships; "global" for overarching themes, summaries, and cross-document patterns; "hybrid" when the question mixes both.

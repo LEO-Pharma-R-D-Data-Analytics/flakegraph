@@ -650,6 +650,14 @@ controlPlane:
     secretName: ""
     secretKey: FLAKEGRAPH_ASK_API_KEY
     model: llm-interactive
+    # Reasoning effort for the console's structured helper calls (query
+    # planning, relevance scoring, follow-up questions, type suggestions),
+    # sent as `reasoning_effort`. They are classification tasks; a reasoning
+    # model's free-form thinking multiplies their latency (15 s against 2.7 s
+    # for one plan) without changing the verdict. `inherit` sends nothing and
+    # lets the model decide; the answer itself always reasons as the model
+    # sees fit.
+    structuredReasoning: none
   resources:
     requests:
       cpu: 250m

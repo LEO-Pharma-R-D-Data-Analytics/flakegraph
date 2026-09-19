@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createAzure } from "@ai-sdk/azure";
 import { createOpenAI } from "@ai-sdk/openai";
+import type { SharedV4ProviderOptions as ProviderOptions } from "@ai-sdk/provider";
 import type { LanguageModel } from "ai";
 import {
   DEFAULT_AZURE_API_VERSION,
@@ -18,6 +19,33 @@ export interface AskModel {
   provider: "azure" | "openai" | "ollama";
   modelId: string;
   billed: boolean;
+  /**
+   * Call options for the structured helper calls - planning, scoring, follow-up
+   * questions, type suggestions - as opposed to the answer itself.
+   *
+   * They are classification tasks whose output is a small JSON object, and a
+   * reasoning model's free-form thinking multiplies their latency without
+   * changing the verdict: the query planner measured 15 s thinking against
+   * 2.7 s without, and a search runs dozens of scoring calls. So they ask for
+   * no reasoning effort unless `FLAKEGRAPH_ASK_STRUCTURED_REASONING` says
+   * otherwise (`inherit` sends nothing and lets the model decide).
+   */
+  structuredOptions: { providerOptions?: ProviderOptions };
+}
+
+const STRUCTURED_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "inherit"] as const;
+type StructuredReasoning = (typeof STRUCTURED_REASONING_EFFORTS)[number];
+
+function structuredOptions(env: Record<string, string | undefined>): AskModel["structuredOptions"] {
+  const raw = env.FLAKEGRAPH_ASK_STRUCTURED_REASONING?.trim() || "none";
+  const effort = (STRUCTURED_REASONING_EFFORTS as readonly string[]).includes(raw) ? (raw as StructuredReasoning) : null;
+  if (effort === null) {
+    throw new Error(
+      `FLAKEGRAPH_ASK_STRUCTURED_REASONING is "${raw}"; expected one of ${STRUCTURED_REASONING_EFFORTS.join(", ")}.`,
+    );
+  }
+  // Azure serves the same chat model class, so both read the openai options.
+  return effort === "inherit" ? {} : { providerOptions: { openai: { reasoningEffort: effort } } };
 }
 
 let cached: AskModel | null | undefined;
@@ -80,6 +108,7 @@ export function askModelConfigured(): boolean {
 
 function loadAskModel(): AskModel | null {
   const env = { ...loadOptionalSecretFile(), ...process.env };
+  const structured = structuredOptions(env);
   const askKey = first(env, [
     "FLAKEGRAPH_ASK_API_KEY",
     "AZURE_OPENAI_API_KEY",
@@ -103,6 +132,7 @@ function loadAskModel(): AskModel | null {
       provider: "azure",
       modelId: askModel,
       billed: true,
+      structuredOptions: structured,
     };
   }
 
@@ -113,6 +143,7 @@ function loadAskModel(): AskModel | null {
       provider: "openai",
       modelId: askModel,
       billed: true,
+      structuredOptions: structured,
     };
   }
 
@@ -128,6 +159,7 @@ function loadAskModel(): AskModel | null {
       provider: "ollama",
       modelId: ollamaModel,
       billed: false,
+      structuredOptions: structured,
     };
   }
 

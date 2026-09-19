@@ -39,7 +39,13 @@ function jsonModel(): AskModel {
       };
     },
   });
-  return { languageModel, provider: "openai", modelId: "llm-interactive", billed: false };
+  return {
+    languageModel,
+    provider: "openai",
+    modelId: "llm-interactive",
+    billed: false,
+    structuredOptions: { providerOptions: { openai: { reasoningEffort: "none" } } },
+  };
 }
 
 vi.mock("./model", async (importOriginal) => {
@@ -70,6 +76,8 @@ describe("console calls to the language model", () => {
     expect(plan).toEqual({ mode: "local", highLevelKeywords: ["judo history"], lowLevelKeywords: ["Jigoro Kano"] });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.prompt.map((message) => message.role)).toEqual(["system", "user"]);
+    // A helper call asks for no reasoning: the plan is the same, tens of seconds sooner.
+    expect(calls[0]?.providerOptions?.openai?.reasoningEffort).toBe("none");
   });
 
   it("reranks entities by the model's scores", async () => {

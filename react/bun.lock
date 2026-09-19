@@ -7,6 +7,7 @@
       "dependencies": {
         "@ai-sdk/azure": "^4.0.74",
         "@ai-sdk/openai": "^4.0.70",
+        "@ai-sdk/provider": "4.0.17",
         "@ai-sdk/react": "^4.0.109",
         "@effect/platform": "^0.97.2",
         "@effect/platform-node": "^0.108.2",

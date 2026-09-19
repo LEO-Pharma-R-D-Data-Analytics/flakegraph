@@ -63,6 +63,7 @@ export async function proposeOntologyForIntent(
       const result = await generateText({
         model: model.languageModel,
         output: Output.object({ schema: ProposalSchema }),
+        ...model.structuredOptions,
         temperature: 0,
         abortSignal: AbortSignal.timeout(PROPOSAL_TIMEOUT_MS),
         instructions: SYSTEM,

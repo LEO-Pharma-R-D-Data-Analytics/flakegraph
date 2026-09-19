@@ -59,6 +59,8 @@ text.
 | `FLAKEGRAPH_TRUST_IDENTITY_HEADERS` | Trust oauth2-proxy identity headers |
 | `DATABASE_URL` | Optional Postgres for `flakegraph_run` listing |
 | `FLAKEGRAPH_APP_KUBERNETES_NAMESPACE` | Default fleet namespace |
+| `FLAKEGRAPH_ASK_BASE_URL`, `FLAKEGRAPH_ASK_MODEL`, `FLAKEGRAPH_ASK_API_KEY` | The language model behind Ask and type suggestions (OpenAI-compatible or Azure) |
+| `FLAKEGRAPH_ASK_STRUCTURED_REASONING` | `reasoning_effort` for planning, scoring, follow-ups and suggestions: `none` (default) … `high`, or `inherit` |
 
 Pages never import a runtime module. tRPC procedures call the `ControlPlane`
 interface; Effect Schema is the source of truth for `IngestionRequest`,

@@ -53,6 +53,7 @@ export async function generateDriftFollowUps(
     const result = await generateText({
       model: model.languageModel,
       output: Output.object({ schema: FollowUpsSchema }),
+      ...model.structuredOptions,
       instructions: `You plan multi-hop retrieval for a graph RAG system. Given a user question and community-level primers, generate ${DRIFT_FOLLOWUP_COUNT} targeted sub-questions whose answers together cover the user's question.
 
 Rules:
