@@ -904,14 +904,55 @@ test.describe("remaining report journeys", () => {
 
   test("forgets selected catalog rows in bulk", async ({ page }) => {
     await page.goto("/?runtime=local&page=new");
-    const checkbox = page.locator('input[type="checkbox"][aria-label^="Select "]').first();
+    const bar = page.getByTestId("catalog-selection");
+    const checkbox = page.locator('input[type="checkbox"][aria-label^="Select "]:not([disabled]):not([aria-label="Select all shown graphs"])').first();
     await expect(checkbox).toBeVisible();
     const label = await checkbox.getAttribute("aria-label");
     expect(label).toBeTruthy();
     await checkbox.check();
+    await expect(bar).toContainText("1 of");
+    // The forget asks first, naming what goes, and Cancel keeps everything.
+    await page.getByRole("button", { name: "Forget selected" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Forget this graph?");
+    await expect(dialog).toContainText(label!.replace(/^Select /, ""));
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByLabel(label!)).toBeChecked();
     await page.getByRole("button", { name: "Forget selected" }).click();
     await page.getByRole("button", { name: "Confirm forget" }).click();
     await expect(page.getByLabel(label!)).toHaveCount(0);
+    await expect(bar).toContainText("Select all");
+  });
+
+  test("selects every shown graph at once, leaving running ones out", async ({ page }) => {
+    await page.goto("/?runtime=kubernetes&page=new");
+    const bar = page.getByTestId("catalog-selection");
+    const rowBoxes = 'input[type="checkbox"][aria-label^="Select "]:not([aria-label="Select all shown graphs"])';
+    const rows = page.locator(rowBoxes);
+    const forgettable = page.locator(`${rowBoxes}:not([disabled])`);
+    const running = page.locator(`${rowBoxes}[disabled]`);
+    await expect(forgettable.first()).toBeVisible();
+    const shown = await forgettable.count();
+    expect(await running.count()).toBeGreaterThan(0);
+    await bar.getByLabel("Select all shown graphs").check();
+    await expect(bar).toContainText(`${shown} of ${shown} selected`);
+    for (const box of await forgettable.all()) {
+      await expect(box).toBeChecked();
+    }
+    for (const box of await running.all()) {
+      await expect(box).not.toBeChecked();
+    }
+    // A filter hides some of the selection without dropping it.
+    await page.getByLabel("Search graphs").fill("judo");
+    await expect(bar).toContainText("not shown");
+    await page.getByLabel("Search graphs").fill("");
+    // The dialog lists the whole selection; Clear puts it away.
+    await page.getByRole("button", { name: "Forget selected" }).click();
+    await expect(page.getByRole("dialog")).toContainText(`Forget ${shown} graphs?`);
+    await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+    await bar.getByRole("button", { name: "Clear" }).click();
+    await expect(bar).toContainText(`Select all ${shown}`);
+    expect(await rows.count()).toBeGreaterThan(0);
   });
 
   test("shows a cancelling leftover-lease sentence", async ({ page }) => {

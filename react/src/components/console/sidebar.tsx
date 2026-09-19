@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Boxes, ChevronRight, KeyRound, Plus, Search, Server, ShieldAlert, Trash2 } from "lucide-react";
 import { trpc } from "@/components/providers";
 import { Badge } from "@/components/ui/badge";
@@ -59,7 +59,9 @@ export function Sidebar(props: SidebarProps) {
   const [identityOpen, setIdentityOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [pendingForget, setPendingForget] = useState<string | null>(null);
-  const [confirmBulkForget, setConfirmBulkForget] = useState(false);
+  const [bulkForgetOpen, setBulkForgetOpen] = useState(false);
+  // Where the last checkbox click landed, so shift-click can take the range.
+  const lastToggled = useRef<string | null>(null);
   const utils = trpc.useUtils();
   const runs = trpc.runs.list.useQuery({ limit: 100 }, { refetchInterval: 4_000 });
   const forget = trpc.runs.forget.useMutation({
@@ -74,6 +76,7 @@ export function Sidebar(props: SidebarProps) {
     onSuccess: async (result, variables) => {
       toast.success(`Forgot ${result.forgotten} graphs from this catalog.`);
       setSelected([]);
+      setBulkForgetOpen(false);
       await runs.refetch();
       for (const id of variables.runIds) {
         props.onForgotten?.(id);
@@ -148,6 +151,36 @@ export function Sidebar(props: SidebarProps) {
     identified: props.identified,
     analyst,
   });
+
+  const canForgetRows = props.capabilities.has("forget") && !analyst;
+  // What a bulk forget can take: the rows the filters show, minus anything
+  // still running - those keep their workers until cancelled, so the row
+  // offers no forget either.
+  const selectable = useMemo(
+    () => filtered.filter((run) => !isActiveStatus(run.status)).map((run) => run.runId),
+    [filtered],
+  );
+  const selectedShown = selectable.filter((id) => selected.includes(id));
+  const selectedHidden = selected.length - selectedShown.length;
+  const allShownSelected = selectable.length > 0 && selectedShown.length === selectable.length;
+  const selectedRuns = (runs.data ?? []).filter((run) => selected.includes(run.runId));
+
+  function toggleRow(runId: string, shift: boolean) {
+    setSelected((current) => {
+      const adding = !current.includes(runId);
+      let ids = [runId];
+      const anchor = lastToggled.current;
+      if (shift && anchor && anchor !== runId) {
+        const from = selectable.indexOf(anchor);
+        const to = selectable.indexOf(runId);
+        if (from >= 0 && to >= 0) {
+          ids = selectable.slice(Math.min(from, to), Math.max(from, to) + 1);
+        }
+      }
+      lastToggled.current = runId;
+      return adding ? [...current, ...ids.filter((id) => !current.includes(id))] : current.filter((id) => !ids.includes(id));
+    });
+  }
 
   const go = (action: () => void) => {
     action();
@@ -434,26 +467,32 @@ export function Sidebar(props: SidebarProps) {
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-0.5 px-3 pb-8">
-          {props.capabilities.has("forget") && !analyst && selected.length > 0 ? (
-            <div className="mb-2 flex items-center justify-between gap-2 px-1">
-              <p className="text-xs text-muted-foreground">{selected.length} selected</p>
-              <Button
-                size="sm"
-                variant={confirmBulkForget ? "destructive" : "outline"}
-                disabled={forgetMany.isPending}
-                onClick={() => {
-                  if (!confirmBulkForget) {
-                    setConfirmBulkForget(true);
-                    return;
-                  }
-                  forgetMany.mutate({ runIds: selected });
-                  setConfirmBulkForget(false);
-                }}
-              >
-                {confirmBulkForget ? "Confirm forget" : "Forget selected"}
-              </Button>
-            </div>
+          {canForgetRows && (filtered.length > 0 || selected.length > 0) ? (
+            <SelectionBar
+              shown={selectable.length}
+              selected={selected.length}
+              selectedShown={selectedShown.length}
+              selectedHidden={selectedHidden}
+              allShownSelected={allShownSelected}
+              onSelectAll={() =>
+                setSelected((current) =>
+                  allShownSelected
+                    ? current.filter((id) => !selectable.includes(id))
+                    : [...current, ...selectable.filter((id) => !current.includes(id))],
+                )
+              }
+              onClear={() => setSelected([])}
+              onForget={() => setBulkForgetOpen(true)}
+            />
           ) : null}
+          <BulkForgetDialog
+            open={bulkForgetOpen}
+            onOpenChange={setBulkForgetOpen}
+            runs={selectedRuns}
+            pending={forgetMany.isPending}
+            canDelete={props.capabilities.has("delete_graph")}
+            onConfirm={() => forgetMany.mutate({ runIds: selected })}
+          />
           {runs.isLoading && !runs.data ? (
             <div className="space-y-2 px-1" aria-busy="true" aria-label="Loading graphs">
               <Skeleton className="h-12 w-full" />
@@ -481,14 +520,10 @@ export function Sidebar(props: SidebarProps) {
               key={run.runId}
               run={run}
               selected={props.selectedRunId === run.runId && props.page === "run"}
-              canForget={props.capabilities.has("forget") && !analyst}
+              canForget={canForgetRows}
               canDelete={props.capabilities.has("delete_graph")}
               checked={selected.includes(run.runId)}
-              onToggle={() =>
-                setSelected((current) =>
-                  current.includes(run.runId) ? current.filter((id) => id !== run.runId) : [...current, run.runId],
-                )
-              }
+              onToggle={(shift) => toggleRow(run.runId, shift)}
               onSelect={() => go(() => props.onSelectRun(run.runId))}
               onForget={() => {
                 if (pendingForget !== run.runId) {
@@ -548,11 +583,12 @@ function RunRow({
   canDelete: boolean;
   checked: boolean;
   confirmingForget: boolean;
-  onToggle: () => void;
+  onToggle: (shift: boolean) => void;
   onSelect: () => void;
   onForget: () => void;
 }) {
   const name = run.graphName || run.graphId;
+  const active = isActiveStatus(run.status);
   return (
     <div
       className={cn(
@@ -562,7 +598,16 @@ function RunRow({
       )}
     >
       {canForget ? (
-        <input type="checkbox" className="mt-1" aria-label={`Select ${run.graphName || run.graphId}`} checked={checked} onChange={onToggle} />
+        <input
+          type="checkbox"
+          className="mt-1 disabled:opacity-40"
+          aria-label={`Select ${name}`}
+          title={active ? "Still running - cancel it before forgetting it" : undefined}
+          disabled={active}
+          checked={checked}
+          onClick={(event) => onToggle(event.shiftKey)}
+          onChange={() => undefined}
+        />
       ) : null}
       <button type="button" className="min-w-0 flex-1 text-left" onClick={onSelect}>
         <span className="block truncate text-[13px] font-medium leading-tight">{run.graphName || run.graphId}</span>
@@ -606,6 +651,136 @@ function RunRow({
         )
       ) : null}
     </div>
+  );
+}
+
+/**
+ * One row above the list that makes a selection visible and actionable:
+ * a tri-state box selects or clears every row the filters show, the count
+ * says what is held (and what a filter hides), and the forget asks first.
+ */
+function SelectionBar({
+  shown,
+  selected,
+  selectedShown,
+  selectedHidden,
+  allShownSelected,
+  onSelectAll,
+  onClear,
+  onForget,
+}: {
+  shown: number;
+  selected: number;
+  selectedShown: number;
+  selectedHidden: number;
+  allShownSelected: boolean;
+  onSelectAll: () => void;
+  onClear: () => void;
+  onForget: () => void;
+}) {
+  const box = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (box.current) {
+      box.current.indeterminate = selectedShown > 0 && !allShownSelected;
+    }
+  }, [selectedShown, allShownSelected]);
+  return (
+    <div
+      className={cn(
+        "mb-1.5 flex h-8 items-center gap-2 rounded-md px-2 text-xs",
+        selected > 0 ? "bg-accent text-foreground" : "text-muted-foreground",
+      )}
+      data-testid="catalog-selection"
+    >
+      <input
+        ref={box}
+        type="checkbox"
+        aria-label={allShownSelected ? "Clear the shown graphs" : "Select all shown graphs"}
+        title={shown === 0 ? "Nothing shown can be forgotten" : undefined}
+        disabled={shown === 0}
+        checked={allShownSelected}
+        onChange={onSelectAll}
+      />
+      <span className="min-w-0 flex-1 truncate">
+        {selected === 0
+          ? `Select all ${shown}`
+          : selectedHidden > 0
+            ? `${selected} selected · ${selectedHidden} not shown`
+            : `${selected} of ${shown} selected`}
+      </span>
+      {selected > 0 ? (
+        <>
+          <Button size="sm" variant="ghost" className="h-6 px-1.5 text-xs" onClick={onClear}>
+            Clear
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label="Forget selected"
+            className="h-6 border-destructive/40 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+            onClick={onForget}
+          >
+            <Trash2 className="mr-1 size-3" aria-hidden="true" />
+            Forget {selected}
+          </Button>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+const DIALOG_NAME_LIMIT = 8;
+
+function BulkForgetDialog({
+  open,
+  onOpenChange,
+  runs,
+  pending,
+  canDelete,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  runs: RunSnapshot[];
+  pending: boolean;
+  canDelete: boolean;
+  onConfirm: () => void;
+}) {
+  const count = runs.length;
+  const shown = runs.slice(0, DIALOG_NAME_LIMIT);
+  return (
+    <Dialog open={open} onOpenChange={(next) => (pending ? undefined : onOpenChange(next))}>
+      <DialogContent aria-describedby="bulk-forget-description">
+        <DialogHeader>
+          <DialogTitle>Forget {count === 1 ? "this graph" : `${count} graphs`}?</DialogTitle>
+          <DialogDescription id="bulk-forget-description">
+            {count === 1 ? "It leaves" : "They leave"} this catalog.{" "}
+            {canDelete
+              ? "Stored files stay until Delete graph, and a graph can be opened again by its run."
+              : "Stored files are not deleted, and a graph can be opened again by its run."}
+          </DialogDescription>
+        </DialogHeader>
+        <ul className="mb-5 max-h-56 space-y-1 overflow-y-auto rounded-md border border-border bg-muted/30 p-2 text-sm">
+          {shown.map((run) => (
+            <li key={run.runId} className="flex items-baseline justify-between gap-3">
+              <span className="truncate font-medium">{run.graphName || run.graphId}</span>
+              <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{run.runId}</span>
+            </li>
+          ))}
+          {count > shown.length ? (
+            <li className="text-xs text-muted-foreground">and {count - shown.length} more</li>
+          ) : null}
+        </ul>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button variant="destructive" aria-label="Confirm forget" disabled={pending || count === 0} onClick={onConfirm}>
+            {pending ? "Forgetting…" : `Forget ${count === 1 ? "graph" : `${count} graphs`}`}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
