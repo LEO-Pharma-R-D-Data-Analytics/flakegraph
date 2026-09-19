@@ -420,6 +420,31 @@ test.describe("kubernetes fleet", () => {
     await expect(page.getByRole("main").getByText("queued", { exact: false }).first()).toBeVisible({ timeout: 30_000 });
   });
 
+  test("pages a graph with many versions, head first, the viewed one next", async ({ page }) => {
+    await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_kata_03");
+    await expect(page.getByRole("heading", { name: "Revised kata" })).toBeVisible();
+    await page.getByRole("tab", { name: "Versions" }).click();
+    const versions = page.getByTestId("graph-versions");
+    await expect(page.getByTestId("graph-versions-count")).toHaveText("14 versions");
+    // A header row and a page of ten: the head, then the version on screen,
+    // then the rest newest first.
+    const rows = versions.getByRole("row");
+    await expect(rows).toHaveCount(11);
+    await expect(rows.nth(1)).toContainText("v14");
+    await expect(rows.nth(1)).toContainText("head");
+    await expect(rows.nth(2)).toContainText("v3");
+    await expect(rows.nth(2)).toContainText("viewing");
+    await expect(rows.nth(2).getByRole("button", { name: "Open" })).toHaveCount(0);
+    await expect(rows.nth(3)).toContainText("v13");
+    await expect(versions).toContainText("Showing 10 of 14 versions");
+    await versions.getByRole("button", { name: "Show 4 more" }).click();
+    await expect(rows).toHaveCount(15);
+    await expect(versions.getByTestId("show-more")).toHaveCount(0);
+    await expect(rows.last()).toContainText("v1");
+    await rows.nth(1).getByRole("button", { name: "Open" }).click();
+    await expect(page).toHaveURL(/run=run_k8s_kata_14/);
+  });
+
   test("cancels an in-flight fleet run and retries a failed one", async ({ page }) => {
     await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_martial");
     await expect(page.getByRole("heading", { name: "Fleet martial arts" })).toBeVisible();
@@ -805,6 +830,41 @@ test.describe("remaining report journeys", () => {
     await expect(page.getByText(/Recorded keep/i)).toBeVisible();
   });
 
+  test("pages the workspace's own versions, production first", async ({ page }) => {
+    await page.goto("/?runtime=local&page=run&run=run_martial_arts");
+    await page.getByRole("tab", { name: "Versions" }).click();
+    const versions = page.getByTestId("workspace-versions");
+    const items = versions.getByRole("listitem");
+    await expect(items).toHaveCount(10);
+    await expect(items.first()).toContainText("v12");
+    await expect(items.first()).toContainText("production");
+    await expect(items.nth(1)).toContainText("v11");
+    await expect(page.getByText("Showing 10 of 12 versions")).toBeVisible();
+    await page.getByRole("button", { name: "Show 2 more" }).click();
+    await expect(items).toHaveCount(12);
+    await expect(items.last()).toHaveText(/^v1 ·/);
+  });
+
+  test("pages the missing gold relations and the run's event log", async ({ page }) => {
+    await page.goto("/?runtime=local&page=run&run=run_martial_thin");
+    await expect(page.getByRole("heading", { name: "Thin martial arts extract" })).toBeVisible();
+    await page.getByRole("tab", { name: "Quality" }).click();
+    const missing = page.getByTestId("missing-required");
+    await expect(missing).toContainText(/\d+ required relations are missing\./);
+    await expect(missing.getByRole("listitem")).toHaveCount(12);
+    await expect(missing).toContainText(/Showing 12 of \d+ missing relations/);
+    await missing.getByRole("button", { name: "Show 12 more" }).click();
+    await expect(missing.getByRole("listitem")).toHaveCount(24);
+    // The events card is a tail of the log and says so.
+    await page.getByRole("tab", { name: "Run details" }).click();
+    await expect(page.getByTestId("recent-events-count")).toHaveText("Last 30 of 40 events");
+    const details = page.getByTestId("recent-events");
+    await expect(details.getByRole("listitem")).toHaveCount(30);
+    await details.getByRole("button", { name: "Show 10 more" }).click();
+    await expect(details.getByRole("listitem")).toHaveCount(40);
+    await expect(page.getByTestId("recent-events-count")).toHaveText("40 events");
+  });
+
   test("ingests new files from a watch", async ({ page }) => {
     await page.goto("/?runtime=local&page=run&run=run_martial_arts");
     await page.getByRole("tab", { name: "Versions" }).click();
@@ -880,11 +940,27 @@ test.describe("remaining report journeys", () => {
     const catalog = await docs.json();
     expect(catalog.endpoint).toContain("/api/trpc");
     expect(catalog.procedures.some((item: { name: string }) => item.name === "runs.list")).toBeTruthy();
+    // The seeded deployment already holds more keys than one page: the list
+    // says so, pages, and narrows by name.
+    const keyList = page.getByTestId("sdk-key-list");
+    await expect(page.getByTestId("sdk-key-count")).toHaveText("30 keys");
+    await expect(keyList.getByRole("listitem")).toHaveCount(25);
+    await expect(keyList).toContainText("Showing 25 of 30 keys");
+    await keyList.getByRole("button", { name: "Show 5 more" }).click();
+    await expect(keyList.getByRole("listitem")).toHaveCount(30);
+    await expect(keyList.getByTestId("show-more")).toHaveCount(0);
+    await keyList.getByLabel("Search keys").fill("deploy-bot");
+    await expect(page.getByTestId("sdk-key-count")).toHaveText("10 of 30 keys");
+    await expect(keyList.getByRole("listitem")).toHaveCount(10);
+    await keyList.getByLabel("Search keys").fill("");
     await page.getByRole("button", { name: "Create a key" }).click();
     await expect(page.getByText(/Copy now:/)).toBeVisible();
     const secretLine = await page.getByText(/Copy now:/).innerText();
     const secret = secretLine.replace(/^.*Copy now:\s*/, "").trim();
     expect(secret).toMatch(/^fg_/);
+    // The key just made is the newest, so it heads the list.
+    await expect(page.getByTestId("sdk-key-count")).toHaveText("31 keys");
+    await expect(keyList.getByRole("listitem").first()).toContainText("ci-eval");
     const listed = await page.request.get(
       `/api/trpc/runs.list?input=${encodeURIComponent(JSON.stringify({ json: { limit: 5 } }))}`,
       { headers: { Authorization: `Bearer ${secret}` } },
@@ -895,10 +971,12 @@ test.describe("remaining report journeys", () => {
       { headers: { Authorization: "Bearer fg_revoked_or_wrong" } },
     );
     expect(denied.status()).toBe(401);
-    await expect(page.getByRole("button", { name: "Revoke" })).toBeVisible();
-    await page.getByRole("button", { name: "Revoke" }).click();
-    await page.getByRole("button", { name: "Confirm revoke" }).click();
-    await expect(page.getByText("No machine keys yet")).toBeVisible();
+    await keyList.getByLabel("Search keys").fill("ci-eval");
+    await expect(page.getByTestId("sdk-key-count")).toHaveText("1 of 31 keys");
+    await page.getByRole("button", { name: "Revoke ci-eval" }).click();
+    await page.getByRole("button", { name: "Confirm revoke ci-eval" }).click();
+    await expect(keyList).toContainText("No key matches this search.");
+    await expect(page.getByTestId("sdk-key-count")).toHaveText("0 of 30 keys");
     const afterRevoke = await page.request.get(
       `/api/trpc/runs.list?input=${encodeURIComponent(JSON.stringify({ json: { limit: 5 } }))}`,
       { headers: { Authorization: `Bearer ${secret}` } },

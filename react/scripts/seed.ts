@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import { writeRunRecord } from "../src/server/catalog";
 import { makeProgressRecord } from "../src/server/progress";
 import { atomicWriteJson } from "../src/server/catalog";
 import { loadEnv } from "../src/server/env";
+import { hashApiSecret } from "../src/server/api-keys";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -59,6 +61,7 @@ async function main() {
     graphName: "Bulk forget me",
     status: "succeeded",
   });
+  await seedThinGoldDataset(stateRoot);
   await seedActiveRun(stateRoot);
   await seedUnavailableRun(stateRoot);
   await seedFailedRun(stateRoot);
@@ -110,6 +113,72 @@ async function seedGoldDataset(options: {
   });
   await persistName(options.stateRoot, options.graphId, options.graphName);
 }
+
+/**
+ * A martial-arts graph that found three entities and little else. Quality
+ * compares it to the full gold file, so nearly every required relation is
+ * missing: the list the Quality tab has to page.
+ */
+async function seedThinGoldDataset(stateRoot: string) {
+  const goldPath = path.join(repoRoot, "data/martial_arts/gold.json");
+  const gold = JSON.parse(await readFile(goldPath, "utf8")) as GoldGraph;
+  const kept = new Set((gold.entities ?? []).slice(0, 3).map((entity) => entity.id));
+  const thin: GoldGraph = {
+    ...gold,
+    entities: (gold.entities ?? []).filter((entity) => kept.has(entity.id)),
+    relations: (gold.relations ?? []).filter((relation) => kept.has(relation.source) && kept.has(relation.target)),
+  };
+  const graphId = "graph_martial_thin";
+  const outputPath = path.join(stateRoot, "graphs", graphId);
+  await writeDataset(outputPath, goldToDataset(thin, graphId));
+  await writeRunRecord(path.join(stateRoot, "runs", "run_martial_thin"), {
+    runId: "run_martial_thin",
+    graphId,
+    graphName: "Thin martial arts extract",
+    status: "succeeded",
+    runtime: "local",
+    startedAt: "2026-08-20T10:00:00.000Z",
+    updatedAt: "2026-08-20T10:30:00.000Z",
+    outputPath,
+    storageKind: "local_files",
+    storageLocation: outputPath,
+    documentsTotal: gold.documents?.length ?? 0,
+    documentsCompleted: gold.documents?.length ?? 0,
+    documentsFailed: 0,
+    nodeCount: thin.entities?.length ?? 0,
+    owner: "ALICE",
+    sourceKind: "local_path",
+    sourcePath: "data/martial_arts/files",
+    ocrProvider: "builtin_text",
+    llmProvider: "ollama",
+    embeddingProvider: "sentence_transformers",
+  });
+  await persistName(stateRoot, graphId, "Thin martial arts extract");
+  // Enough progress events that the run's details show a tail of the log,
+  // not all of it.
+  const events = Array.from({ length: THIN_RUN_PAGES }, (_, index) => `page-${String(index + 1).padStart(2, "0")}.md`).flatMap(
+    (fileId, index) =>
+      ["ocr", "extract"].map((stage, offset) =>
+        makeProgressRecord({
+          timestamp: `2026-08-20T10:${String(index).padStart(2, "0")}:${offset ? "30" : "00"}.000Z`,
+          stage,
+          status: "completed",
+          fileId,
+          message: null,
+          elapsedMs: 100,
+          counts: {},
+        }),
+      ),
+  );
+  await writeFile(
+    path.join(stateRoot, "runs", "run_martial_thin", "events.jsonl"),
+    events.map((event) => JSON.stringify(event)).join("\n") + "\n",
+    "utf8",
+  );
+}
+
+/** Documents the thin run logged: two events each, more than one page of the events card. */
+const THIN_RUN_PAGES = 20;
 
 async function seedActiveRun(stateRoot: string) {
   const runId = "run_active_ocr";
@@ -444,7 +513,38 @@ async function seedKubernetes(stateRoot: string) {
     embeddingProvider: "sentence_transformers",
     owner: "ALICE",
   });
+  // A graph rebuilt every few days: more versions than one page of the
+  // versions list holds. Dated before the other fixtures so the newest
+  // catalog rows stay what the other journeys expect.
+  for (let index = 1; index <= MANY_VERSIONS; index += 1) {
+    const day = String(index).padStart(2, "0");
+    await writeRunRecord(path.join(stateRoot, "runs", `run_k8s_kata_${day}`), {
+      runId: `run_k8s_kata_${day}`,
+      graphId: "graph_k8s_kata",
+      graphName: "Revised kata",
+      status: "succeeded",
+      runtime: "kubernetes",
+      startedAt: `2026-08-${day}T00:00:00.000Z`,
+      updatedAt: `2026-08-${day}T01:00:00.000Z`,
+      outputPath: path.join(stateRoot, "graphs", "graph_martial_arts"),
+      storageKind: "local_files",
+      storageLocation: path.join(stateRoot, "graphs", "graph_martial_arts"),
+      documentsTotal: 2,
+      documentsCompleted: 2,
+      documentsFailed: 0,
+      sourceKind: "upload",
+      sourcePath: path.join(stateRoot, "uploads", "kata"),
+      ocrProvider: "fallback",
+      llmProvider: "vllm_local",
+      embeddingProvider: "sentence_transformers",
+      owner: "ALICE",
+      baseRunId: index > 1 ? `run_k8s_kata_${String(index - 1).padStart(2, "0")}` : undefined,
+    });
+  }
 }
+
+/** Versions of the "Revised kata" fleet graph: a page of ten and a few more. */
+const MANY_VERSIONS = 14;
 
 async function seedSnowflake(stateRoot: string) {
   const outputPath = path.join(stateRoot, "graphs", "graph_martial_arts");
@@ -713,16 +813,20 @@ async function seedWorkspace(stateRoot: string) {
         suggestedQuestions: ["Who is Jigoro Kano?"],
       },
     ],
-    versions: [
-      {
-        id: "v_martial_1",
+    // A graph the workspace has recorded more versions of than one page of
+    // the Versions card holds; the last one is what is in production.
+    versions: Array.from({ length: WORKSPACE_VERSIONS }, (_, index) => {
+      const number = index + 1;
+      const last = number === WORKSPACE_VERSIONS;
+      return {
+        id: `v_martial_${number}`,
         graphId: "graph_martial_arts",
-        label: "v1",
-        lifecycle: "production",
-        createdAt: "2026-09-01T00:00:00.000Z",
-        note: "Gold-passed martial arts extract",
-      },
-    ],
+        label: `v${number}`,
+        lifecycle: last ? "production" : "candidate",
+        createdAt: `2026-08-${String(number).padStart(2, "0")}T00:00:00.000Z`,
+        note: last ? "Gold-passed martial arts extract" : `Rebuilt after watch ingest ${number}`,
+      };
+    }),
     pins: [],
     reviews: [
       {
@@ -745,7 +849,21 @@ async function seedWorkspace(stateRoot: string) {
         goldDrift: 2,
       },
     ],
-    apiKeys: [],
+    // A deployment that has minted a key per pipeline for a while: more than
+    // one page of the keys list. Their secrets are random and never shown,
+    // so the fixtures cannot be used to authenticate.
+    apiKeys: Array.from({ length: SEEDED_KEYS }, (_, index) => {
+      const number = index + 1;
+      const secret = `fg_${randomBytes(18).toString("hex")}`;
+      return {
+        id: `key_seed_${number}`,
+        name: `${["nightly-eval", "deploy-bot", "notebook"][index % 3]}-${String(number).padStart(2, "0")}`,
+        preview: `${secret.slice(0, 7)}…${secret.slice(-4)}`,
+        createdAt: `2026-07-${String(number).padStart(2, "0")}T00:00:00.000Z`,
+        note: "This path does not use your SSO cookie. A 401 here is not a browser login bug.",
+        secretHash: hashApiSecret(secret),
+      };
+    }),
     grants: [
       { object: "WAREHOUSE FLAKEGRAPH_WH", ok: true, sql: "GRANT USAGE ON WAREHOUSE FLAKEGRAPH_WH TO ROLE APP_OPERATOR;" },
       { object: "DATABASE FLAKEGRAPH", ok: true, sql: "GRANT USAGE ON DATABASE FLAKEGRAPH TO ROLE APP_OPERATOR;" },
@@ -754,5 +872,11 @@ async function seedWorkspace(stateRoot: string) {
     ],
   });
 }
+
+/** Workspace versions of the martial arts graph: a page of ten and a couple more. */
+const WORKSPACE_VERSIONS = 12;
+
+/** Machine keys on the seeded control plane: a page of 25 and a few more. */
+const SEEDED_KEYS = 30;
 
 await main();
