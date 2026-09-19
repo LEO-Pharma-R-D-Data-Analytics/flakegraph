@@ -82,16 +82,22 @@ export function RunWorkspace({
     { graphId: run.data?.graphId ?? "" },
     { enabled: Boolean(run.data && capabilities.has("share")) },
   );
+  // Cancel and retry answer with the run as the control plane now sees it;
+  // that answer goes into the page at once, and the refetch behind it only
+  // confirms. Otherwise the page shows the old state for as long as one
+  // more status read takes, which reads as the click having done nothing.
   const cancel = trpc.runs.cancel.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (snapshot) => {
       toast.success("Cancellation requested");
+      utils.runs.get.setData({ runId }, snapshot);
       await Promise.all([run.refetch(), utils.runs.list.invalidate()]);
     },
     onError: (error) => toast.error(error.message),
   });
   const retry = trpc.runs.retry.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (snapshot) => {
       toast.success(run.data?.status.toLowerCase() === "cancelled" ? "Run resumed" : "Retry submitted");
+      utils.runs.get.setData({ runId }, snapshot);
       await Promise.all([run.refetch(), utils.runs.list.invalidate()]);
     },
     onError: (error) => toast.error(error.message),
