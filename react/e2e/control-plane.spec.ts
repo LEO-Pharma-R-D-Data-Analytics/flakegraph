@@ -1052,6 +1052,35 @@ test.describe("remaining report journeys", () => {
     await expect(page.getByTestId("ontology-proposal")).toHaveCount(0);
   });
 
+  test("picks neighborhoods from a ranked list rather than a wall of chips", async ({ page }) => {
+    await page.goto("/?runtime=local&page=run&run=run_martial_arts");
+    const picker = page.getByTestId("neighborhood-picker");
+    // Nothing chosen: one button, no chips.
+    await expect(picker.getByRole("button", { name: "Choose neighborhoods" })).toBeVisible();
+    await expect(picker.getByRole("option")).toHaveCount(0);
+    await picker.getByRole("button", { name: "Choose neighborhoods" }).click();
+    const options = picker.getByRole("option");
+    const total = await options.count();
+    expect(total).toBeGreaterThan(1);
+    // Largest first, each with its size.
+    await expect(options.first()).toContainText(/\d+ entit/);
+    await picker.getByLabel("Find a neighborhood").fill("person");
+    await expect(picker.getByRole("option")).toHaveCount(1);
+    await picker.getByRole("option", { name: /PERSON/ }).click();
+    await picker.getByLabel("Find a neighborhood").fill("");
+    await picker.getByRole("option", { name: /MARTIAL_ART/ }).click();
+    await picker.getByRole("button", { name: "Done" }).click();
+    // The chosen ones are chips on the row; the canvas scope follows them.
+    await expect(picker.getByRole("option")).toHaveCount(0);
+    await expect(picker.getByRole("button", { name: "2 chosen" })).toBeVisible();
+    await expect(picker.getByRole("button", { name: "Remove PERSON" })).toBeVisible();
+    await expect(picker.getByRole("button", { name: "Remove MARTIAL_ART" })).toBeVisible();
+    await picker.getByRole("button", { name: "Remove PERSON" }).click();
+    await expect(picker.getByRole("button", { name: "1 chosen" })).toBeVisible();
+    await picker.getByRole("button", { name: "Remove MARTIAL_ART" }).click();
+    await expect(picker.getByRole("button", { name: "Choose neighborhoods" })).toBeVisible();
+  });
+
   test("shows a 1-hop neighborhood from a selected relation", async ({ page }) => {
     await page.goto("/?runtime=local&page=run&run=run_martial_arts");
     await page.getByRole("tab", { name: "Relations" }).click();

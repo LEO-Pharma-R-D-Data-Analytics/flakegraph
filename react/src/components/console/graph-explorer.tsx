@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { GraphCanvas } from "@/components/console/graph-canvas";
+import { NeighborhoodPicker, neighborhoodsOf } from "@/components/console/neighborhood-picker";
 import { communityMembership } from "@/server/graph-filter";
 import {
   buildGraphML,
@@ -36,9 +37,6 @@ import { documentNameIndex, evidenceDocumentId, evidenceEntityId, evidenceRelati
 
 /** The overview draws only the best-connected core; a focus widens the cap. */
 const OVERVIEW_NODE_LIMIT = 400;
-
-/** Neighborhood chips shown before "n more". */
-const NEIGHBORHOOD_PREVIEW = 12;
 
 export function GraphExplorer({
   dataset,
@@ -178,26 +176,7 @@ export function GraphExplorer({
     const node = dataset.nodes.find((item) => graphNodeId(item) === id);
     return node ? graphNodeLabel(node) : id;
   });
-  const neighborhoodHints = useMemo(() => dataset.communities ?? [], [dataset.communities]);
-  // A large graph has hundreds of neighborhoods; a row of chips holds a
-  // dozen. The chosen ones and the matches of a search always show.
-  const [neighborhoodSearch, setNeighborhoodSearch] = useState("");
-  const [showAllNeighborhoods, setShowAllNeighborhoods] = useState(false);
-  const matchingNeighborhoods = useMemo(() => {
-    const needle = neighborhoodSearch.trim().toLowerCase();
-    return needle
-      ? neighborhoodHints.filter((community) => String(community.title ?? community.id ?? "").toLowerCase().includes(needle))
-      : neighborhoodHints;
-  }, [neighborhoodHints, neighborhoodSearch]);
-  const visibleNeighborhoods = useMemo(() => {
-    if (showAllNeighborhoods || matchingNeighborhoods.length <= NEIGHBORHOOD_PREVIEW) {
-      return matchingNeighborhoods;
-    }
-    const chosen = matchingNeighborhoods.filter((community) => communityIds.includes(String(community.id ?? "")));
-    const rest = matchingNeighborhoods.filter((community) => !communityIds.includes(String(community.id ?? "")));
-    return [...chosen, ...rest.slice(0, Math.max(0, NEIGHBORHOOD_PREVIEW - chosen.length))];
-  }, [matchingNeighborhoods, showAllNeighborhoods, communityIds]);
-  const hiddenNeighborhoods = matchingNeighborhoods.length - visibleNeighborhoods.length;
+  const neighborhoods = useMemo(() => neighborhoodsOf(dataset.communities ?? []), [dataset.communities]);
   const communityTitles = useMemo(
     () =>
       Object.fromEntries(
@@ -344,60 +323,25 @@ export function GraphExplorer({
           </>
         ) : null}
       </div>
-      {neighborhoodHints.length > 0 ? (
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Neighborhoods
-              <span className="ml-1.5 normal-case tracking-normal">{neighborhoodHints.length.toLocaleString()}</span>
-            </p>
-            {neighborhoodHints.length > NEIGHBORHOOD_PREVIEW ? (
-              <Input
-                aria-label="Find a neighborhood"
-                className="h-7 w-56 text-xs"
-                placeholder="Find a neighborhood"
-                value={neighborhoodSearch}
-                onChange={(event) => setNeighborhoodSearch(event.target.value)}
-              />
-            ) : null}
-          </div>
-          <div className="flex flex-wrap gap-2">
-          {visibleNeighborhoods.map((community) => {
-            const id = String(community.id ?? "");
-            const title = String(community.title ?? id);
-            return (
+      {neighborhoods.length > 0 ? (
+        <NeighborhoodPicker
+          neighborhoods={neighborhoods}
+          value={communityIds}
+          onChange={setCommunityIds}
+          trailing={
+            selectedId ? (
               <Button
-                key={id}
                 size="sm"
-                variant={communityIds.includes(id) ? "default" : "outline"}
-                aria-pressed={communityIds.includes(id)}
-                onClick={() =>
-                  setCommunityIds((current) =>
-                    current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-                  )
-                }
+                variant={showNeighborhood ? "default" : "ghost"}
+                className="h-7 text-xs"
+                aria-pressed={showNeighborhood}
+                onClick={() => setShowNeighborhood((current) => !current)}
               >
-                {prettyLabel(title)}
+                {showNeighborhood ? "Hide neighborhood" : "Show neighborhood"}
               </Button>
-            );
-          })}
-          {hiddenNeighborhoods > 0 ? (
-            <Button size="sm" variant="ghost" onClick={() => setShowAllNeighborhoods((current) => !current)}>
-              {showAllNeighborhoods ? "Show fewer" : `${hiddenNeighborhoods.toLocaleString()} more`}
-            </Button>
-          ) : null}
-          {selectedId ? (
-            <Button
-              size="sm"
-              variant={showNeighborhood ? "default" : "ghost"}
-              aria-pressed={showNeighborhood}
-              onClick={() => setShowNeighborhood((current) => !current)}
-            >
-              {showNeighborhood ? "Hide neighborhood" : "Show neighborhood"}
-            </Button>
-          ) : null}
-        </div>
-        </div>
+            ) : null
+          }
+        />
       ) : selectedId ? (
         <Button
           size="sm"
@@ -534,7 +478,7 @@ export function GraphExplorer({
                 <TabsTrigger value="type" className="h-6 px-2 text-xs">
                   Type
                 </TabsTrigger>
-                <TabsTrigger value="community" className="h-6 px-2 text-xs" disabled={neighborhoodHints.length === 0}>
+                <TabsTrigger value="community" className="h-6 px-2 text-xs" disabled={neighborhoods.length === 0}>
                   Community
                 </TabsTrigger>
                 <TabsTrigger value="degree" className="h-6 px-2 text-xs">
@@ -550,7 +494,7 @@ export function GraphExplorer({
                 <TabsTrigger value="force" className="h-6 px-2 text-xs">
                   Force
                 </TabsTrigger>
-                <TabsTrigger value="clustered" className="h-6 px-2 text-xs" disabled={neighborhoodHints.length === 0}>
+                <TabsTrigger value="clustered" className="h-6 px-2 text-xs" disabled={neighborhoods.length === 0}>
                   Clustered
                 </TabsTrigger>
               </TabsList>
@@ -669,17 +613,14 @@ export function GraphExplorer({
                 })}
               </ul>
             </div>
-          ) : colorMode === "community" && neighborhoodHints.length > 0 ? (
+          ) : colorMode === "community" && neighborhoods.length > 0 ? (
             <ul className="absolute bottom-2 left-2 z-10 flex max-w-[min(100%,28rem)] flex-wrap gap-1.5 rounded-md border border-border bg-background/95 px-2 py-1.5 text-[11px] shadow-sm" aria-label="Community colors">
-              {neighborhoodHints.slice(0, 8).map((community) => {
-                const id = String(community.id ?? "");
-                return (
-                  <li key={id} className="inline-flex items-center gap-1.5">
-                    <span className="size-2.5 shrink-0 rounded-full" style={{ background: colorForCommunity(id) }} aria-hidden="true" />
-                    {prettyLabel(String(community.title ?? id))}
-                  </li>
-                );
-              })}
+              {neighborhoods.slice(0, 8).map((community) => (
+                <li key={community.id} className="inline-flex items-center gap-1.5">
+                  <span className="size-2.5 shrink-0 rounded-full" style={{ background: colorForCommunity(community.id) }} aria-hidden="true" />
+                  {prettyLabel(community.title)}
+                </li>
+              ))}
             </ul>
           ) : null}
         </div>
