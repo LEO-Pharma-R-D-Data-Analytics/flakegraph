@@ -399,12 +399,24 @@ test.describe("kubernetes fleet", () => {
     await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_done");
     await expect(page.getByRole("heading", { name: "Fleet judo" })).toBeVisible();
     await page.getByRole("tab", { name: "Versions" }).click();
-    // The fleet keeps the versions; the stub has published none, and the
-    // workspace's own version labels do not appear on the fleet.
-    await expect(page.getByTestId("graph-versions")).toContainText("No version has been published");
+    // The fleet keeps the versions: two runs published this graph, the later
+    // one is the head, and the one on screen says so. The workspace's own
+    // version labels do not appear on the fleet.
+    const versions = page.getByTestId("graph-versions");
+    await expect(versions).toContainText("v2");
+    await expect(versions).toContainText("head");
+    await expect(versions.getByRole("row").filter({ hasText: "run_k8s_done" }).filter({ hasText: "viewing" })).toHaveCount(1);
     await expect(page.getByRole("button", { name: "Publish new version" })).toHaveCount(0);
     await expect(page.getByText("Watch new files")).toHaveCount(0);
+    // Opening the head from the list lands on that run; opening the older
+    // one again shows it is behind the head before it is edited.
+    await versions.getByRole("row").filter({ hasText: "run_k8s_done_v2" }).getByRole("button", { name: "Open" }).click();
+    await expect(page).toHaveURL(/run=run_k8s_done_v2/);
     await page.getByRole("tab", { name: "Edit" }).click();
+    await expect(page.getByTestId("editing-behind-head")).toHaveCount(0);
+    await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_done");
+    await page.getByRole("tab", { name: "Edit" }).click();
+    await expect(page.getByTestId("editing-behind-head")).toContainText("version 1 of 2, not the head");
     await page.getByLabel("Remove judo-history.md").check();
     const confirm = page.getByRole("button", { name: "Confirm environment" });
     if (await confirm.isVisible()) {

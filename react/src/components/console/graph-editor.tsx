@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { trpc } from "@/components/providers";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -58,8 +59,19 @@ export function GraphEditor({
       }
       return next;
     });
+  // Editing an older version branches from it: the new version is built
+  // from these documents, not the head's, and becomes the head. Say so,
+  // because the tab reads the same either way.
+  const version = snapshot.raw.version as { number: number; count: number; head: boolean } | null | undefined;
+  const behindHead = Boolean(version && version.number && version.count && !version.head);
   return (
     <div className="space-y-6" data-testid="graph-editor">
+      {behindHead ? (
+        <Alert variant="warning" data-testid="editing-behind-head">
+          This is version {version!.number} of {version!.count}, not the head. A version built from here starts
+          from these documents, not from what the head holds, and becomes the new head.
+        </Alert>
+      ) : null}
       <Card>
         <CardHeader>
           <CardTitle>Documents in this version</CardTitle>

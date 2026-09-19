@@ -46,6 +46,7 @@ import {
   type NodeWorkAssignment,
   type PreflightResult,
   type RunSnapshot,
+  isSuccessStatus,
   type SourceObject,
   type Viewer,
   type WorkloadStatus,
@@ -338,9 +339,10 @@ export class KubernetesRuntime implements ControlPlane {
           if (!record) {
             throw notFound(`Unknown Kubernetes run: ${runId}`);
           }
-          return snapshotFromRecord(record, {
+          const snapshot = snapshotFromRecord(record, {
             graphName: (await graphName(this.stateRoot, record.graphId)) ?? record.graphName ?? null,
           });
+          return { ...snapshot, raw: { ...snapshot.raw, version: versionOf(await this.stubVersions(record.graphId), runId) } };
         }
         const payload = await this.status(runId, record?.configPath);
         if (!payload?.run) {
@@ -456,7 +458,13 @@ export class KubernetesRuntime implements ControlPlane {
     return Effect.tryPromise({
       try: async () => {
         if (this.stubbed) {
-          return [];
+          return (await this.stubVersions(graphId)).map((row, index) => ({
+            graphId,
+            runId: row.runId,
+            number: index + 1,
+            createdAt: row.createdAt,
+            head: row.head,
+          }));
         }
         const rows = (await graphVersionsByGraph([graphId])).get(graphId) ?? [];
         return rows.map((row, index) => ({
@@ -576,6 +584,22 @@ export class KubernetesRuntime implements ControlPlane {
     if (result.exitCode !== 0) {
       throw new Error(result.stderr.trim() || `Unable to ${action} ${runId}`);
     }
+  }
+
+  /**
+   * The stub fleet's versions: every run that published this graph, oldest
+   * first, the latest being the head - the same shape the store keeps.
+   */
+  private async stubVersions(graphId: string): Promise<Array<{ runId: string; createdAt: string; head: boolean }>> {
+    const records = (await listRunRecords(this.stateRoot, 1_000))
+      .map((entry) => entry.record)
+      .filter((record) => record.graphId === graphId && isSuccessStatus(record.status))
+      .sort((left, right) => String(left.startedAt ?? "").localeCompare(String(right.startedAt ?? "")));
+    return records.map((record, index) => ({
+      runId: record.runId,
+      createdAt: record.updatedAt ?? record.startedAt ?? new Date(0).toISOString(),
+      head: index === records.length - 1,
+    }));
   }
 
   /** What the fleet's workers run, or null when the fleet cannot be read. */
