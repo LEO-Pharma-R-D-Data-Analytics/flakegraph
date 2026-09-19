@@ -17,7 +17,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Button } from "@/components/ui/button";
 import { GraphCanvas } from "@/components/console/graph-canvas";
 import { FacetPicker } from "@/components/console/facet-picker";
-import { communityMembership } from "@/server/graph-filter";
+import { RecordTable, type RecordColumn } from "@/components/console/record-table";
+import { communityMemberIds, communityMembership } from "@/server/graph-filter";
 import {
   ENTITY_NOUN,
   ENTITY_TYPE_NOUN,
@@ -742,32 +743,14 @@ export function GraphExplorer({
           <TabsTrigger value="evidence">Evidence</TabsTrigger>
           <TabsTrigger value="consumption">Consumption</TabsTrigger>
         </TabsList>
-        <TabsContent value="entities">
-          <RecordTable
-            rows={focusedGraph.nodes}
-            columns={["id", "name", "primary_type", "description"]}
-            onSelect={selectAndFly}
-            selectedId={selectedId}
-          />
-        </TabsContent>
-        <TabsContent value="relations">
-          <RecordTable
-            rows={focusedGraph.edges}
-            columns={["id", "source_node_id", "relation_type", "target_node_id", "confidence"]}
-            onSelect={selectAndFly}
-            selectedId={selectedId}
-            highlightIds={new Set(missingGold.map((item) => item.id))}
-          />
-        </TabsContent>
-        <TabsContent value="communities">
-          <RecordTable
-            rows={dataset.communities as Record<string, unknown>[]}
-            columns={["id", "title", "summary"]}
-          />
-        </TabsContent>
-        <TabsContent value="evidence">
-          <RecordTable rows={dataset.evidence as Record<string, unknown>[]} columns={["id", "document_id", "quote", "relation_id"]} />
-        </TabsContent>
+        <ExploreTables
+          dataset={dataset}
+          graph={focusedGraph}
+          documentNames={documentNames}
+          missingGold={missingGold}
+          selectedId={selectedId}
+          onSelect={selectAndFly}
+        />
         <TabsContent value="consumption">
           <ConsumptionPanel consumption={consumption} estimate={estimate ?? null} />
         </TabsContent>
@@ -941,73 +924,166 @@ function CanvasLegend({
   );
 }
 
-function RecordTable({
-  rows,
-  columns,
-  onSelect,
+/**
+ * The four record tabs under the canvas. Entities and relations are the
+ * filtered graph itself; communities and evidence follow it, so a filter
+ * that hides an entity also hides the communities it alone populated and
+ * the quotes that only ground it. Tables never see more than the graph
+ * loaded, so "total" is the loaded count, not the summary metric.
+ */
+function ExploreTables({
+  dataset,
+  graph,
+  documentNames,
+  missingGold,
   selectedId,
-  highlightIds,
+  onSelect,
 }: {
-  rows: readonly Record<string, unknown>[];
-  columns: string[];
-  onSelect?: (id: string) => void;
-  selectedId?: string | null;
-  highlightIds?: Set<string>;
+  dataset: GraphDataset;
+  graph: { nodes: readonly Record<string, unknown>[]; edges: readonly Record<string, unknown>[] };
+  documentNames: Map<string, string>;
+  missingGold: ReadonlyArray<{ id: string }>;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
 }) {
-  if (rows.length === 0) {
-    return <p className="py-6 text-sm text-muted-foreground">No rows in this filter.</p>;
-  }
-  const visible = rows.slice(0, 200);
+  const nodeNames = useMemo(
+    () => new Map(dataset.nodes.map((node) => [graphNodeId(node), graphNodeLabel(node)] as const)),
+    [dataset.nodes],
+  );
+  const edgesById = useMemo(
+    () => new Map(dataset.edges.map((edge, index) => [graphEdgeId(edge, index), edge] as const)),
+    [dataset.edges],
+  );
+  const visibleNodeIds = useMemo(() => new Set(graph.nodes.map((node) => graphNodeId(node))), [graph.nodes]);
+  const visibleEdgeIds = useMemo(() => new Set(graph.edges.map((edge, index) => graphEdgeId(edge, index))), [graph.edges]);
+  // Only a filter that removed something narrows the other two tabs; a row
+  // whose subject the graph never had stays visible either way.
+  const narrowed = graph.nodes.length < dataset.nodes.length || graph.edges.length < dataset.edges.length;
+  const communities = useMemo(() => {
+    if (!narrowed) {
+      return dataset.communities;
+    }
+    return dataset.communities.filter((community) => {
+      const members = communityMemberIds(community);
+      return members.length === 0 || members.some((member) => visibleNodeIds.has(member));
+    });
+  }, [dataset.communities, narrowed, visibleNodeIds]);
+  const evidence = useMemo(() => {
+    if (!narrowed) {
+      return dataset.evidence;
+    }
+    return dataset.evidence.filter((row) => {
+      const relationId = evidenceRelationId(row);
+      const entityId = evidenceEntityId(row);
+      if (!relationId && !entityId) {
+        return true;
+      }
+      return (relationId != null && visibleEdgeIds.has(relationId)) || (entityId != null && visibleNodeIds.has(entityId));
+    });
+  }, [dataset.evidence, narrowed, visibleEdgeIds, visibleNodeIds]);
+  const highlightIds = useMemo(() => new Set(missingGold.map((item) => item.id)), [missingGold]);
+
+  // Column definitions close over the name indexes, and the table re-sorts
+  // whenever they change, so they are rebuilt only when an index does; the
+  // canvas hover re-renders this component far more often than that.
+  const columns = useMemo(() => {
+    const nameOf = (id: unknown) => (id == null ? "" : (nodeNames.get(String(id)) ?? String(id)));
+    const relationLabel = (edge: Record<string, unknown>) => {
+      const ends = graphEdgeEnds(edge);
+      return `${nameOf(ends.source)} ${String(edge.relation_type ?? edge.relationType ?? "")} ${nameOf(ends.target)}`.trim();
+    };
+    const entityColumns: RecordColumn[] = [
+      { key: "name", value: (row) => graphNodeLabel(row) },
+      { key: "primary_type", label: "Type", kind: "type", value: (row) => row.primary_type ?? row.type ?? "", color: colorForType },
+      { key: "description", kind: "long" },
+      { key: "id", kind: "id" },
+    ];
+    const relationColumns: RecordColumn[] = [
+      {
+        key: "source_node_id",
+        label: "Source",
+        value: (row) => nameOf(graphEdgeEnds(row).source),
+        title: (row) => String(graphEdgeEnds(row).source),
+      },
+      { key: "relation_type", label: "Relation", kind: "type", value: (row) => row.relation_type ?? row.relationType ?? "" },
+      {
+        key: "target_node_id",
+        label: "Target",
+        value: (row) => nameOf(graphEdgeEnds(row).target),
+        title: (row) => String(graphEdgeEnds(row).target),
+      },
+      { key: "confidence", kind: "number" },
+      { key: "id", kind: "id" },
+    ];
+    const communityColumns: RecordColumn[] = [
+      { key: "title", value: (row) => row.title ?? row.id ?? "" },
+      { key: "size", kind: "number", value: (row) => communityMemberIds(row).length },
+      { key: "summary", kind: "long" },
+    ];
+    const evidenceColumns: RecordColumn[] = [
+      {
+        key: "document_id",
+        label: "Document",
+        width: "w-56",
+        value: (row) => documentNames.get(evidenceDocumentId(row)) ?? evidenceDocumentId(row),
+        title: (row) => evidenceDocumentId(row) || undefined,
+      },
+      { key: "quote", kind: "long" },
+      {
+        key: "supports",
+        width: "w-72",
+        value: (row) => {
+          const relationId = evidenceRelationId(row);
+          const edge = relationId ? edgesById.get(relationId) : undefined;
+          if (edge) {
+            return relationLabel(edge);
+          }
+          return relationId ?? nameOf(evidenceEntityId(row));
+        },
+        title: (row) => evidenceRelationId(row) ?? evidenceEntityId(row) ?? undefined,
+      },
+    ];
+    return { entities: entityColumns, relations: relationColumns, communities: communityColumns, evidence: evidenceColumns };
+  }, [documentNames, edgesById, nodeNames]);
+
   return (
-    <div className="overflow-x-auto">
-      {rows.length > 200 ? (
-        <p className="mb-2 text-xs text-muted-foreground">Showing first 200 of {rows.length.toLocaleString()} rows.</p>
-      ) : null}
-      <Table>
-        <TableHeader>
-          <TableRow>
-            {columns.map((column) => (
-              <TableHead key={column}>{prettyLabel(column)}</TableHead>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {visible.map((row, index) => {
-            const id = String(row.id ?? index);
-            return (
-              <TableRow
-                key={id}
-                className={cn(
-                  "cursor-pointer",
-                  selectedId === id ? "bg-accent" : "",
-                  highlightIds?.has(id) ? "bg-amber-50 dark:bg-amber-950/40" : "",
-                )}
-                onClick={() => onSelect?.(id)}
-              >
-                {columns.map((column) => (
-                  <TableCell key={column} className="max-w-xs truncate">
-                    {stringify(row[column] ?? row[camel(column)])}
-                  </TableCell>
-                ))}
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
-    </div>
+    <>
+      <TabsContent value="entities">
+        <RecordTable
+          rows={graph.nodes}
+          total={dataset.nodes.length}
+          columns={columns.entities}
+          noun={{ one: "entity", many: "entities" }}
+          onSelect={onSelect}
+          selectedId={selectedId}
+        />
+      </TabsContent>
+      <TabsContent value="relations">
+        <RecordTable
+          rows={graph.edges}
+          total={dataset.edges.length}
+          columns={columns.relations}
+          noun={{ one: "relation", many: "relations" }}
+          onSelect={onSelect}
+          selectedId={selectedId}
+          highlightIds={highlightIds}
+        />
+      </TabsContent>
+      <TabsContent value="communities">
+        <RecordTable rows={communities} total={dataset.communities.length} columns={columns.communities} noun={{ one: "neighborhood", many: "neighborhoods" }} />
+      </TabsContent>
+      <TabsContent value="evidence">
+        <RecordTable
+          rows={evidence}
+          total={dataset.evidence.length}
+          columns={columns.evidence}
+          noun={{ one: "evidence row", many: "evidence rows" }}
+          onSelect={onSelect}
+          selectedId={selectedId}
+          selectionId={(row) => evidenceRelationId(row) ?? evidenceEntityId(row)}
+        />
+      </TabsContent>
+    </>
   );
 }
 
-function stringify(value: unknown): string {
-  if (value == null) {
-    return "";
-  }
-  if (typeof value === "string" || typeof value === "number") {
-    return String(value);
-  }
-  return JSON.stringify(value);
-}
-
-function camel(value: string): string {
-  return value.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
-}

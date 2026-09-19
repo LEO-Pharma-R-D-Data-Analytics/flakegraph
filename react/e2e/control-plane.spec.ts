@@ -1280,6 +1280,89 @@ test.describe("remaining report journeys", () => {
     await expect(page.getByTestId("filters-summary")).toHaveText("Filters");
   });
 
+  test("sorts, searches, expands and pages the explore tables", async ({ page }) => {
+    await page.goto("/?runtime=local&page=run&run=run_martial_arts");
+    // Entities: sorting reorders the whole match before it is paged, and ids
+    // sit muted at the end while names lead.
+    const entities = page.getByRole("tabpanel", { name: "Entities" });
+    await expect(entities.getByTestId("record-table-count")).toHaveText("Showing 50 of 74 entities");
+    await expect(entities.getByRole("button", { name: "Show 24 more" })).toBeVisible();
+    const firstName = () => entities.getByRole("row").nth(1).getByRole("cell").first();
+    await expect(firstName()).toHaveText("Jigoro Kano");
+    const nameHeader = entities.getByRole("columnheader", { name: "Name" });
+    await expect(nameHeader).toHaveAttribute("aria-sort", "none");
+    await nameHeader.getByRole("button").click();
+    await expect(nameHeader).toHaveAttribute("aria-sort", "ascending");
+    await expect(firstName()).toHaveText("1964 Long Beach International Karate Championships");
+    await nameHeader.getByRole("button").click();
+    await expect(nameHeader).toHaveAttribute("aria-sort", "descending");
+    // Sorting ignores case: a lowercase name is not banished to the end.
+    await expect(firstName()).toHaveText("wrestling");
+    await entities.getByLabel("Find in entities").fill("kano");
+    await expect(entities.getByTestId("record-table-count")).toHaveText("1 entity (of 74 total)");
+    await expect(entities.getByRole("cell", { name: "jigoro_kano" })).toBeVisible();
+
+    // Relations: 104 rows page 50 at a time, endpoints show names not ids,
+    // and confidence sorts as a number.
+    await page.getByRole("tab", { name: "Relations" }).click();
+    const relations = page.getByRole("tabpanel", { name: "Relations" });
+    await expect(relations.getByTestId("record-table-count")).toHaveText("Showing 50 of 104 relations");
+    await expect(relations.getByRole("row")).toHaveCount(51);
+    await expect(relations.getByRole("row").nth(1).getByRole("cell").first()).toHaveText("Kodokan");
+    await expect(relations.getByRole("cell", { name: "rel_001" })).toBeVisible();
+    await relations.getByRole("button", { name: "Show 50 more" }).click();
+    await expect(relations.getByTestId("record-table-count")).toHaveText("Showing 100 of 104 relations");
+    await relations.getByRole("button", { name: "Show 4 more" }).click();
+    await expect(relations.getByTestId("record-table-count")).toHaveText("104 relations");
+    await expect(relations.getByRole("button", { name: /^Show \d+ more$/ })).toHaveCount(0);
+    const confidenceHeader = relations.getByRole("columnheader", { name: "Confidence" });
+    await confidenceHeader.getByRole("button").click();
+    await expect(confidenceHeader).toHaveAttribute("aria-sort", "ascending");
+    await expect(relations.getByRole("row").nth(1).getByRole("cell", { name: "0.6", exact: true })).toBeVisible();
+    await confidenceHeader.getByRole("button").click();
+    await expect(confidenceHeader).toHaveAttribute("aria-sort", "descending");
+    await expect(relations.getByRole("row").nth(1).getByRole("cell", { name: "0.95", exact: true })).toBeVisible();
+
+    // Communities: member counts instead of id lists.
+    await page.getByRole("tab", { name: "Neighborhoods" }).click();
+    const communities = page.getByRole("tabpanel", { name: "Neighborhoods" });
+    await expect(communities.getByTestId("record-table-count")).toHaveText("10 neighborhoods");
+    const sizeHeader = communities.getByRole("columnheader", { name: "Size" });
+    await sizeHeader.getByRole("button").click();
+    await sizeHeader.getByRole("button").click();
+    await expect(sizeHeader).toHaveAttribute("aria-sort", "descending");
+    await expect(communities.getByRole("row").nth(1).getByRole("cell").first()).toHaveText("MARTIAL_ART");
+    await expect(communities.getByRole("row").nth(1).getByRole("cell", { name: "15", exact: true })).toBeVisible();
+
+    // Evidence: a long quote is one line until "More" opens it, and search
+    // narrows the count against the graph total.
+    await page.getByRole("tab", { name: "Evidence" }).click();
+    const evidence = page.getByRole("tabpanel", { name: "Evidence" });
+    await expect(evidence.getByTestId("record-table-count")).toHaveText("Showing 50 of 109 evidence rows");
+    await evidence.getByLabel("Find in evidence rows").fill("governed through the Association");
+    await expect(evidence.getByTestId("record-table-count")).toHaveText("1 evidence row (of 109 total)");
+    const quote = evidence.getByRole("row").nth(1).getByRole("cell").nth(1);
+    await expect(quote).not.toContainText("member commissions");
+    await evidence.getByRole("button", { name: "More" }).click();
+    await expect(quote).toContainText("and its member commissions.");
+    await expect(evidence.getByRole("button", { name: "Less" })).toBeVisible();
+    // The quote names the relation it grounds by its endpoints, not by id.
+    await expect(evidence.getByRole("row").nth(1).getByRole("cell").nth(2)).toContainText("GOVERNED_BY");
+
+    // A graph filter narrows every tab, and each count line says what the
+    // graph has in total so the narrowing is visible.
+    await evidence.getByLabel("Find in evidence rows").fill("");
+    await page.getByPlaceholder("Entity name or description").fill("judo");
+    await expect(evidence.getByTestId("record-table-count")).toHaveText("1 evidence row (of 109 total)");
+    await expect(evidence.getByRole("row").nth(1).getByRole("cell").nth(2)).toContainText("Judo GOVERNED_BY International Judo Federation");
+    await page.getByRole("tab", { name: "Neighborhoods" }).click();
+    await expect(communities.getByTestId("record-table-count")).toHaveText(/^\d+ neighborhoods \(of 10 total\)$/);
+    await expect(communities.getByRole("cell", { name: "MARTIAL_ART", exact: true })).toBeVisible();
+    await expect(communities.getByRole("cell", { name: "PERSON", exact: true })).toHaveCount(0);
+    await page.getByRole("tab", { name: "Entities" }).click();
+    await expect(entities.getByTestId("record-table-count")).toHaveText("3 entities (of 74 total)");
+  });
+
   test("shows a 1-hop neighborhood from a selected relation", async ({ page }) => {
     await page.goto("/?runtime=local&page=run&run=run_martial_arts");
     await page.getByRole("tab", { name: "Relations" }).click();
