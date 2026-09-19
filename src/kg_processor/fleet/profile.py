@@ -46,6 +46,9 @@ DEPLOYMENT_LOCAL_KEYS: Mapping[str, frozenset[str]] = {
             "description_merge_parallelism",
             "extraction_parallelism",
             "resolution_parallelism",
+            # The vocabulary is the run's, like its ontology profile.
+            "entity_types",
+            "relation_types",
         }
     ),
 }
