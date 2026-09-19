@@ -415,6 +415,7 @@ class PostgresDistributedStore:
         preparation_count = 0
         final_count = 0
         final_seen = False
+        final_inherits = False
         batch: list[TaskDefinition] = []
         for task in tasks:
             preparation_increment, final_increment = _validate_initial_task(
@@ -425,14 +426,21 @@ class PostgresDistributedStore:
             preparation_count += preparation_increment
             final_count += final_increment
             final_seen = bool(final_count)
+            if final_increment:
+                final_inherits = bool(task.payload.get("inherit"))
             batch.append(task)
             if len(batch) >= _INITIAL_TASK_COPY_BATCH_SIZE:
                 self._copy_initial_task_batch(run_id, batch)
                 batch = []
         if batch:
             self._copy_initial_task_batch(run_id, batch)
-        if preparation_count == 0 or final_count != 1:
-            raise ValueError("initial plan requires preparation tasks and exactly one final task")
+        # A revision that only drops documents prepares nothing: its
+        # finalizer builds the graph from what it inherits.
+        if final_count != 1 or (preparation_count == 0 and not final_inherits):
+            raise ValueError(
+                "initial plan requires exactly one final task, and preparation tasks "
+                "unless the final task inherits documents"
+            )
         with self._connection() as connection:
             counts = connection.execute(
                 """

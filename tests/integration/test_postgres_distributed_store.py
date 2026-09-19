@@ -1276,6 +1276,33 @@ def test_a_revision_keeps_drops_and_adds_documents_without_re_extracting_kept_on
             f"run_{uuid4().hex}", RevisionRequest(base_run_id=revision_run_id)
         )
 
+    # Dropping a document and adding none prepares nothing: the finalizer
+    # alone builds the smaller graph from what it inherits, and heads move.
+    dropped_again = next(
+        task.task.scope_id
+        for task in revised.tasks
+        if task.task.stage == TaskStage.PREPARE_DOCUMENT
+    )
+    drop_only_run_id = f"run_{uuid4().hex}"
+    drop_only = DistributedRunPlanner(settings, None, store, store).submit(
+        drop_only_run_id,
+        RevisionRequest(base_run_id=revision_run_id, drop_file_ids=[dropped_again]),
+    )
+    assert not [t for t in drop_only.task_counts if t.stage == TaskStage.PREPARE_DOCUMENT]
+    smaller = _graph_of(store, _drain(store, settings, drop_only_run_id))
+    assert _document_names(smaller) == {"source-0.txt"}
+    with psycopg.connect(isolated_postgres_dsn, row_factory=dict_row) as connection:
+        head = connection.execute(
+            """
+            SELECT version.run_id
+            FROM flakegraph_graph_head AS head
+            JOIN flakegraph_graph_version AS version ON version.id = head.version_id
+            WHERE head.graph_id = %s
+            """,
+            (settings.job.graph_id,),
+        ).fetchone()
+    assert head == {"run_id": drop_only_run_id}
+
 
 def _worker_demand(dsn: str) -> dict[str, int]:
     """Read the database contract consumed by KEDA's PostgreSQL scaler."""
