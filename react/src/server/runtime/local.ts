@@ -23,7 +23,6 @@ import {
   ARTIFACTS_UNAVAILABLE_STATUS,
   LOCAL_CAPABILITIES,
   type Capability,
-  type ClusterProfile,
   type ClusterSnapshot,
   type GraphDataset,
   type GraphShare,
@@ -322,25 +321,6 @@ export class LocalRuntime implements ControlPlane {
     return Effect.succeed([]);
   }
 
-  listClusters(): Effect.Effect<readonly ClusterProfile[], ControlPlaneError> {
-    return Effect.succeed([]);
-  }
-
-  upsertCluster(_profile: ClusterProfile): Effect.Effect<ClusterProfile, ControlPlaneError> {
-    return Effect.fail(notSupported("Cluster registration is a Kubernetes control"));
-  }
-
-  deleteCluster(_name: string): Effect.Effect<void, ControlPlaneError> {
-    return Effect.fail(notSupported("Cluster registration is a Kubernetes control"));
-  }
-
-  selectCluster(_name: string): Effect.Effect<ClusterProfile, ControlPlaneError> {
-    return Effect.fail(notSupported("Cluster registration is a Kubernetes control"));
-  }
-
-  selectedCluster(): Effect.Effect<ClusterProfile | null, ControlPlaneError> {
-    return Effect.succeed(null);
-  }
 
   graphOwner(_graphId: string): Effect.Effect<string | null, ControlPlaneError> {
     return Effect.succeed(null);

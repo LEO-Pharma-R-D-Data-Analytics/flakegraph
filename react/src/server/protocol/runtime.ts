@@ -1,6 +1,5 @@
 import { Effect } from "effect";
 import {
-  type ClusterProfile,
   type ClusterSnapshot,
   type GraphDataset,
   type GraphShare,
@@ -45,11 +44,6 @@ export interface ControlPlane {
     namespace: string,
     nodeName: string,
   ): Effect.Effect<readonly NodeWorkAssignment[], ControlPlaneError>;
-  listClusters(): Effect.Effect<readonly ClusterProfile[], ControlPlaneError>;
-  upsertCluster(profile: ClusterProfile): Effect.Effect<ClusterProfile, ControlPlaneError>;
-  deleteCluster(name: string): Effect.Effect<void, ControlPlaneError>;
-  selectCluster(name: string): Effect.Effect<ClusterProfile, ControlPlaneError>;
-  selectedCluster(): Effect.Effect<ClusterProfile | null, ControlPlaneError>;
   graphOwner(graphId: string): Effect.Effect<string | null, ControlPlaneError>;
   graphShares(graphId: string): Effect.Effect<readonly GraphShare[], ControlPlaneError>;
   shareGraph(

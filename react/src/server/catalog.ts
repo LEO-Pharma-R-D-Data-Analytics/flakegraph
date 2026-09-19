@@ -6,8 +6,6 @@ import { validateGraphName, type IngestionRequest, type RunSnapshot, type Storag
 
 const HIDDEN_RUNS_FILE = "hidden-runs.json";
 const GRAPH_NAMES_FILE = "graph-names.json";
-const CLUSTERS_FILE = "clusters.json";
-const SELECTED_CLUSTER_FILE = "selected-cluster.json";
 
 export interface CatalogRecord {
   runId: string;
@@ -200,44 +198,6 @@ export async function removeRunDirectory(stateRoot: string, runId: string): Prom
   await rm(directory, { recursive: true, force: true });
 }
 
-export interface ClusterCatalog {
-  clusters: Array<{
-    name: string;
-    namespace: string;
-    context: string;
-    kubeconfig: string;
-    description: string;
-  }>;
-  selected?: string | null;
-}
-
-export async function readClusterCatalog(stateRoot: string): Promise<ClusterCatalog> {
-  const value = await readJsonFile<ClusterCatalog>(path.join(stateRoot, CLUSTERS_FILE));
-  if (!value || !Array.isArray(value.clusters)) {
-    return { clusters: [] };
-  }
-  const selected = await readJsonFile<{ name?: string }>(path.join(stateRoot, SELECTED_CLUSTER_FILE));
-  return {
-    clusters: value.clusters.map((cluster) => ({
-      name: String(cluster.name),
-      namespace: String(cluster.namespace || "flakegraph"),
-      context: String(cluster.context || ""),
-      kubeconfig: String(cluster.kubeconfig || ""),
-      description: String(cluster.description || ""),
-    })),
-    selected: selected?.name ?? value.selected ?? null,
-  };
-}
-
-export async function writeClusterCatalog(stateRoot: string, catalog: ClusterCatalog): Promise<void> {
-  await mkdir(stateRoot, { recursive: true });
-  await atomicWriteJson(path.join(stateRoot, CLUSTERS_FILE), {
-    clusters: catalog.clusters,
-  });
-  if (catalog.selected) {
-    await atomicWriteJson(path.join(stateRoot, SELECTED_CLUSTER_FILE), { name: catalog.selected });
-  }
-}
 
 export async function atomicWriteJson(file: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });

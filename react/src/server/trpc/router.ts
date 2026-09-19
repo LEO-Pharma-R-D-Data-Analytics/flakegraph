@@ -3,7 +3,7 @@ import { defaultOntologySelection, ontologySelectionFromProfile, runOntologySele
 import { TRPCError } from "@trpc/server";
 import { appEnv } from "../env";
 import { availableSamplePacks } from "../sample-packs";
-import { ClusterProfile, IngestionRequest, isSuccessStatus, standardSchema } from "../protocol/schema";
+import { IngestionRequest, isSuccessStatus, standardSchema } from "../protocol/schema";
 import { availableRuntimes } from "../runtime/resolve";
 import { publicApiKeys } from "../api-keys";
 import { publicProcedure, router, runEffect } from "./init";
@@ -429,19 +429,6 @@ export const appRouter = router({
     nodeAssignments: publicProcedure
       .input(z.object({ namespace: z.string(), nodeName: z.string() }))
       .query(({ ctx, input }) => runEffect(ctx.controlPlane.nodeAssignments(input.namespace, input.nodeName))),
-  }),
-  clusters: router({
-    list: publicProcedure.query(({ ctx }) => runEffect(ctx.controlPlane.listClusters())),
-    upsert: publicProcedure.input(standardSchema(ClusterProfile)).mutation(({ ctx, input }) =>
-      runEffect(ctx.controlPlane.upsertCluster(requiredInput(input))),
-    ),
-    delete: publicProcedure.input(z.object({ name: z.string() })).mutation(({ ctx, input }) =>
-      runEffect(ctx.controlPlane.deleteCluster(input.name)),
-    ),
-    select: publicProcedure.input(z.object({ name: z.string() })).mutation(({ ctx, input }) =>
-      runEffect(ctx.controlPlane.selectCluster(input.name)),
-    ),
-    selected: publicProcedure.query(({ ctx }) => runEffect(ctx.controlPlane.selectedCluster())),
   }),
 });
 

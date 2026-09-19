@@ -347,15 +347,6 @@ export const ClusterSnapshot = Schema.Struct({
 });
 export type ClusterSnapshot = Schema.Schema.Type<typeof ClusterSnapshot>;
 
-export const ClusterProfile = Schema.Struct({
-  name: Schema.String,
-  namespace: Schema.optionalWith(Schema.String, { default: () => "flakegraph" }),
-  context: Schema.optionalWith(Schema.String, { default: () => "" }),
-  kubeconfig: Schema.optionalWith(Schema.String, { default: () => "" }),
-  description: Schema.optionalWith(Schema.String, { default: () => "" }),
-});
-export type ClusterProfile = Schema.Schema.Type<typeof ClusterProfile>;
-
 export const PreflightResult = Schema.Struct({
   ok: Schema.Boolean,
   errors: Schema.optionalWith(Schema.Array(Schema.String), { default: () => [] }),

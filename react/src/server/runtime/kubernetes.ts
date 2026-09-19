@@ -4,9 +4,7 @@ import { Effect } from "effect";
 import { stringify as stringifyYaml } from "yaml";
 import {
   atomicWriteJson,
-  readClusterCatalog,
   readJsonFile,
-  writeClusterCatalog,
   writeRunRecord,
   listRunRecords,
   readRunRecord,
@@ -36,7 +34,6 @@ import { readLocalProgress } from "../progress";
 import {
   KUBERNETES_CAPABILITIES,
   type Capability,
-  type ClusterProfile,
   type ClusterSnapshot,
   type GraphDataset,
   type GraphShare,
@@ -60,8 +57,6 @@ import { graphArtifactsExist, loadLocalGraph } from "../graph";
 import { readFleetProfile, type FleetProfile } from "../fleet";
 import { snapshotFromStatus } from "../fleet-status";
 
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/;
-const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/;
 
 export class KubernetesRuntime implements ControlPlane {
   readonly runtime = "kubernetes" as const;
@@ -99,7 +94,7 @@ export class KubernetesRuntime implements ControlPlane {
         const configPath = path.join(runDirectory(this.stateRoot, request.jobId), "config.yaml");
         await writeRunConfig(request, configPath, await this.fleetProfile());
         const result = await runFlakegraph(
-          ["fleet", "preflight", "--config", configPath, ...(await this.fleetArguments())],
+          ["fleet", "preflight", "--config", configPath, ...this.fleetArguments()],
           { cwd: this.repositoryRoot, env: environmentForRequest(request) },
         );
         const payload = lastJsonObject(result.stdout) ?? lastJsonObject(result.stderr);
@@ -495,7 +490,7 @@ export class KubernetesRuntime implements ControlPlane {
         }
         // The CLI restarts only a pool with no available worker, after checking
         // for the failures a restart cannot fix; task state is never touched.
-        const args = ["fleet", "recover", "--run-id", runId, ...(await this.fleetArguments())];
+        const args = ["fleet", "recover", "--run-id", runId, ...this.fleetArguments()];
         if (record?.configPath) {
           args.push("--config", record.configPath);
         }
@@ -610,20 +605,15 @@ export class KubernetesRuntime implements ControlPlane {
     if (this.stubbed) {
       return null;
     }
-    const cluster = await Effect.runPromise(this.selectedCluster());
-    return readFleetProfile(cluster?.namespace || appEnv().kubernetesNamespace, {
-      cwd: this.repositoryRoot,
-      context: cluster?.context || null,
-    });
+    return readFleetProfile(appEnv().kubernetesNamespace, { cwd: this.repositoryRoot, context: null });
   }
 
-  private async fleetArguments(): Promise<string[]> {
-    const cluster = await Effect.runPromise(this.selectedCluster());
-    const args = ["--namespace", cluster?.namespace || appEnv().kubernetesNamespace];
-    if (cluster?.context) {
-      args.push("--context", cluster.context);
-    }
-    return args;
+  // The fleet is the one kubectl reaches: the service account in the pod,
+  // or the current kubeconfig context on a laptop, in the configured
+  // namespace. A catalog of contexts to switch between belonged to a time
+  // when the console ran beside the fleet rather than in it.
+  private fleetArguments(): string[] {
+    return ["--namespace", appEnv().kubernetesNamespace];
   }
 
   cluster(namespace: string): Effect.Effect<ClusterSnapshot | null, ControlPlaneError> {
@@ -678,65 +668,6 @@ export class KubernetesRuntime implements ControlPlane {
           }));
       },
       catch: (cause) => fromCause(cause, "Unable to load node assignments"),
-    });
-  }
-
-  listClusters(): Effect.Effect<readonly ClusterProfile[], ControlPlaneError> {
-    return Effect.tryPromise({
-      try: async () => (await readClusterCatalog(this.stateRoot)).clusters,
-      catch: (cause) => fromCause(cause, "Unable to list clusters"),
-    });
-  }
-
-  upsertCluster(profile: ClusterProfile): Effect.Effect<ClusterProfile, ControlPlaneError> {
-    return Effect.tryPromise({
-      try: async () => {
-        validateCluster(profile);
-        const catalog = await readClusterCatalog(this.stateRoot);
-        const next = catalog.clusters.filter((item) => item.name !== profile.name);
-        next.push(profile);
-        await writeClusterCatalog(this.stateRoot, { ...catalog, clusters: next });
-        return profile;
-      },
-      catch: (cause) => fromCause(cause, "Unable to save cluster"),
-    });
-  }
-
-  deleteCluster(name: string): Effect.Effect<void, ControlPlaneError> {
-    return Effect.tryPromise({
-      try: async () => {
-        const catalog = await readClusterCatalog(this.stateRoot);
-        await writeClusterCatalog(this.stateRoot, {
-          clusters: catalog.clusters.filter((item) => item.name !== name),
-          selected: catalog.selected === name ? null : catalog.selected,
-        });
-      },
-      catch: (cause) => fromCause(cause, "Unable to delete cluster"),
-    });
-  }
-
-  selectCluster(name: string): Effect.Effect<ClusterProfile, ControlPlaneError> {
-    return Effect.tryPromise({
-      try: async () => {
-        const catalog = await readClusterCatalog(this.stateRoot);
-        const profile = catalog.clusters.find((item) => item.name === name);
-        if (!profile) {
-          throw notFound(`Unknown cluster: ${name}`);
-        }
-        await writeClusterCatalog(this.stateRoot, { ...catalog, selected: name });
-        return profile;
-      },
-      catch: (cause) => fromCause(cause, "Unable to select cluster"),
-    });
-  }
-
-  selectedCluster(): Effect.Effect<ClusterProfile | null, ControlPlaneError> {
-    return Effect.tryPromise({
-      try: async () => {
-        const catalog = await readClusterCatalog(this.stateRoot);
-        return catalog.clusters.find((item) => item.name === catalog.selected) ?? catalog.clusters[0] ?? null;
-      },
-      catch: (cause) => fromCause(cause, "Unable to read selected cluster"),
     });
   }
 
@@ -946,15 +877,6 @@ async function appendStubRun(stateRoot: string, run: { runId: string; graphId: s
   const current = (await readJsonFile<typeof run[]>(file)) ?? [];
   current.unshift(run);
   await atomicWriteJson(file, current);
-}
-
-function validateCluster(profile: ClusterProfile): void {
-  if (!NAME_PATTERN.test(profile.name) && profile.name !== "default") {
-    throw invalid("Cluster name must be a short DNS label");
-  }
-  if (!NAMESPACE_PATTERN.test(profile.namespace) && profile.namespace.length > 1) {
-    throw invalid("Namespace must be a valid Kubernetes namespace");
-  }
 }
 
 // A CLI failure ends with its cause; the traceback above it is not for the page.

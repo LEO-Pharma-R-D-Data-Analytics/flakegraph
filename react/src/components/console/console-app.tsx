@@ -8,7 +8,6 @@ import { Sidebar } from "@/components/console/sidebar";
 import { IngestionForm } from "@/components/console/ingestion-form";
 import { RunWorkspace } from "@/components/console/run-workspace";
 import { FleetView } from "@/components/console/fleet-view";
-import { ClusterCatalog } from "@/components/console/cluster-catalog";
 import { CommandPalette } from "@/components/console/command-palette";
 import { StaffIncidentPage } from "@/components/console/operator-tools";
 import { SdkKeysPage } from "@/components/console/sdk-keys";
@@ -21,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 const runtimeParser = parseAsStringLiteral(["local", "kubernetes", "snowflake"] as const);
-const pageParser = parseAsStringLiteral(["new", "run", "fleet", "clusters", "staff", "keys"] as const);
+const pageParser = parseAsStringLiteral(["new", "run", "fleet", "staff", "keys"] as const);
 
 export function ConsoleApp() {
   return (
@@ -66,7 +65,6 @@ function ConsoleInner() {
       new: analyst ? "Perspectives" : "New graph",
       run: currentGraphName || "Graph",
       fleet: "Fleet",
-      clusters: "Clusters",
       staff: "Staff incident",
       keys: "SDK keys",
     };
@@ -77,7 +75,7 @@ function ConsoleInner() {
     if (!session.data) {
       return;
     }
-    if (analyst && (page === "keys" || page === "staff" || page === "fleet" || page === "clusters")) {
+    if (analyst && (page === "keys" || page === "staff" || page === "fleet")) {
       void setPage("new");
       return;
     }
@@ -85,7 +83,7 @@ function ConsoleInner() {
       void setPage("new");
       return;
     }
-    if (!canCluster && (page === "fleet" || page === "clusters")) {
+    if (!canCluster && page === "fleet") {
       void setPage("new");
     }
   }, [analyst, canCluster, page, role, session.data, setPage]);
@@ -97,7 +95,7 @@ function ConsoleInner() {
     setJumpSearch("");
     if (composing) {
       await setPage("new");
-    } else if (page === "fleet" || page === "clusters") {
+    } else if (page === "fleet") {
       await setPage(next === "kubernetes" ? page : "new");
     } else {
       await setPage("new");
@@ -194,10 +192,6 @@ function ConsoleInner() {
         }}
         onFleet={async () => {
           await setPage("fleet");
-          await setRunId(null);
-        }}
-        onClusters={async () => {
-          await setPage("clusters");
           await setRunId(null);
         }}
         onStaff={async () => {
@@ -333,7 +327,6 @@ function ConsoleInner() {
           </div>
         ) : null}
         {page === "fleet" && canCluster && !analyst ? <FleetView /> : null}
-        {page === "clusters" && canCluster && !analyst ? <ClusterCatalog /> : null}
         {page === "staff" && role === "staff" ? <StaffIncidentPage /> : null}
         {page === "keys" && (role === "staff" || role === "operator") ? <SdkKeysPage /> : null}
         </div>
@@ -352,9 +345,6 @@ function mobileTitle(page: string, analyst: boolean, graphName?: string | null):
   }
   if (page === "fleet") {
     return "Fleet";
-  }
-  if (page === "clusters") {
-    return "Clusters";
   }
   if (page === "staff") {
     return "Staff";

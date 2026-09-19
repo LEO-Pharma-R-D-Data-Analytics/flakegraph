@@ -292,23 +292,15 @@ test.describe("active progress", () => {
 });
 
 test.describe("kubernetes fleet", () => {
-  test("shows stub nodes and cluster catalog", async ({ page }) => {
+  test("shows stub nodes", async ({ page }) => {
     await page.goto("/?runtime=kubernetes&page=fleet");
     await expect(page.getByRole("heading", { name: "Compute fleet" })).toBeVisible();
     // The dashboards are one click away when the deployment names them.
     await expect(page.getByRole("link", { name: "Open Grafana" })).toHaveAttribute("href", "https://grafana.example.test");
     await expect(page.getByRole("heading", { name: "gpu-a" })).toBeVisible();
     await expect(page.getByText("Fleet martial arts")).toBeVisible();
-    await page.getByRole("button", { name: "Clusters" }).click();
-    await expect(page.getByRole("heading", { name: "Registered clusters" })).toBeVisible();
-    await expect(page.getByRole("cell", { name: "lab", exact: true })).toBeVisible();
-  });
-
-  test("registers another cluster from the catalog", async ({ page }) => {
-    await page.goto("/?runtime=kubernetes&page=clusters");
-    await page.getByRole("textbox", { name: "Cluster name", exact: true }).fill("lab-west");
-    await page.getByRole("button", { name: "Save cluster" }).click();
-    await expect(page.getByRole("cell", { name: /lab-west/ })).toBeVisible();
+    // The console manages the fleet it runs in; there is no cluster to pick.
+    await expect(page.getByRole("button", { name: "Clusters" })).toHaveCount(0);
   });
 
   test("submits a stub fleet job", async ({ page }) => {

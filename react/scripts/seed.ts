@@ -444,17 +444,6 @@ async function seedKubernetes(stateRoot: string) {
     embeddingProvider: "sentence_transformers",
     owner: "ALICE",
   });
-  await atomicWriteJson(path.join(stateRoot, "clusters.json"), {
-    clusters: [
-      {
-        name: "lab",
-        namespace: "flakegraph",
-        context: "lab",
-        kubeconfig: "",
-        description: "Bench cluster",
-      },
-    ],
-  });
 }
 
 async function seedSnowflake(stateRoot: string) {

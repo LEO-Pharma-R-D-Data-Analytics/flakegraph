@@ -194,22 +194,9 @@ describe("snowflake runtime", () => {
 });
 
 describe("kubernetes runtime", () => {
-  it("registers clusters and reads a stub fleet snapshot", async () => {
+  it("reads a stub fleet snapshot and submits to it", async () => {
     const stateRoot = await mkdtemp(path.join(tmpdir(), "fg-k8s-"));
     const runtime = new KubernetesRuntime(process.cwd(), stateRoot, true);
-    const saved = await Effect.runPromise(
-      runtime.upsertCluster({
-        name: "lab1",
-        namespace: "flakegraph",
-        context: "lab",
-        kubeconfig: "",
-        description: "test",
-      }),
-    );
-    expect(saved.name).toBe("lab1");
-    await Effect.runPromise(runtime.selectCluster("lab1"));
-    const selected = await Effect.runPromise(runtime.selectedCluster());
-    expect(selected?.name).toBe("lab1");
     const cluster = await Effect.runPromise(runtime.cluster("flakegraph"));
     expect(cluster === null || Array.isArray(cluster.nodes)).toBe(true);
     const submitted = await Effect.runPromise(

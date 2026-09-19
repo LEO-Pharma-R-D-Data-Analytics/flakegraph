@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Boxes, ChevronRight, KeyRound, Plus, Search, Server, ShieldAlert, Trash2 } from "lucide-react";
+import { ChevronRight, KeyRound, Plus, Search, Server, ShieldAlert, Trash2 } from "lucide-react";
 import { trpc } from "@/components/providers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,7 +42,6 @@ interface SidebarProps {
   onRuntimeChange: (runtime: RuntimeMode) => void;
   onNewGraph: () => void;
   onFleet: () => void;
-  onClusters: () => void;
   onStaff: () => void;
   onKeys: () => void;
   onSelectRun: (runId: string) => void;
@@ -396,9 +395,6 @@ export function Sidebar(props: SidebarProps) {
             <>
               <NavButton active={props.page === "fleet"} onClick={() => go(props.onFleet)}>
                 <Server className="size-3.5" /> Fleet
-              </NavButton>
-              <NavButton active={props.page === "clusters"} onClick={() => go(props.onClusters)}>
-                <Boxes className="size-3.5" /> Clusters
               </NavButton>
             </>
           ) : null}

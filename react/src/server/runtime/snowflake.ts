@@ -11,7 +11,6 @@ import { unidentifiedViewer } from "../identity";
 import {
   SNOWFLAKE_CAPABILITIES,
   type Capability,
-  type ClusterProfile,
   type ClusterSnapshot,
   type GraphDataset,
   type GraphShare,
@@ -290,25 +289,6 @@ export class SnowflakeRuntime implements ControlPlane {
     return Effect.succeed([]);
   }
 
-  listClusters(): Effect.Effect<readonly ClusterProfile[], ControlPlaneError> {
-    return Effect.succeed([]);
-  }
-
-  upsertCluster(): Effect.Effect<ClusterProfile, ControlPlaneError> {
-    return Effect.fail(notSupported("The Snowflake module does not run kubectl"));
-  }
-
-  deleteCluster(): Effect.Effect<void, ControlPlaneError> {
-    return Effect.fail(notSupported("The Snowflake module does not run kubectl"));
-  }
-
-  selectCluster(): Effect.Effect<ClusterProfile, ControlPlaneError> {
-    return Effect.fail(notSupported("The Snowflake module does not run kubectl"));
-  }
-
-  selectedCluster(): Effect.Effect<ClusterProfile | null, ControlPlaneError> {
-    return Effect.succeed(null);
-  }
 
   graphOwner(graphId: string): Effect.Effect<string | null, ControlPlaneError> {
     return Effect.tryPromise({
