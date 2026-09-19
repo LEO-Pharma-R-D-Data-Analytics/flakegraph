@@ -38,6 +38,16 @@ async function setVisibility(page: Page, state: "hidden" | "visible") {
   }, state);
 }
 
+/** Open the Explore tab's Filters card and hand back its locator. */
+async function openFilters(page: Page) {
+  const filters = page.getByTestId("explore-filters");
+  if ((await filters.getAttribute("open")) === null) {
+    await filters.getByText("Filters", { exact: true }).click();
+  }
+  await expect(filters).toHaveAttribute("open", "");
+  return filters;
+}
+
 async function useFolderPath(page: Page, path: string) {
   await chooseSource(page, "Folder path");
   await page.getByLabel("Folder path").fill(path);
@@ -109,25 +119,58 @@ test.describe("local martial arts graph", () => {
     await expect(page.getByRole("heading", { name: "Martial arts corpus" })).toBeVisible();
   });
 
-  test("filters entities, relations, communities, and consumption", async ({ page }) => {
+  test("filters entities, relations, neighborhoods, and consumption", async ({ page }) => {
     await page.goto("/?runtime=local&page=run&run=run_martial_arts");
-    await page.locator("summary").filter({ hasText: "Filters" }).click();
-    await page.getByLabel("Entity types").selectOption("PERSON");
+    const filters = await openFilters(page);
+    await filters.getByTestId("facet-entity-types").getByRole("button", { name: "Choose entity types" }).click();
+    const panel = page.getByTestId("facet-entity-types-panel");
+    await panel.getByRole("checkbox", { name: /^Person/ }).check();
+    await panel.getByRole("button", { name: "Done" }).click();
     await expect(page.getByRole("cell", { name: "Jigoro Kano" }).first()).toBeVisible();
     await expect(page.getByRole("cell", { name: "Judo", exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Clear filters" }).first().click();
+    await page.getByTestId("filters-summary").getByRole("button", { name: "Clear filters" }).click();
     await expect(page.getByRole("cell", { name: "Judo", exact: true }).first()).toBeVisible();
     await page.getByRole("tab", { name: "Relations" }).click();
-    await page.getByLabel("Entity types").selectOption([]);
     await expect(page.getByRole("cell", { name: "DEVELOPED_BY" }).first()).toBeVisible();
-    await page.getByRole("tab", { name: "Communities" }).click();
+    await page.getByRole("tab", { name: "Neighborhoods" }).click();
     await expect(page.getByRole("cell", { name: "PERSON" }).first()).toBeVisible();
-    // Community filter chips carry the community's title, not its id.
-    const communityFacet = page.getByLabel("Communities", { exact: true });
-    await expect(communityFacet.locator("option", { hasText: "PERSON" })).toHaveCount(1);
-    await expect(page.getByRole("button", { name: /^Community community_/ })).toHaveCount(0);
     await page.getByRole("tab", { name: "Consumption" }).click();
     await expect(page.getByText(/usd/i).first()).toBeVisible();
+  });
+
+  test("narrows the canvas by entity and relation type from Filters", async ({ page }) => {
+    await page.goto("/?runtime=local&page=run&run=run_martial_arts");
+    const scope = page.getByTestId("explore-scope");
+    const summary = page.getByTestId("filters-summary");
+    await expect(scope).toContainText("Showing 74 of 74 entities and 104 relations");
+    await expect(summary).toHaveText("Filters");
+    const filters = await openFilters(page);
+    await filters.getByTestId("facet-entity-types").getByRole("button", { name: "Choose entity types" }).click();
+    const entityTypes = page.getByTestId("facet-entity-types-panel");
+    // Ranked by how many entities carry the type: 15 martial arts before 10 people.
+    await expect(entityTypes.getByRole("checkbox").first()).toHaveAccessibleName(/^Martial Art/);
+    await expect(entityTypes.getByRole("checkbox").nth(2)).toHaveAccessibleName(/^Person/);
+    await entityTypes.getByRole("checkbox", { name: /^Person/ }).check();
+    await entityTypes.getByRole("button", { name: "Done" }).click();
+    await expect(scope).toContainText("Showing 10 of 10 entities and 2 relations");
+    await filters.getByTestId("facet-relation-types").getByRole("button", { name: "Choose relation types" }).click();
+    const relationTypes = page.getByTestId("facet-relation-types-panel");
+    await relationTypes.getByLabel("Find relation types").fill("studied");
+    await expect(relationTypes).toContainText("1 of 20 relation types");
+    await relationTypes.getByRole("checkbox", { name: /^Studied Under/ }).check();
+    await relationTypes.getByRole("button", { name: "Done" }).click();
+    await expect(scope).toContainText("Showing 10 of 10 entities and 1 relation on the canvas");
+    await expect(
+      filters.getByTestId("facet-relation-types").getByRole("button", { name: "Remove Studied Under" }),
+    ).toBeVisible();
+    // The collapsed card still says what narrows the graph, and can undo it.
+    await filters.getByText("Filters", { exact: true }).click();
+    await expect(filters).not.toHaveAttribute("open");
+    await expect(summary).toContainText("1 entity type · 1 relation type");
+    await summary.getByRole("button", { name: "Clear filters" }).click();
+    await expect(summary).toHaveText("Filters");
+    await expect(scope).toContainText("Showing 74 of 74 entities and 104 relations");
+    await expect(filters).not.toHaveAttribute("open");
   });
 
   test("searches the sidebar catalog across datasets", async ({ page }) => {
@@ -682,6 +725,8 @@ test.describe("remaining report journeys", () => {
     await expect(page.getByRole("button", { name: /Judo/ }).first()).toBeVisible();
     await page.getByRole("button", { name: /Judo/ }).first().click();
     await expect(page.getByPlaceholder("Entity name or description")).toHaveValue("judo");
+    // The perspective's neighborhood lands in the Filters card.
+    await expect(page.getByTestId("filters-summary")).toContainText("1 neighborhood");
   });
 
   test("saves a named perspective and reopens it", async ({ page }) => {
@@ -1195,33 +1240,44 @@ test.describe("remaining report journeys", () => {
     await expect(page.getByTestId("ontology-proposal")).toHaveCount(0);
   });
 
-  test("picks neighborhoods from a ranked list rather than a wall of chips", async ({ page }) => {
+  test("picks neighborhoods from a ranked list inside Filters", async ({ page }) => {
     await page.goto("/?runtime=local&page=run&run=run_martial_arts");
-    const picker = page.getByTestId("neighborhood-picker");
-    // Nothing chosen: one button, no chips.
-    await expect(picker.getByRole("button", { name: "Choose neighborhoods" })).toBeVisible();
-    await expect(picker.getByRole("option")).toHaveCount(0);
-    await picker.getByRole("button", { name: "Choose neighborhoods" }).click();
-    const options = picker.getByRole("option");
-    const total = await options.count();
-    expect(total).toBeGreaterThan(1);
+    // The facet lives in the Filters card, not on a row of its own.
+    await expect(page.getByRole("button", { name: "Choose neighborhoods" })).toBeHidden();
+    const filters = await openFilters(page);
+    const facet = filters.getByTestId("facet-neighborhoods");
+    // Nothing chosen: one button, no chips, no list.
+    await expect(facet.getByRole("button", { name: "Choose neighborhoods" })).toBeVisible();
+    await expect(page.getByTestId("facet-neighborhoods-panel")).toHaveCount(0);
+    await facet.getByRole("button", { name: "Choose neighborhoods" }).click();
+    const panel = page.getByTestId("facet-neighborhoods-panel");
+    const options = panel.getByRole("checkbox");
+    expect(await options.count()).toBeGreaterThan(1);
     // Largest first, each with its size.
-    await expect(options.first()).toContainText(/\d+ entit/);
-    await picker.getByLabel("Find a neighborhood").fill("person");
-    await expect(picker.getByRole("option")).toHaveCount(1);
-    await picker.getByRole("option", { name: /PERSON/ }).click();
-    await picker.getByLabel("Find a neighborhood").fill("");
-    await picker.getByRole("option", { name: /MARTIAL_ART/ }).click();
-    await picker.getByRole("button", { name: "Done" }).click();
-    // The chosen ones are chips on the row; the canvas scope follows them.
-    await expect(picker.getByRole("option")).toHaveCount(0);
-    await expect(picker.getByRole("button", { name: "2 chosen" })).toBeVisible();
-    await expect(picker.getByRole("button", { name: "Remove PERSON" })).toBeVisible();
-    await expect(picker.getByRole("button", { name: "Remove MARTIAL_ART" })).toBeVisible();
-    await picker.getByRole("button", { name: "Remove PERSON" }).click();
-    await expect(picker.getByRole("button", { name: "1 chosen" })).toBeVisible();
-    await picker.getByRole("button", { name: "Remove MARTIAL_ART" }).click();
-    await expect(picker.getByRole("button", { name: "Choose neighborhoods" })).toBeVisible();
+    await expect(options.first()).toHaveAccessibleName(/^MARTIAL_ART/);
+    await expect(panel.getByRole("listitem").first()).toContainText("15 entities");
+    await expect(panel).toContainText("10 neighborhoods · 0 chosen");
+    await panel.getByLabel("Find neighborhoods").fill("person");
+    await expect(options).toHaveCount(1);
+    await expect(panel).toContainText("1 of 10 neighborhoods");
+    await panel.getByRole("checkbox", { name: /^PERSON/ }).check();
+    await panel.getByLabel("Find neighborhoods").fill("");
+    await panel.getByRole("checkbox", { name: /^MARTIAL_ART/ }).check();
+    await expect(panel).toContainText("10 neighborhoods · 2 chosen");
+    await panel.getByRole("button", { name: "Done" }).click();
+    // The chosen ones are chips beside the button; the canvas scope follows them.
+    await expect(panel).toHaveCount(0);
+    await expect(facet.getByRole("button", { name: "2 chosen" })).toBeVisible();
+    await expect(facet.getByRole("button", { name: "Remove PERSON" })).toBeVisible();
+    await expect(facet.getByRole("button", { name: "Remove MARTIAL_ART" })).toBeVisible();
+    await expect(page.getByTestId("explore-scope")).toContainText("Showing 25 of 25 entities and 19 relations");
+    await expect(page.getByTestId("filters-summary")).toContainText("2 neighborhoods");
+    await facet.getByRole("button", { name: "Remove PERSON" }).click();
+    await expect(facet.getByRole("button", { name: "1 chosen" })).toBeVisible();
+    await expect(page.getByTestId("filters-summary")).toContainText("1 neighborhood");
+    await facet.getByRole("button", { name: "Remove MARTIAL_ART" }).click();
+    await expect(facet.getByRole("button", { name: "Choose neighborhoods" })).toBeVisible();
+    await expect(page.getByTestId("filters-summary")).toHaveText("Filters");
   });
 
   test("shows a 1-hop neighborhood from a selected relation", async ({ page }) => {
