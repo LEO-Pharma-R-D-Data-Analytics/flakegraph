@@ -57,7 +57,15 @@ export class LocalRuntime implements ControlPlane {
   constructor(
     readonly repositoryRoot: string,
     readonly stateRoot: string,
+    /** Who is asking, when a gate or key identified them; the owner of what they submit. */
+    readonly currentViewer: Viewer | null = null,
   ) {}
+
+  /** The principal recorded as owner: the identified viewer, else the workspace's assumed identity. */
+  async writerPrincipal(): Promise<string | null> {
+    const name = this.currentViewer?.userName?.trim();
+    return name ? name.toUpperCase() : catalogWriterPrincipal(this.stateRoot);
+  }
 
   viewer(): Effect.Effect<Viewer, ControlPlaneError> {
     return Effect.succeed(unidentifiedViewer());
@@ -154,7 +162,7 @@ export class LocalRuntime implements ControlPlane {
               ? `${request.output.snowflake.database}.${request.output.snowflake.schema}`
               : request.output.workspacePath,
           pid: child.pid ?? null,
-          owner: await catalogWriterPrincipal(this.stateRoot),
+          owner: await this.writerPrincipal(),
           ...cloneFieldsFromRequest(request),
         });
         processRegistry.start({
@@ -465,9 +473,9 @@ export class LocalRuntime implements ControlPlane {
   }
 }
 
-export function createLocalRuntime(): LocalRuntime {
+export function createLocalRuntime(viewer: Viewer | null = null): LocalRuntime {
   const env = appEnv();
-  return new LocalRuntime(env.repositoryRoot, env.stateRoot);
+  return new LocalRuntime(env.repositoryRoot, env.stateRoot, viewer);
 }
 
 function failureSummary(events: RunSnapshot["events"], fallback: string | null): string {

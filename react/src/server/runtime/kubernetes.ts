@@ -59,7 +59,6 @@ import { LocalRuntime } from "./local";
 import { graphArtifactsExist, loadLocalGraph } from "../graph";
 import { readFleetProfile, type FleetProfile } from "../fleet";
 import { snapshotFromStatus } from "../fleet-status";
-import { catalogWriterPrincipal } from "../workspace";
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/;
 const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/;
@@ -73,8 +72,9 @@ export class KubernetesRuntime implements ControlPlane {
     readonly repositoryRoot: string,
     readonly stateRoot: string,
     readonly stubbed: boolean,
+    viewer: Viewer | null = null,
   ) {
-    this.local = new LocalRuntime(repositoryRoot, stateRoot);
+    this.local = new LocalRuntime(repositoryRoot, stateRoot, viewer);
   }
 
   viewer(): Effect.Effect<Viewer, ControlPlaneError> {
@@ -156,7 +156,7 @@ export class KubernetesRuntime implements ControlPlane {
             configPath,
             storageKind: request.output.kind,
             storageLocation: request.output.workspacePath,
-            owner: await catalogWriterPrincipal(this.stateRoot),
+            owner: await this.local.writerPrincipal(),
             baseRunId: revision?.baseRunId ?? null,
             ...cloneFieldsFromRequest(request),
           });
@@ -204,7 +204,7 @@ export class KubernetesRuntime implements ControlPlane {
             storageKind: request.output.kind,
             storageLocation: request.output.workspacePath,
             error: result.exitCode === 0 ? null : result.stderr,
-            owner: await catalogWriterPrincipal(this.stateRoot),
+            owner: await this.local.writerPrincipal(),
             baseRunId: revision?.baseRunId ?? null,
             ...cloneFieldsFromRequest(request),
           });
@@ -771,9 +771,9 @@ export class KubernetesRuntime implements ControlPlane {
   }
 }
 
-export function createKubernetesRuntime(): KubernetesRuntime {
+export function createKubernetesRuntime(viewer: Viewer | null = null): KubernetesRuntime {
   const env = appEnv();
-  return new KubernetesRuntime(env.repositoryRoot, env.stateRoot, env.stubRuntimes);
+  return new KubernetesRuntime(env.repositoryRoot, env.stateRoot, env.stubRuntimes, viewer);
 }
 
 async function readLiveCluster(namespace: string): Promise<ClusterSnapshot> {

@@ -222,6 +222,27 @@ describe("kubernetes runtime", () => {
     const retried = await Effect.runPromise(runtime.retry("job_k8s"));
     expect(retried.status).toBe("queued");
   });
+
+  it("records the identified viewer as the owner of what they submit", async () => {
+    const stateRoot = await mkdtemp(path.join(tmpdir(), "fg-k8s-owner-"));
+    // Behind a gate the viewer comes with the request, not from the
+    // workspace's assumed identity, and Mine is built on that owner.
+    const gated = new KubernetesRuntime(process.cwd(), stateRoot, true, {
+      userName: "utgdk@example.test",
+      email: "utgdk@example.test",
+      roles: [],
+    });
+    const submitted = await Effect.runPromise(
+      gated.submit(request(stateRoot, { runtime: "kubernetes", jobId: "job_owned", graphId: "graph_owned" })),
+    );
+    expect(submitted.raw.owner).toBe("UTGDK@EXAMPLE.TEST");
+    // With nobody identified, the laptop's assumed identity (none here) is the owner.
+    const anonymous = new KubernetesRuntime(process.cwd(), stateRoot, true);
+    const unowned = await Effect.runPromise(
+      anonymous.submit(request(stateRoot, { runtime: "kubernetes", jobId: "job_unowned", graphId: "graph_unowned" })),
+    );
+    expect(unowned.raw.owner).toBeNull();
+  });
 });
 
 async function waitFor<T>(fn: () => Promise<T>, attempts = 40): Promise<T> {

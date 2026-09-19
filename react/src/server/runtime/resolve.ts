@@ -10,12 +10,12 @@ export function resolveRuntime(runtime: RuntimeMode, viewer?: Viewer): ControlPl
   const env = appEnv();
   const selected = env.snowflakeHosted ? "snowflake" : runtime;
   if (selected === "kubernetes") {
-    return createKubernetesRuntime();
+    return createKubernetesRuntime(viewer ?? null);
   }
   if (selected === "snowflake") {
     return createSnowflakeRuntime(viewer);
   }
-  return createLocalRuntime();
+  return createLocalRuntime(viewer ?? null);
 }
 
 export function runtimeFromHeader(header: string | null): RuntimeMode {
