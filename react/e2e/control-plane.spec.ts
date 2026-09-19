@@ -303,6 +303,71 @@ test.describe("kubernetes fleet", () => {
     await expect(page.getByRole("button", { name: "Clusters" })).toHaveCount(0);
   });
 
+  test("keeps a large fleet readable", async ({ page }) => {
+    await page.goto("/?runtime=kubernetes&page=fleet");
+    // Four numbers describe the fleet however many pods it runs.
+    const summary = page.getByTestId("fleet-summary");
+    await expect(summary).toContainText("Nodes ready");
+    await expect(summary).toContainText("3 / 4");
+    await expect(summary).toContainText("Workers running");
+    await expect(summary).toContainText("37");
+    await expect(summary).toContainText("Pending / failed");
+    await expect(summary).toContainText("2 / 1");
+    // Four nodes still fit as cards; a busy node lists a page of leases and counts the rest.
+    await expect(page.getByTestId("fleet-node-grid")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "gpu-d" })).toBeVisible();
+    const leases = page.getByTestId("node-assignments-gpu-b");
+    await expect(leases).toContainText("23 leased tasks");
+    await expect(leases.getByRole("listitem")).toHaveCount(20);
+    await expect(leases).toContainText("3 more");
+    // The list opens on active pods with trouble first, a page at a time.
+    const table = page.getByTestId("fleet-workloads");
+    const count = page.getByTestId("fleet-workloads-count");
+    await expect(count).toContainText("58 active of 62 workloads");
+    await expect(table.getByRole("row")).toHaveCount(51);
+    const rows = table.getByRole("row");
+    await expect(rows.nth(1)).toContainText("worker-extract-oom-7");
+    await expect(rows.nth(1)).toContainText("Failed · 3 restarts");
+    await expect(rows.nth(2)).toContainText("worker-extract-24");
+    await expect(rows.nth(2)).toContainText("Waiting for node capacity (3/4 ready)");
+    await expect(rows.nth(4)).toContainText("ocr-shim-1");
+    await expect(rows.nth(4)).toContainText("Not ready · 5 restarts");
+    await expect(table).toContainText("Showing 50 of 58");
+    await table.getByRole("button", { name: /Show 8 more/ }).click();
+    await expect(table.getByRole("row")).toHaveCount(59);
+    await expect(table.getByRole("button", { name: /Show \d+ more/ })).toHaveCount(0);
+    // Finished Jobs wait behind the phase filter and read as completed, not as a fault.
+    await table.getByLabel("Phase filter").click();
+    await page.getByRole("option", { name: "Succeeded · 4" }).click();
+    await expect(count).toContainText("4 of 62 workloads");
+    await expect(table.getByRole("row")).toHaveCount(5);
+    await expect(table).toContainText("bench-export-p8k2z");
+    await expect(table.getByRole("cell", { name: "Completed" })).toHaveCount(4);
+    await expect(table).not.toContainText("not ready");
+    await table.getByLabel("Phase filter").click();
+    await page.getByRole("option", { name: "Active · 58" }).click();
+    // Component and search narrow the same list.
+    await table.getByLabel("Component filter").click();
+    await page.getByRole("option", { name: "Monitoring · 3" }).click();
+    await expect(count).toContainText("3 of 62 workloads");
+    await expect(table.getByRole("row")).toHaveCount(4);
+    await table.getByLabel("Component filter").click();
+    await page.getByRole("option", { name: /All components/ }).click();
+    await table.getByLabel("Search workloads").fill("vllm");
+    await expect(count).toContainText("3 of 62 workloads");
+    await expect(table).toContainText("vllm-a");
+    await expect(table).not.toContainText("vllm28-probe");
+    await table.getByLabel("Search workloads").fill("");
+    // A node card narrows the list to that node; the chip clears it.
+    await page.getByRole("button", { name: "Show workloads on gpu-b" }).click();
+    await expect(page.getByRole("button", { name: "Show workloads on gpu-b" })).toHaveAttribute("aria-pressed", "true");
+    await expect(count).toContainText("of 62 workloads");
+    await expect(table.getByRole("row").filter({ hasNotText: "gpu-b" })).toHaveCount(1);
+    await expect(table.getByRole("row").nth(1)).toContainText("worker-extract-oom-7");
+    await page.getByRole("button", { name: "Clear node filter gpu-b" }).click();
+    await expect(count).toContainText("58 active of 62 workloads");
+  });
+
   test("submits a stub fleet job", async ({ page }) => {
     await page.goto("/?runtime=kubernetes&page=new");
     await confirmEnvironmentIfNeeded(page);
