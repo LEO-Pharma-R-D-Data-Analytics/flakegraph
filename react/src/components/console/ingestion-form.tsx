@@ -936,13 +936,23 @@ export function IngestionForm({
         </Alert>
       ) : null}
 
-      {scanPii.data?.blocked && scanPii.data.hits.length ? (
-        <Alert variant="destructive">
-          PII {scanPii.data.hits.map((hit) => `${hit.kind} in ${hit.source}`).join("; ")}. Embeddings will not be written until you acknowledge residual risk.
-          <Button className="ml-2" size="sm" variant="secondary" onClick={() => ackPii.mutate({ sourceKey })}>
-            Acknowledge residual risk
-          </Button>
-        </Alert>
+      {scanPii.data?.hits.length ? (
+        scanPii.data.blocked ? (
+          <Alert variant="destructive">
+            PII {scanPii.data.hits.map((hit) => `${hit.kind} in ${hit.source}`).join("; ")}. Embeddings will not be
+            written until you acknowledge residual risk.
+            <Button className="ml-2" size="sm" variant="secondary" onClick={() => ackPii.mutate({ sourceKey })}>
+              Acknowledge residual risk
+            </Button>
+          </Alert>
+        ) : (
+          // What was found stays on screen after the acknowledgement, so the
+          // person starting the run still sees what it carries.
+          <Alert variant="warning" data-testid="pii-acknowledged">
+            PII {scanPii.data.hits.map((hit) => `${hit.kind} in ${hit.source}`).join("; ")} · residual risk acknowledged
+            for this source.
+          </Alert>
+        )
       ) : null}
 
       {preview ? (

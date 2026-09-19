@@ -763,6 +763,10 @@ test.describe("remaining report journeys", () => {
     await useFolderPath(page, `${result.data.json.stateRoot}/pii-pack`);
     await page.getByRole("button", { name: "Scan for PII" }).click();
     await expect(page.getByText(/PII email/i)).toBeVisible();
+    // Acknowledging keeps the finding on screen rather than making it vanish.
+    await page.getByRole("button", { name: "Acknowledge residual risk" }).click();
+    await expect(page.getByTestId("pii-acknowledged")).toContainText(/PII email .* residual risk acknowledged/);
+    await expect(page.getByRole("button", { name: "Acknowledge residual risk" })).toHaveCount(0);
   });
 
   test("compares estimate vs actual on consumption", async ({ page }) => {
