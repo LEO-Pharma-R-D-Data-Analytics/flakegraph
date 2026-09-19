@@ -1416,3 +1416,20 @@ def test_a_machine_with_a_console_key_reaches_the_api_past_the_gate_as_nobody() 
     )
     assert not [doc for doc in without if doc["kind"] == "IngressRoute"]
     assert not [doc for doc in _render(()) if doc["kind"] == "IngressRoute"]
+
+
+def test_the_gate_bounds_its_csrf_cookies() -> None:
+    """A sign-in loop must not grow the request header until the edge answers 431."""
+
+    rendered = _render(
+        (
+            "ingress.enabled=true",
+            "ingress.domain=example.test",
+            "ingress.authProxy.enabled=true",
+            "controlPlane.networkPolicy.enabled=true",
+        )
+    )
+    gate = _container(_pod(_one(rendered, "Deployment", f"{_FULLNAME}-auth")), "auth-proxy")
+    flags = dict(arg.split("=", 1) for arg in gate["args"] if arg.startswith("--") and "=" in arg)
+    assert flags["--cookie-csrf-per-request"] == "true"
+    assert int(flags["--cookie-csrf-per-request-limit"]) <= 16

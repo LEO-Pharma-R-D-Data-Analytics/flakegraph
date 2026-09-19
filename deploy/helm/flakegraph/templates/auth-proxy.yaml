@@ -95,6 +95,11 @@ spec:
             # belongs to.
             - --cookie-csrf-per-request=true
             - --cookie-csrf-expire=5m
+            # One cookie per flow, unbounded, is a request header that grows
+            # with every refused request until the edge answers 431 and the
+            # viewer is locked out for as long as the cookies live. A page with
+            # its assets needs a handful; the oldest beyond that are dropped.
+            - --cookie-csrf-per-request-limit=8
             # Keep the identity out of the cookie. An issuer that returns a large
             # id_token pushes the session past the 4kb cookie limit, and the
             # split cookies that follow do not survive the round trip - the user
