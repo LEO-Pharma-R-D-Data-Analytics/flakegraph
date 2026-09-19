@@ -607,9 +607,10 @@ test.describe("remaining report journeys", () => {
     await page.getByLabel("LLM provider").click();
     await page.getByRole("option", { name: "Ollama" }).click();
     await expect(page.getByLabel("LLM model")).toHaveValue("llama3.2");
-    await page.getByRole("button", { name: "Deep learning papers", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Deep learning papers", exact: true })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByLabel("Display name")).toHaveValue("Deep learning papers");
+    // Only packs whose files are on this host are offered: the papers have
+    // to be downloaded first, so they are not.
+    await expect(page.getByRole("button", { name: "Deep learning papers", exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Display name")).toHaveValue("Martial arts history");
     await expect(page.getByLabel("LLM model")).toHaveValue("llama3.2");
     await page.getByRole("button", { name: "Your files", exact: true }).click();
     await expect(page.getByRole("button", { name: "Your files", exact: true })).toHaveAttribute("aria-pressed", "true");

@@ -162,8 +162,14 @@ RUN set -- \
     && uv cache clean
 
 # Config examples are runtime inputs for local, on-prem, and SPCS execution.
-# Test data and docs stay outside the image and are mounted or staged instead.
+# Test data and docs stay outside the image and are mounted or staged instead,
+# except the small martial-arts corpus: it is the sample pack the console
+# offers for a first run and the gold set the Quality tab scores against, so a
+# fleet with nothing else to hand can still prove the pipeline. The papers
+# corpus is downloaded on demand and is not shipped.
 COPY --chown=kgprocessor:kgprocessor configs /app/configs
+COPY --chown=kgprocessor:kgprocessor data/martial_arts/files /app/data/martial_arts/files
+COPY --chown=kgprocessor:kgprocessor data/martial_arts/gold.json data/martial_arts/ontology.yaml data/martial_arts/manifest.jsonl data/martial_arts/LICENSE.md /app/data/martial_arts/
 
 # The console: the Node runtime and the standalone server the build stage
 # produced. Node is one binary; the copies are multi-arch, so they are right on

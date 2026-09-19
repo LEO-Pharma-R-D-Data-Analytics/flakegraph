@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { appEnv } from "../env";
+import { availableSamplePacks } from "../sample-packs";
 import { ClusterProfile, IngestionRequest, isSuccessStatus, standardSchema } from "../protocol/schema";
 import { availableRuntimes } from "../runtime/resolve";
 import { publicApiKeys } from "../api-keys";
@@ -65,6 +66,7 @@ export const appRouter = router({
         availableRuntimes: availableRuntimes(),
         repositoryRoot: appEnv().repositoryRoot,
         stateRoot: appEnv().stateRoot,
+        samplePacks: await availableSamplePacks(appEnv().repositoryRoot),
         role: workspace.role,
         suggestionMode: workspace.suggestionMode,
         lastSuccessRuntime: workspace.lastSuccessRuntime,

@@ -61,24 +61,8 @@ interface IngestionFormProps {
   onSubmitted?: (runId: string) => Promise<void> | void;
 }
 
-const SAMPLE_CORPORA = [
-  {
-    name: "Martial arts",
-    path: "data/martial_arts/files",
-    graphName: "Martial arts history",
-    why: "10 markdown files, gold.json beside them",
-  },
-  {
-    name: "Deep learning papers",
-    path: "data/deep_learning_papers/files",
-    graphName: "Deep learning papers",
-    why: "PDF-heavy sample with gold relations",
-  },
-] as const;
-
-function isSamplePath(path: string): boolean {
-  return SAMPLE_CORPORA.some((sample) => sample.path === path);
-}
+/** A hosted corpus the session says is on this host. */
+type SamplePack = { name: string; path: string; graphName: string; why: string };
 
 export function IngestionForm({
   runtime,
@@ -91,6 +75,11 @@ export function IngestionForm({
 }: IngestionFormProps) {
   const session = trpc.auth.session.useQuery();
   const workspace = trpc.workspace.get.useQuery();
+  // Sample packs are offered only when their files are on the host the
+  // runtime reads from; the fleet image carries the small one, a laptop
+  // checkout both, a bare install none.
+  const samplePacks: readonly SamplePack[] = session.data?.samplePacks ?? [];
+  const isSamplePath = (path: string) => samplePacks.some((sample) => sample.path === path);
   const clearPromotion = trpc.workspace.clearPromotion.useMutation();
   const runs = trpc.runs.list.useQuery({ limit: 20 });
   const [jobId] = useState(() => cryptoRandom("run"));
@@ -315,14 +304,12 @@ export function IngestionForm({
     setCapabilitiesSeen(capabilities);
     setOutputKind(capabilities.has("spcs") ? "snowflake" : "local_files");
   }
-  if (!capabilities.has("local")) {
-    if (sourceMode === "sample") {
-      setSourceMode("files");
-    }
-    if (sourceKind === "local_path") {
-      setSourceKind(defaultSourceKind(capabilities));
-      setSourcePath("");
-    }
+  if (sourceMode === "sample" && (!capabilities.has("local") || (session.data && samplePacks.length === 0))) {
+    setSourceMode("files");
+  }
+  if (!capabilities.has("local") && sourceKind === "local_path") {
+    setSourceKind(defaultSourceKind(capabilities));
+    setSourcePath("");
   }
 
   function resolvedPath() {
@@ -342,12 +329,12 @@ export function IngestionForm({
     return runtime === "snowflake" && stage.stage.trim() ? { kind: "snowflake_stage", ...stage } : null;
   }
 
-  function applySample(sample: (typeof SAMPLE_CORPORA)[number]) {
+  function applySample(sample: SamplePack) {
     setSourceMode("sample");
     setSourceKind("local_path");
     setSourcePath(sample.path);
     setGraphName((current) => {
-      const fromPack = SAMPLE_CORPORA.some((item) => item.graphName === current);
+      const fromPack = samplePacks.some((item) => item.graphName === current);
       return !current.trim() || fromPack ? sample.graphName : current;
     });
   }
@@ -356,8 +343,10 @@ export function IngestionForm({
     if (sourceMode === "sample") {
       return;
     }
-    const selected = SAMPLE_CORPORA.find((sample) => sample.path === sourcePath) ?? SAMPLE_CORPORA[0];
-    applySample(selected);
+    const selected = samplePacks.find((sample) => sample.path === sourcePath) ?? samplePacks[0];
+    if (selected) {
+      applySample(selected);
+    }
   }
 
   function enableYourFiles() {
@@ -594,7 +583,7 @@ export function IngestionForm({
   const [preflightRanFor, setPreflightRanFor] = useState<string | null>(null);
   const preflightVerdict = preflightRanFor === preflightInputs ? preflight.data : undefined;
 
-  const canUseSamplePack = capabilities.has("local");
+  const canUseSamplePack = capabilities.has("local") && samplePacks.length > 0;
   const sourceKindSelect = (
     <Field label="Source kind">
       <Select
@@ -749,7 +738,7 @@ export function IngestionForm({
                   ? sourceMode === "sample"
                     ? "Hosted example corpora. This replaces your files until you switch back."
                     : "Drop files to ingest. Switch to a sample pack only if you want to prove the pipeline first."
-                  : "Where workers read documents. Laptop sample packs are not available on this runtime."}
+                  : "Where workers read documents. No sample pack is on this host."}
               </CardDescription>
             </div>
             {canUseSamplePack && !revision ? (
@@ -788,7 +777,7 @@ export function IngestionForm({
           {sourceMode === "sample" && canUseSamplePack ? (
             <>
               <div className="grid gap-2 sm:grid-cols-2">
-                {SAMPLE_CORPORA.map((sample) => (
+                {samplePacks.map((sample) => (
                   <ChoiceTile
                     key={sample.path}
                     name={sample.name}
