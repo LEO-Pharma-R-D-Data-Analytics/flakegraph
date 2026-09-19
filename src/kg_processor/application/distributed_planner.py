@@ -5,13 +5,10 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, time
 from itertools import batched, chain
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
-
-import yaml
 
 from kg_processor.application.extraction_contracts import extraction_contract_fingerprint
 from kg_processor.application.prompt_registry import two_pass_prompt_fingerprints
@@ -530,9 +527,11 @@ def distributed_processing_compatibility_config(settings: Settings) -> dict[str,
     Transport addresses, credentials, timeouts, executable paths, batching, cache
     locations, writer destinations, and Snowflake connection details describe how
     a worker reaches infrastructure rather than what graph it should produce. They
-    are deliberately absent. The ontology is represented by its content digest
-    instead of its mount path, so equivalent mounts compare equal and changed
-    ontology bytes are detected.
+    are deliberately absent. So is the ontology: what a graph extracts is chosen
+    per run and travels in the run's stored configuration, which every worker
+    applies when it claims the run - a worker's own mounted profile is only the
+    default for runs that name none. What stays is what the worker *is*: its
+    models, parsers, prompts and graph policy.
     """
 
     full = settings.model_dump(mode="json", by_alias=True)
@@ -567,7 +566,6 @@ def distributed_processing_compatibility_config(settings: Settings) -> dict[str,
             full["embedding"],
             {"api_key", "batch_size", "device", "endpoint"},
         ),
-        "ontology": {"profile_sha256": _ontology_profile_digest(settings)},
         "extractors": full["extractors"],
         "graph": _without_keys(
             full["graph"],
@@ -576,6 +574,9 @@ def distributed_processing_compatibility_config(settings: Settings) -> dict[str,
                 "description_merge_parallelism",
                 "extraction_parallelism",
                 "resolution_parallelism",
+                # The vocabulary is the run's, like the ontology profile.
+                "entity_types",
+                "relation_types",
             },
         ),
     }
@@ -590,47 +591,3 @@ def _without_keys(value: object, excluded: set[str]) -> dict[str, object]:
     return {str(key): item for key, item in value.items() if str(key) not in excluded}
 
 
-def _ontology_profile_digest(settings: Settings) -> str | None:
-    """Identify ontology semantics independently of how the profile is carried.
-
-    A run submitted by the application inlines its profile so the run describes
-    itself wherever it is executed, while a fleet worker mounts the same ontology
-    as a file. Hashing the one as canonical content and the other as raw bytes
-    makes two identical ontologies compare unequal, and a run no worker can match
-    is simply never claimed: it stays queued with nothing on the page to say why.
-    Both forms are therefore read into the same canonical content first.
-    """
-
-    profile = settings.ontology.profile
-    if profile is None:
-        profile_path = settings.ontology.profile_path
-        if profile_path is None:
-            return None
-        # An empty or comment-only file reads as ``None``. The application's own
-        # inliners record that as an empty mapping, so this branch must too, or
-        # the two forms disagree again over an ontology that says nothing.
-        profile = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
-    canonical = json.dumps(
-        profile,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=_canonical_ontology_scalar,
-    )
-    return sha256_hex(canonical.encode("utf-8"))
-
-
-def _canonical_ontology_scalar(value: object) -> str:
-    """Render the scalars YAML admits and JSON does not, or refuse the profile.
-
-    An unquoted date reads as a date, and rendering it by its ISO text keeps an
-    unusual but valid ontology identifiable. A set is deliberately not rendered:
-    its text order follows hash randomization, so two workers reading the same
-    file would disagree about it and neither would claim the run — the very
-    failure this digest exists to prevent, reintroduced silently.
-    """
-
-    if isinstance(value, date | datetime | time):
-        return value.isoformat()
-    raise TypeError(
-        f"ontology profile contains a {type(value).__name__} that cannot be identified stably"
-    )

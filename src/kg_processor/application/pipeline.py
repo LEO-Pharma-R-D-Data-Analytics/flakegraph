@@ -150,13 +150,46 @@ class KgProcessorPipeline:
         self.relation_extractor = relation_extractor
         self.relation_verifier = relation_verifier
         self._loaded_ontology: LoadedOntology | None = None
+        self._owns_adapters = True
         # File-queue workers should isolate bad source files from the rest of a
         # claimed batch. Snapshot/local runs intentionally remain fail-fast so
         # operators notice a broken corpus instead of writing a partial graph.
         self._failed_job_file_results: list[JobFileResult] = []
 
+    def for_settings(self, settings: Settings) -> KgProcessorPipeline:
+        """Return a pipeline that runs these settings over the same adapters.
+
+        A distributed worker serves many runs, each carrying its own ontology in
+        its stored configuration. The providers behind the pipeline - a loaded
+        embedding model, an OCR pool, an LLM client - are the worker's and are
+        shared; only the settings, and the ontology they resolve to, are the
+        run's. The variant owns nothing, so closing it releases nothing.
+        """
+
+        variant = KgProcessorPipeline(
+            settings=settings,
+            file_source=self.file_source,
+            ocr=self.ocr,
+            llm=self.llm,
+            embeddings=self.embeddings,
+            writer=self.writer,
+            cache=self.cache,
+            claimed_files=self.claimed_files,
+            consumption=self.consumption,
+            write_scope_override=self.write_scope_override,
+            progress_sink=self.progress_sink,
+            entity_extractor=self.entity_extractor,
+            relation_extractor=self.relation_extractor,
+            relation_verifier=self.relation_verifier,
+        )
+        variant._owns_adapters = False
+        return variant
+
     def close(self) -> None:
         """Release adapters and cache sessions owned by this pipeline instance."""
+
+        if not self._owns_adapters:
+            return
 
         closed: set[int] = set()
         failures: list[Exception] = []

@@ -13,8 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import urlparse
 
-import yaml
-
+from kg_processor.domain.ontology import OntologyProfile
 from kg_processor.fleet.kubectl import (
     ClusterTarget,
     component,
@@ -85,7 +84,7 @@ def fleet_preflight(
         config_name = next(iter(config_maps))
         deployed = load_deployed_profile(config_map(target, namespace, config_name))
         profile_errors = semantic_mismatches(run, deployed)
-        profile_errors.extend(_ontology_mismatches(run, deployed, namespace, target, deployments))
+        profile_errors.extend(_ontology_mismatches(run))
         errors.extend(profile_errors)
         if not profile_errors:
             checks.append("Selected OCR, LLM, embedding, and ontology match fleet workers")
@@ -191,58 +190,24 @@ def _validate_worker_deployments(
     return config_maps
 
 
-def _ontology_mismatches(
-    run: Mapping[str, Any],
-    deployed: Mapping[str, Any],
-    namespace: str,
-    target: ClusterTarget,
-    deployments: Sequence[Mapping[str, Any]],
-) -> list[str]:
-    """Report an ontology the fleet workers could not agree with.
+def _ontology_mismatches(run: Mapping[str, Any]) -> list[str]:
+    """Report an ontology no worker could execute.
 
-    A submitted run carries its ontology inline so it describes itself wherever
-    it executes, while workers mount theirs as a file; the two are compared by
-    reading the mounted ConfigMap.
+    What a run extracts is the run's own choice: a worker applies the profile
+    the run carries inline, and a run that carries none executes with the
+    profile the workers mount, or the vocabulary their graph settings name.
+    The one failure left is a profile that does not load - reported here, in
+    seconds, rather than as a task error after the first document is parsed.
     """
 
     ontology = run.get("ontology")
-    selected = (
-        dict(ontology["profile"])
-        if isinstance(ontology, Mapping) and isinstance(ontology.get("profile"), Mapping)
-        else None
-    )
-    mounted_name = next(
-        (name for item in deployments if (name := mounted_config_map(item, "ontology"))),
-        None,
-    )
-    deployed_reference = deployed.get("ontology")
-    has_deployed = bool(mounted_name) or (
-        isinstance(deployed_reference, Mapping)
-        and any(deployed_reference.get(key) for key in ("profile", "profile_path"))
-    )
-    if selected and not has_deployed:
-        return [
-            "Selected ontology is not deployed to the fleet: workers mount no ontology, "
-            "so no worker can claim this run. Install the chart with "
-            "--set-file ontology.content=<profile.yaml>."
-        ]
-    if has_deployed and not selected:
-        return [
-            "Fleet workers mount an ontology but this run selects none, "
-            "so no worker can claim this run."
-        ]
-    if not selected or not mounted_name:
+    profile = ontology.get("profile") if isinstance(ontology, Mapping) else None
+    if not isinstance(profile, Mapping):
         return []
-    data = config_map(target, namespace, mounted_name).get("data", {})
-    text = next((value for value in data.values() if isinstance(value, str)), "")
-    loaded = yaml.safe_load(text) or {} if text.strip() else {}
-    if not isinstance(loaded, Mapping):
-        return [f"Fleet ontology ConfigMap {mounted_name} does not contain a mapping"]
-    if dict(loaded) != selected:
-        return [
-            f"Selected ontology differs from the one fleet workers mount ({mounted_name}), "
-            "so no worker can claim this run."
-        ]
+    try:
+        OntologyProfile.model_validate(dict(profile))
+    except ValueError as exc:
+        return [f"Selected ontology is not a valid profile: {exc}"]
     return []
 
 

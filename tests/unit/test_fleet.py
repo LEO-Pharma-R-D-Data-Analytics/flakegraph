@@ -217,32 +217,10 @@ def test_fleet_preflight_accepts_keda_workers_and_ready_local_models(
     assert "Fleet credential is available: KG_LLM_API_KEY" in result["checks"]
 
 
-def test_fleet_preflight_rejects_a_run_whose_ontology_no_worker_mounts(
+def test_fleet_preflight_accepts_a_runs_own_ontology_whatever_the_fleet_mounts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unmatched ontology leaves a run queued forever rather than failing it."""
-
-    _use(
-        monkeypatch,
-        _fleet_kubectl_fixture(
-            profile_ocr="fallback", model_servers=1, output_credential="KG_LLM_API_KEY"
-        ),
-    )
-
-    result = fleet_preflight(
-        _run(ontology={"profile": {"name": "general", "mode": "hybrid"}}),
-        "flakegraph",
-        ClusterTarget(),
-    )
-
-    assert result["ok"] is False
-    assert any("ontology is not deployed" in item for item in result["errors"])
-
-
-def test_fleet_preflight_rejects_an_ontology_that_differs_from_the_fleet(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Matching by name is not enough; changed ontology bytes change the graph."""
+    """A run's vocabulary is its own; the fleet's mounted profile is only a default."""
 
     _use(
         monkeypatch,
@@ -253,34 +231,39 @@ def test_fleet_preflight_rejects_an_ontology_that_differs_from_the_fleet(
             ontology={"name": "general", "mode": "strict"},
         ),
     )
+    profile = {
+        "name": "widgets",
+        "description": "Only widgets.",
+        "mode": "open",
+        "entity_types": [{"name": "WIDGET", "description": "A named widget."}],
+    }
+
+    result = fleet_preflight(_run(ontology={"profile": profile}), "flakegraph", ClusterTarget())
+
+    assert result["ok"] is True, result["errors"]
+    assert "Selected OCR, LLM, embedding, and ontology match fleet workers" in result["checks"]
+
+
+def test_fleet_preflight_rejects_an_ontology_that_does_not_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A profile that cannot be validated fails here, not after the first document."""
+
+    _use(
+        monkeypatch,
+        _fleet_kubectl_fixture(
+            profile_ocr="fallback", model_servers=1, output_credential="KG_LLM_API_KEY"
+        ),
+    )
 
     result = fleet_preflight(
-        _run(ontology={"profile": {"name": "general", "mode": "hybrid"}}),
+        _run(ontology={"profile": {"name": "broken", "mode": "hybrid"}}),
         "flakegraph",
         ClusterTarget(),
     )
 
     assert result["ok"] is False
-    assert any("differs from the one fleet workers mount" in item for item in result["errors"])
-
-
-def test_fleet_preflight_accepts_a_matching_ontology(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The run the operator actually wants must still pass."""
-
-    profile: dict[str, object] = {"name": "general", "mode": "hybrid"}
-    _use(
-        monkeypatch,
-        _fleet_kubectl_fixture(
-            profile_ocr="fallback",
-            model_servers=1,
-            output_credential="KG_LLM_API_KEY",
-            ontology=profile,
-        ),
-    )
-
-    result = fleet_preflight(_run(ontology={"profile": profile}), "flakegraph", ClusterTarget())
-
-    assert result["ok"] is True, result["errors"]
+    assert any("not a valid profile" in item for item in result["errors"])
 
 
 def test_fleet_preflight_rejects_missing_worker_service_account(

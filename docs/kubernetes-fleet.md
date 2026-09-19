@@ -358,7 +358,12 @@ names; the claiming worker resolves the credential value from this Secret.
 
 Use the same processing config for submission and workers. Worker identity,
 eligible stages, replica counts, and lease timing may differ; extraction,
-ontology, model, and graph semantics must match the submitted run.
+model, and graph semantics must match the submitted run. The ontology is the
+run's own: a run carries its profile inline in its stored configuration and
+every worker applies it when it claims the run, so one fleet builds graphs
+with different vocabularies. A run that names none is built with the profile
+the workers mount (`--set-file ontology.content=…`), which is what the console
+offers as the default types.
 
 The chart creates independent preparation, extraction, and finalization
 Deployments plus one KEDA `ScaledObject` per pool. PostgreSQL remains the source
@@ -927,7 +932,7 @@ and the recovery drill below succeed.
 
 A worker claims only tasks whose run was planned under its own configuration
 digest, and the demand signal counts only work the fleet can take. A change to
-provider, model, ontology, prompt, or graph settings therefore leaves every
+provider, model, prompt, or graph settings therefore leaves every
 run in flight with no workers and no autoscaling demand: it does not fail, it
 waits. Drain first — `distributed list` should show nothing active — before a
 digest-changing upgrade. Where that was not possible, `distributed status`

@@ -92,6 +92,40 @@ class TaskExecution:
 logger = logging.getLogger(__name__)
 
 
+_RUN_CONTEXT_CACHE_SIZE = 64
+
+
+@dataclass(frozen=True)
+class _RunContext:
+    """What one run executes with: its settings and the pipeline running them."""
+
+    settings: Settings
+    pipeline: DistributedPipeline
+
+
+def settings_for_run(base: Settings, run_config: dict[str, Any]) -> Settings:
+    """Apply a run's stored ontology to a worker's own settings.
+
+    The run's configuration is the snapshot the planner stored. Its ontology
+    profile, when carried inline, is what the run's graph is to be built with;
+    a profile the submitter only named by path is not readable here, so such a
+    run executes with the worker's mounted profile. ``base`` is returned as is
+    when the run changes nothing, so callers can tell the two apart.
+    """
+
+    ontology = run_config.get("ontology")
+    profile = ontology.get("profile") if isinstance(ontology, dict) else None
+    if not isinstance(profile, dict):
+        return base
+    if base.ontology.profile == profile and base.ontology.profile_path is None:
+        return base
+    return base.model_copy(
+        update={
+            "ontology": base.ontology.model_copy(update={"profile": profile, "profile_path": None})
+        }
+    )
+
+
 class DistributedWorker:
     """Execute eligible durable tasks sequentially in one worker process.
 
@@ -110,8 +144,15 @@ class DistributedWorker:
         task_store: TaskStore,
         artifact_store: ArtifactStore,
         manifest_publisher: GraphManifestPublisher | None = None,
+        pipeline_for: Callable[[Settings], DistributedPipeline] | None = None,
     ) -> None:
-        """Validate worker identity and retain its injected application dependencies."""
+        """Validate worker identity and retain its injected application dependencies.
+
+        ``pipeline_for`` builds the pipeline that executes one run's settings -
+        the worker's own with that run's ontology applied - over the worker's
+        adapters. Without it every run executes on ``pipeline`` as configured,
+        which is what a test double wants.
+        """
 
         if not worker_id.strip():
             raise ValueError("distributed worker id must not be blank")
@@ -127,6 +168,8 @@ class DistributedWorker:
         self.lease_duration = timedelta(seconds=settings.distributed.lease_seconds)
         self.retry_delay = timedelta(seconds=settings.distributed.retry_delay_seconds)
         self._declared_configuration = False
+        self._pipeline_for = pipeline_for
+        self._run_contexts: dict[str, _RunContext] = {}
 
     def _declare_served_configuration(self) -> None:
         """Record what this fleet serves, once per process.
@@ -331,23 +374,50 @@ class DistributedWorker:
     def _execute(self, lease: TaskLease) -> TaskExecution:  # noqa: PLR0911
         """Dispatch one validated lease to its stage-specific implementation."""
 
+        run = self._run_context(lease.task.run_id)
         if lease.task.stage == TaskStage.PREPARE_DOCUMENT:
-            return self._prepare_document(lease)
+            return self._prepare_document(lease, run)
         if lease.task.stage == TaskStage.EXTRACT_DOCUMENT_CONTEXT:
-            return self._extract_document_context(lease)
+            return self._extract_document_context(lease, run)
         if lease.task.stage == TaskStage.EXTRACT_ENTITY_WINDOW:
-            return TaskExecution((self._extract_entity_window(lease),))
+            return TaskExecution((self._extract_entity_window(lease, run),))
         if lease.task.stage == TaskStage.COMPACT_ENTITY_INVENTORY:
             return self._compact_entity_inventory(lease)
         if lease.task.stage == TaskStage.EXTRACT_RELATION_WINDOW:
-            return TaskExecution((self._extract_relation_window(lease),))
+            return TaskExecution((self._extract_relation_window(lease, run),))
         if lease.task.stage == TaskStage.COMPACT_DOCUMENT:
             return TaskExecution((self._compact_document(lease),))
         if lease.task.stage == TaskStage.FINALIZE_GRAPH:
-            return TaskExecution((self._finalize_graph(lease),))
+            return TaskExecution((self._finalize_graph(lease, run),))
         raise ValueError(f"unsupported distributed task stage: {lease.task.stage}")
 
-    def _prepare_document(self, lease: TaskLease) -> TaskExecution:
+    def _run_context(self, run_id: str) -> _RunContext:
+        """The settings and pipeline one run executes with, resolved once per run.
+
+        A run carries its ontology in its stored configuration. The worker's
+        own profile is the default for a run that names none; a run that does
+        is executed with its own, so two graphs built by one fleet can extract
+        different vocabularies. Bounded: a worker sees a handful of runs.
+        """
+
+        cached = self._run_contexts.get(run_id)
+        if cached is not None:
+            return cached
+        run_settings = settings_for_run(
+            self.settings, self.task_store.get_run_summary(run_id).run.config
+        )
+        pipeline = (
+            self.pipeline
+            if run_settings is self.settings or self._pipeline_for is None
+            else self._pipeline_for(run_settings)
+        )
+        context = _RunContext(settings=run_settings, pipeline=pipeline)
+        if len(self._run_contexts) >= _RUN_CONTEXT_CACHE_SIZE:
+            self._run_contexts.pop(next(iter(self._run_contexts)))
+        self._run_contexts[run_id] = context
+        return context
+
+    def _prepare_document(self, lease: TaskLease, run: _RunContext) -> TaskExecution:
         """Run OCR/chunking and fan its discovered windows into the shared queue.
 
         The returned follow-up definitions are committed with this task's success.
@@ -369,7 +439,7 @@ class DistributedWorker:
             path = Path(directory) / filename
             path.write_bytes(source.payload)
             input_file = InputFile.model_validate({**input_metadata, "path": path})
-            prepared = self.pipeline.prepare_documents([input_file])
+            prepared = run.pipeline.prepare_documents([input_file])
         ref = self.artifact_store.put(
             lease.task.run_id,
             ArtifactKind.PREPARED_DOCUMENT,
@@ -428,7 +498,7 @@ class DistributedWorker:
             barrier_task_id=final_task_id,
         )
 
-    def _extract_document_context(self, lease: TaskLease) -> TaskExecution:
+    def _extract_document_context(self, lease: TaskLease, run: _RunContext) -> TaskExecution:
         """Extract reusable focal entities, then fan out independent body windows.
 
         Keeping this queue stage between OCR and window extraction makes one LLM
@@ -440,7 +510,7 @@ class DistributedWorker:
         if len(inputs) != 1:
             raise ValueError("extract_document_context requires one prepared artifact")
         prepared = PreparedDocumentShard.model_validate_json(inputs[0].payload)
-        contextualized = self.pipeline.extract_document_context(prepared)
+        contextualized = run.pipeline.extract_document_context(prepared)
         context = DocumentContextShard(
             file_ids=contextualized.file_ids,
             document_context_entities=contextualized.document_context_entities,
@@ -547,7 +617,7 @@ class DistributedWorker:
             barrier_task_id=stable_id("task", lease.task.run_id, TaskStage.FINALIZE_GRAPH.value),
         )
 
-    def _extract_entity_window(self, lease: TaskLease) -> str:
+    def _extract_entity_window(self, lease: TaskLease, run: _RunContext) -> str:
         """Extract entities from one bounded window claimed from the shared queue.
 
         A compact dependency supplies reusable context and a content-addressed
@@ -579,7 +649,7 @@ class DistributedWorker:
             # copied into every window result.
             trace=[],
         )
-        extracted = self.pipeline.extract_window_entities(window_prepared)
+        extracted = run.pipeline.extract_window_entities(window_prepared)
         if extracted.logical_window_count != window.logical_window_count:
             raise ValueError("entity task reconstructed a different logical window count")
         ref = self.artifact_store.put(
@@ -707,7 +777,7 @@ class DistributedWorker:
             ),
         )
 
-    def _extract_relation_window(self, lease: TaskLease) -> str:
+    def _extract_relation_window(self, lease: TaskLease, run: _RunContext) -> str:
         """Extract relations in one window against its complete document inventory."""
 
         inventory_inputs = self._dependency_artifacts(lease, ArtifactKind.DOCUMENT_ENTITY_INVENTORY)
@@ -731,7 +801,7 @@ class DistributedWorker:
             documents_processed=0,
             chunks=window.chunks,
         )
-        extracted = self.pipeline.extract_window_relations(
+        extracted = run.pipeline.extract_window_relations(
             window_prepared,
             inventory.entities,
         )
@@ -828,14 +898,14 @@ class DistributedWorker:
         )
         return ref.id
 
-    def _finalize_graph(self, lease: TaskLease) -> str:
+    def _finalize_graph(self, lease: TaskLease, run: _RunContext) -> str:
         """Select the local or partitioned engine without a corpus-size cutoff."""
 
         if _use_spark_finalization(self.settings):
-            return self._finalize_graph_with_spark(lease)
-        return self._finalize_graph_locally(lease)
+            return self._finalize_graph_with_spark(lease, run)
+        return self._finalize_graph_locally(lease, run)
 
-    def _finalize_graph_with_spark(self, lease: TaskLease) -> str:
+    def _finalize_graph_with_spark(self, lease: TaskLease, run: _RunContext) -> str:
         """Coordinate distributed finalization and persist only its small manifest.
 
         Spark executors read immutable stage objects directly. The leased worker is
@@ -846,7 +916,7 @@ class DistributedWorker:
         stage_kinds = {ArtifactKind.PREPARED_DOCUMENT, ArtifactKind.EXTRACTED_DOCUMENT}
         inputs = self.artifact_store.list_run_artifacts(lease.task.run_id, stage_kinds)
         inputs.extend(self._inherited_artifact_refs(lease, stage_kinds))
-        manifest = SparkGraphFinalizer(self.settings, report).finalize(
+        manifest = SparkGraphFinalizer(run.settings, report).finalize(
             SparkFinalizationRequest(
                 run_id=lease.task.run_id,
                 graph_id=lease.task.scope_id,
@@ -875,7 +945,7 @@ class DistributedWorker:
         report(finalization_progress("persist_manifest", completed=1, total=1))
         return ref.id
 
-    def _finalize_graph_locally(self, lease: TaskLease) -> str:
+    def _finalize_graph_locally(self, lease: TaskLease, run: _RunContext) -> str:
         """Recombine stage objects for the lightweight in-process execution path."""
 
         report = self._task_progress_reporter(lease)
@@ -895,7 +965,7 @@ class DistributedWorker:
         report(finalization_progress("read_artifacts", completed=1, total=1))
         report(finalization_progress("materialize_inputs", completed=1, total=1))
         report(finalization_progress("resolve_entities", completed=0, total=1))
-        batch = self.pipeline.finalize_document_shards(document_shards, write=True)
+        batch = run.pipeline.finalize_document_shards(document_shards, write=True)
         for phase, _label in FINALIZATION_PHASES[4:11]:
             report(finalization_progress(phase, completed=1, total=1))
         report(finalization_progress("persist_manifest", completed=0, total=1))

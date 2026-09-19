@@ -1415,131 +1415,127 @@ def test_worker_stays_alive_when_lost_lease_blocks_failure_transition(
     assert result.error["transition_error_type"] == "RuntimeError"
 
 
-def test_the_same_ontology_matches_whether_it_is_inlined_or_mounted(tmp_path: Path) -> None:
-    """Let a run carrying its ontology work with a fleet that mounts the same one.
+def test_the_ontology_is_the_runs_not_the_fleets(tmp_path: Path) -> None:
+    """Keep what a graph extracts out of what makes a worker eligible.
 
-    The application inlines the profile so a run describes itself wherever it
-    executes, while a fleet worker mounts that ontology as a file. Judged by how
-    the profile is carried rather than what it says, the two never match, and a
-    run whose ontology no worker matches is never claimed: it sits queued with
-    nothing on the page to explain it.
+    A fleet serves many graphs, and which vocabulary each extracts is chosen
+    per run. Judged by the ontology, two runs with different types would need
+    two fleets; judged without it, one fleet claims both and executes each
+    with the ontology its run carries. So the digest ignores the profile in
+    every form - inline, mounted, empty, or with a plain YAML date in it.
     """
 
+    settings = _settings(tmp_path)
+    baseline = distributed_processing_config_digest(settings)
     profile = {
         "name": "general",
         "mode": "closed",
         "entity_types": [{"name": "PERSON", "description": "A named human being."}],
-        "relation_types": [
-            {
-                "name": "related_to",
-                "description": "A stated association.",
-                "source_types": ["PERSON"],
-                "target_types": ["PERSON"],
-            }
-        ],
+        "relation_types": [{"name": "related_to", "description": "A stated association."}],
     }
     mounted_path = tmp_path / "ontology.yaml"
-    mounted_path.write_text(yaml.safe_dump(profile, sort_keys=True), encoding="utf-8")
-
-    settings = _settings(tmp_path)
-    inlined = settings.model_copy(
-        update={"ontology": settings.ontology.model_copy(update={"profile": profile})}
+    mounted_path.write_text(
+        yaml.safe_dump({**profile, "revised": "2026-08-07"}, sort_keys=True), encoding="utf-8"
     )
-    mounted = settings.model_copy(
-        update={
-            "ontology": settings.ontology.model_copy(
-                update={"profile": None, "profile_path": mounted_path}
-            )
-        }
+    for ontology in (
+        settings.ontology.model_copy(update={"profile": profile}),
+        settings.ontology.model_copy(update={"profile": None, "profile_path": mounted_path}),
+        settings.ontology.model_copy(update={"profile": {}}),
+    ):
+        assert (
+            distributed_processing_config_digest(settings.model_copy(update={"ontology": ontology}))
+            == baseline
+        )
+    relabelled = settings.model_copy(
+        update={"graph": settings.graph.model_copy(update={"entity_types": ["WIDGET"]})}
     )
-
-    assert distributed_processing_config_digest(inlined) == (
-        distributed_processing_config_digest(mounted)
-    )
-
-    # A different ontology is still a different run, whichever way it is carried.
-    changed = dict(profile)
-    changed["entity_types"] = [{"name": "PERSON", "description": "Someone else entirely."}]
-    reworded = settings.model_copy(
-        update={"ontology": settings.ontology.model_copy(update={"profile": changed})}
-    )
-    assert distributed_processing_config_digest(reworded) != (
-        distributed_processing_config_digest(inlined)
-    )
+    assert distributed_processing_config_digest(relabelled) == baseline
+    assert "ontology" not in distributed_processing_compatibility_config(settings)
 
 
-def test_an_ontology_that_says_nothing_matches_in_either_form(tmp_path: Path) -> None:
-    """Agree about an empty ontology too, not only a populated one.
+def test_a_worker_executes_a_run_with_the_ontology_the_run_carries(tmp_path: Path) -> None:
+    """Build each graph with its own vocabulary on one fleet.
 
-    An empty or comment-only file reads as nothing at all, while the application
-    records the same absence as an empty mapping. Left to disagree, a fleet
-    configured without an ontology is exactly as unclaimable as one whose
-    ontology differs.
+    The run's stored configuration carries the profile the console composed;
+    the worker applies it over its own providers. A run that carries none
+    executes with the worker's mounted profile, and two runs never share one
+    resolved pipeline.
     """
 
     settings = _settings(tmp_path)
-    for content in ("", "# an ontology that has not been written yet\n"):
-        empty = tmp_path / "empty.yaml"
-        empty.write_text(content, encoding="utf-8")
-        mounted = settings.model_copy(
-            update={
-                "ontology": settings.ontology.model_copy(
-                    update={"profile": None, "profile_path": empty}
-                )
+    store = _worker_store(settings)
+    profile = {
+        "name": "widgets",
+        "description": "Only widgets.",
+        "mode": "open",
+        "entity_types": [{"name": "WIDGET", "description": "A named widget."}],
+    }
+    assert store.run is not None
+    store.run = store.run.model_copy(
+        update={"config": {**store.run.config, "ontology": {"profile": profile}}}
+    )
+    source = b"public source"
+    source_ref = store.put(
+        "run-test",
+        ArtifactKind.SOURCE_DOCUMENT,
+        source,
+        "text/plain",
+        metadata={
+            "input_file": {
+                "id": "file-1",
+                "source_uri": "memory://file-1",
+                "checksum": sha256_hex(source),
+                "mime_type": "text/plain",
+                "size_bytes": len(source),
+                "filename": "source.txt",
             }
-        )
-        inlined = settings.model_copy(
-            update={"ontology": settings.ontology.model_copy(update={"profile": {}})}
-        )
-
-        assert distributed_processing_config_digest(mounted) == (
-            distributed_processing_config_digest(inlined)
-        ), content
-
-
-def test_an_ontology_that_cannot_be_identified_stably_is_refused(tmp_path: Path) -> None:
-    """Refuse a profile whose identity would differ between two readers.
-
-    A YAML set becomes a Python set, whose text order follows hash
-    randomization. Rendered rather than refused, two workers reading one file
-    would disagree about it and neither would claim the run — silently, which is
-    the failure this digest exists to prevent.
-    """
-
-    settings = _settings(tmp_path)
-    unstable = settings.model_copy(
-        update={"ontology": settings.ontology.model_copy(update={"profile": {"tags": {"a", "b"}}})}
+        },
     )
-
-    with pytest.raises(TypeError, match="cannot be identified stably"):
-        distributed_processing_config_digest(unstable)
-
-
-def test_an_ontology_carrying_a_plain_yaml_date_can_still_be_identified(
-    tmp_path: Path,
-) -> None:
-    """Hash the ontologies YAML permits, not only the ones JSON happens to share.
-
-    YAML reads an unquoted date as a date rather than a string. Identifying the
-    profile has to survive that: raised here, it stops every worker in the fleet
-    before any of them can claim a task.
-    """
-
-    dated = tmp_path / "dated.yaml"
-    dated.write_text(
-        "name: general\nrevised: 2026-08-07\nentity_types: []\nrelation_types: []\n",
-        encoding="utf-8",
+    store.lease = _lease(
+        _task(TaskStage.PREPARE_DOCUMENT, payload={"source_artifact_id": source_ref.id})
     )
-    settings = _settings(tmp_path)
-    mounted = settings.model_copy(
-        update={
-            "ontology": settings.ontology.model_copy(
-                update={"profile": None, "profile_path": dated}
-            )
-        }
-    )
+    default_pipeline = RecordingPipeline()
+    built_for: list[Settings] = []
+    run_pipeline = RecordingPipeline()
 
-    assert distributed_processing_config_digest(mounted)
+    def pipeline_for(run_settings: Settings) -> RecordingPipeline:
+        built_for.append(run_settings)
+        return run_pipeline
+
+    worker = DistributedWorker(
+        settings,
+        "worker-1",
+        {TaskStage.PREPARE_DOCUMENT},
+        default_pipeline,
+        store,
+        store,
+        pipeline_for=pipeline_for,
+    )
+    assert worker.process_one().succeeded is True
+
+    (run_settings,) = built_for
+    assert run_settings.ontology.profile == profile
+    assert run_settings.ontology.profile_path is None
+    assert len(run_pipeline.prepared_files) == 1
+    assert default_pipeline.prepared_files == []
+
+    # A run that carries no profile runs on the worker's own pipeline.
+    store.run = store.run.model_copy(update={"config": {**store.run.config, "ontology": {}}})
+    store.lease = _lease(
+        _task(TaskStage.PREPARE_DOCUMENT, payload={"source_artifact_id": source_ref.id})
+    )
+    worker = DistributedWorker(
+        settings,
+        "worker-1",
+        {TaskStage.PREPARE_DOCUMENT},
+        default_pipeline,
+        store,
+        store,
+        pipeline_for=pipeline_for,
+    )
+    assert worker.process_one().succeeded is True
+    assert len(built_for) == 1
+    assert len(default_pipeline.prepared_files) == 1
 
 
 def test_processing_digest_ignores_worker_local_transport_settings(tmp_path: Path) -> None:
@@ -1624,32 +1620,6 @@ def test_processing_digest_ignores_graph_identity(tmp_path: Path) -> None:
 
     assert distributed_processing_config_digest(renamed) == (
         distributed_processing_config_digest(settings)
-    )
-
-
-def test_processing_digest_identifies_ontology_content_not_mount_path(tmp_path: Path) -> None:
-    """Accept equivalent ontology mounts and reject changed semantic content."""
-
-    first_path = tmp_path / "first-ontology.yaml"
-    second_path = tmp_path / "second-ontology.yaml"
-    changed_path = tmp_path / "changed-ontology.yaml"
-    first_path.write_text("entity_types: [PERSON]\n", encoding="utf-8")
-    second_path.write_text("entity_types: [PERSON]\n", encoding="utf-8")
-    changed_path.write_text("entity_types: [LOCATION]\n", encoding="utf-8")
-    settings = _settings(tmp_path)
-
-    def with_ontology(path: Path) -> Settings:
-        """Return the common profile with one deployment-specific ontology mount."""
-
-        return settings.model_copy(
-            update={"ontology": settings.ontology.model_copy(update={"profile_path": path})}
-        )
-
-    assert distributed_processing_config_digest(with_ontology(first_path)) == (
-        distributed_processing_config_digest(with_ontology(second_path))
-    )
-    assert distributed_processing_config_digest(with_ontology(first_path)) != (
-        distributed_processing_config_digest(with_ontology(changed_path))
     )
 
 

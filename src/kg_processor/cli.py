@@ -422,6 +422,8 @@ def distributed_worker(
         store,
         store,
         build_graph_manifest_publisher(settings, store.blob_store),
+        # A run's own ontology executes over this worker's providers.
+        pipeline_for=pipeline.for_settings,
     )
     try:
         if once:
