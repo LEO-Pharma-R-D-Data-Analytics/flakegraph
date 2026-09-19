@@ -146,7 +146,9 @@ export function OntologyEditor({
                 <p className="text-muted-foreground">
                   {proposal.source === "model"
                     ? "Suggested by the model from your description."
-                    : "No model is configured for the console, so these are the nouns of your description."}
+                    : proposal.modelFailure
+                      ? `The model did not answer (${proposal.modelFailure}), so these are the nouns of your description.`
+                      : "No model is configured for the console, so these are the nouns of your description."}
                 </p>
                 <TermRow label="Types" terms={proposedTerms(proposal.types)} />
                 <TermRow label="Relations" terms={proposedTerms(proposal.relations)} />
@@ -176,7 +178,7 @@ export function OntologyEditor({
                 disabled={Boolean(locked)}
                 onClick={() => onChange({ ...value, relations: mode.id })}
                 className={cn(
-                  "flex flex-col items-start gap-1 rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-default",
+                  "flex flex-col items-start gap-1 rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-default disabled:opacity-70",
                   value.relations === mode.id
                     ? "border-primary bg-accent ring-2 ring-primary"
                     : "border-border bg-background hover:bg-muted/50",

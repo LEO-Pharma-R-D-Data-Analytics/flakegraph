@@ -33,12 +33,16 @@ Given a description of the graph someone wants, propose the entity types and rel
 - Include DATE only when time matters to the description, and always include a general RELATED_TO relation.
 - Descriptions are one short sentence each, stating what qualifies.`;
 
-const PROPOSAL_TIMEOUT_MS = 30_000;
+// A reasoning model behind the gateway takes tens of seconds to write a
+// proposal; the button says it is working.
+const PROPOSAL_TIMEOUT_MS = 90_000;
 
 export interface OntologyProposalResult extends OntologyProposal {
   /** Whether a model wrote the proposal or the word heuristic did. */
   source: "model" | "heuristic";
   descriptions: Record<string, string>;
+  /** Why the model did not answer, when one was configured and asked. */
+  modelFailure: string | null;
 }
 
 /**
@@ -53,6 +57,7 @@ export async function proposeOntologyForIntent(
   goldTypes: readonly string[] = [],
 ): Promise<OntologyProposalResult> {
   const model = await probeAskModel();
+  let modelFailure: string | null = null;
   if (model) {
     try {
       const result = await generateText({
@@ -81,13 +86,18 @@ export async function proposeOntologyForIntent(
             ? `Proposed types are a coverage overlay. Gold still needs ${missing.join(", ")} before a full corpus run.`
             : "Proposed by the model from your description. Confirm before a full corpus run.",
           source: "model",
+          modelFailure: null,
         };
       }
-    } catch {
-      // The heuristic below still answers; the caller sees which one did.
+      modelFailure = "The model returned no proposal.";
+    } catch (error) {
+      // The heuristic below still answers; the caller sees which one did,
+      // and why the model did not.
+      modelFailure = error instanceof Error ? error.message : String(error);
+      console.error("Ontology proposal: the model did not answer", error);
     }
   }
-  return { ...heuristicProposal(intent, goldTypes), descriptions: {}, source: "heuristic" };
+  return { ...heuristicProposal(intent, goldTypes), descriptions: {}, source: "heuristic", modelFailure };
 }
 
 function unique(values: string[]): string[] {
