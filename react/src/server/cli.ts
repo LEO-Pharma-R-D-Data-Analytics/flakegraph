@@ -16,7 +16,7 @@ export function flakegraphCommand(args: string[]): Command.Command {
 
 export async function runFlakegraph(
   args: string[],
-  options: { cwd: string; env?: Record<string, string> },
+  options: { cwd: string; env?: Record<string, string>; timeoutMs?: number },
 ): Promise<CommandResult> {
   const command = flakegraphCommand(args).pipe(
     Command.workingDirectory(options.cwd),
@@ -32,6 +32,16 @@ export async function runFlakegraph(
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    // A bounded call is killed at its deadline and says so; the caller
+    // decides what the silence meant.
+    const timer =
+      options.timeoutMs && options.timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGKILL");
+          }, options.timeoutMs)
+        : null;
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
     });
@@ -39,9 +49,15 @@ export async function runFlakegraph(
       stderr += chunk.toString("utf8");
     });
     child.on("error", (error) => {
+      if (timer) clearTimeout(timer);
       resolve({ exitCode: 1, stdout, stderr: error.message });
     });
     child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        resolve({ exitCode: null, stdout, stderr: `${stderr.trim()}\nflakegraph did not finish within ${options.timeoutMs} ms`.trim() });
+        return;
+      }
       resolve({ exitCode: code, stdout, stderr });
     });
   });

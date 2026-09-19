@@ -16,20 +16,36 @@ import { SUPPORTED_SUFFIXES } from "./providers";
  * what is there. The listing therefore matches what the run will ingest, and
  * credentials stay where the pipeline already finds them.
  */
+/**
+ * How long a listing may take before the console answers instead.
+ *
+ * A wrong endpoint or a credential chain that walks every provider before
+ * giving up (Azure's does, with IMDS probes that time out) can hold a
+ * listing for minutes; the form should say so rather than spin.
+ */
+export const LISTING_TIMEOUT_MS = 60_000;
+
 export async function listRemoteObjects(
   sourceKind: SourceKind,
   source: Record<string, unknown>,
-  options: { cwd: string; stateRoot: string; env?: Record<string, string>; limit?: number },
+  options: { cwd: string; stateRoot: string; env?: Record<string, string>; limit?: number; timeoutMs?: number },
 ): Promise<SourceObject[]> {
   const directory = path.join(options.stateRoot, "browse");
   await mkdir(directory, { recursive: true });
   const configPath = path.join(directory, `${randomUUID()}.yaml`);
   await writeFile(configPath, stringifyYaml(sourceSettings(sourceKind, source)), "utf8");
   try {
+    const timeoutMs = options.timeoutMs ?? LISTING_TIMEOUT_MS;
     const result = await runFlakegraph(
       ["sources", "list", "--config", configPath, "--limit", String(options.limit ?? 1_000)],
-      { cwd: options.cwd, env: options.env ?? {} },
+      { cwd: options.cwd, env: options.env ?? {}, timeoutMs },
     );
+    if (result.exitCode === null) {
+      throw new Error(
+        `The ${sourceKind} source did not answer within ${Math.round(timeoutMs / 1000)} s. ` +
+          "Check the endpoint and the credentials the pipeline runs with.",
+      );
+    }
     if (result.exitCode !== 0) {
       throw new Error(result.stderr.trim() || result.stdout.trim() || `Listing the ${sourceKind} source failed`);
     }

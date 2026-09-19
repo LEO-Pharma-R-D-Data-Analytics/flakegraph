@@ -60,6 +60,10 @@ async function sourcesList(configPath: string, limit: number) {
     process.stderr.write(`${kind} file source requires a bucket\n`);
     process.exit(1);
   }
+  if (container === "slow") {
+    // A credential chain that never answers.
+    await new Promise((resolve) => setTimeout(resolve, 60_000));
+  }
   if (container === "missing") {
     process.stderr.write("NoSuchBucket: The specified bucket does not exist\n");
     process.exit(1);

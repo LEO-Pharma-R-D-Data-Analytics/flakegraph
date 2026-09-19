@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import { resetAppEnv } from "./env";
 import { LocalRuntime } from "./runtime/local";
+import { listRemoteObjects } from "./sources";
 import { SnowflakeRuntime } from "./runtime/snowflake";
 import { KubernetesRuntime } from "./runtime/kubernetes";
 import type { IngestionRequest } from "./protocol/schema";
@@ -106,6 +107,19 @@ describe("local runtime", () => {
     await expect(
       Effect.runPromise(runtime.listSourceObjects({ kind: "snowflake_stage", stage: "@docs" })),
     ).rejects.toThrow(/not available for snowflake_stage/);
+  });
+
+  it("gives up on a listing that never answers and says so", async () => {
+    const stateRoot = await mkdtemp(path.join(tmpdir(), "fg-local-slow-"));
+    process.env.FLAKEGRAPH_APP_STATE_ROOT = stateRoot;
+    process.env.FLAKEGRAPH_CLI = `bun ${path.resolve(import.meta.dirname, "../../scripts/fake-flakegraph.ts")}`;
+    resetAppEnv();
+    const started = Date.now();
+    await expect(
+      listRemoteObjects("s3", { kind: "s3", bucket: "slow" }, { cwd: process.cwd(), stateRoot, timeoutMs: 1_500 }),
+    ).rejects.toThrow(/did not answer within 2 s/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(await readdir(path.join(stateRoot, "browse"))).toEqual([]);
   });
 
   it("fails preflight for a missing corpus marker", async () => {
