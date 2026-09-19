@@ -423,6 +423,13 @@ test.describe("kubernetes fleet", () => {
       await confirm.click();
     }
     await expect(page.getByTestId("revision-summary")).toContainText("Keeps 1 document · removes 1");
+    // Removing the last one too, with nothing added, is refused: a version
+    // needs at least one document.
+    await page.getByLabel("Remove karate-history.md").check();
+    await expect(page.getByTestId("revision-summary")).toContainText("a version needs at least one document");
+    await expect(page.getByRole("button", { name: "Build new version" })).toBeDisabled();
+    await page.getByLabel("Remove karate-history.md").uncheck();
+    await expect(page.getByRole("button", { name: "Build new version" })).toBeEnabled();
     await page.getByRole("button", { name: "Build new version" }).click();
     await expect(page.getByText(/Building a new version of Fleet judo/)).toBeVisible();
     await expect(page).not.toHaveURL(/run=run_k8s_done/);

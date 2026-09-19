@@ -565,8 +565,15 @@ export function IngestionForm({
   const envBlocked = envChanged && !envConfirmed;
   const incompleteSource = !request;
   const dropsOnly = Boolean(request?.revision && request.revision.addDocuments === false);
+  // A version with nothing in it is not a graph: removing every document
+  // without adding any is refused here, not after a run.
+  const emptyRevision = Boolean(revision && revision.keptCount === 0 && objectCount === 0);
   const startBlocked =
-    grantsBlocked || (!dropsOnly && (emptyLocalListing || listingFailed)) || envBlocked || incompleteSource;
+    grantsBlocked ||
+    (!dropsOnly && (emptyLocalListing || listingFailed)) ||
+    envBlocked ||
+    incompleteSource ||
+    emptyRevision;
 
   // A preflight verdict describes the inputs it ran against; once any of them
   // changes it is no longer shown, and the next check starts fresh.
@@ -1012,7 +1019,13 @@ export function IngestionForm({
             <p className="truncate text-sm text-muted-foreground" data-testid="revision-summary">
               Keeps {revision.keptCount} document{revision.keptCount === 1 ? "" : "s"}
               {revision.dropFileIds.length ? ` · removes ${revision.dropFileIds.length}` : ""}
-              {objectCount > 0 ? ` · adds ${objectCount}` : incompleteSource && !revision.dropFileIds.length ? " · add documents or remove some to build a new version" : ""}
+              {objectCount > 0
+                ? ` · adds ${objectCount}`
+                : emptyRevision
+                  ? " · a version needs at least one document: keep one, or add some"
+                  : incompleteSource && !revision.dropFileIds.length
+                    ? " · add documents or remove some to build a new version"
+                    : ""}
             </p>
           ) : null}
           {revision ? null : listingPending ? (
@@ -1058,13 +1071,17 @@ export function IngestionForm({
             onClick={() => void onSubmit()}
             disabled={submit.isPending || preflight.isPending || scanPii.isPending || !session.data || startBlocked}
             title={
-              grantsBlocked
-                ? "Snowflake grants must be marked granted before Start"
-                : envBlocked
-                  ? "Confirm the environment change before Start"
-                : emptyLocalListing || incompleteSource
-                  ? "Fill a usable source before Start"
-                  : undefined
+              !startBlocked
+                ? undefined
+                : grantsBlocked
+                  ? "Snowflake grants must be marked granted before Start"
+                  : envBlocked
+                    ? "Confirm the environment change before Start"
+                    : emptyRevision
+                      ? "Keep at least one document, or add some"
+                      : emptyLocalListing || incompleteSource
+                        ? "Fill a usable source before Start"
+                        : undefined
             }
           >
             {revision ? "Build new version" : "Start"}
