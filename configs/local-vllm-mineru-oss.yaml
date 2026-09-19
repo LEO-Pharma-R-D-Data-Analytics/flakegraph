@@ -31,8 +31,8 @@ llm:
   model: unsloth/Qwen3.8-27B-NVFP4
 embedding:
   provider: sentence_transformers
-  model: sentence-transformers/all-MiniLM-L6-v2
-  dimension: 384
+  model: Qwen/Qwen3-Embedding-0.6B
+  dimension: 1024
   batch_size: 32
   device: ${KG_EMBED_DEVICE}
 writer:

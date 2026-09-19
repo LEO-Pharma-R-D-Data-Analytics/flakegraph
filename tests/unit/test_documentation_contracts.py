@@ -139,7 +139,7 @@ def test_third_party_notices_cover_runtime_license_boundaries() -> None:
         "mineru[pipeline]",
         "MinerU Open Source License",
         "additional terms",
-        "sentence-transformers/all-MiniLM-L6-v2",
+        "Qwen/Qwen3-Embedding-0.6B",
         "Apache-2.0",
         "vLLM",
         "unsloth/Qwen3.8-27B-NVFP4",

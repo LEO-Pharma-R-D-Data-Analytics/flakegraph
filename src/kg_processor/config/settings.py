@@ -395,10 +395,10 @@ class EmbeddingSettings(_SettingsModel):
 
     provider: str = "sentence_transformers"
     endpoint: str | None = None
-    model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    model: str = "Qwen/Qwen3-Embedding-0.6B"
     api_key: str | None = None
     api_version: str = "2025-01-01-preview"
-    dimension: int = Field(default=384, gt=0)
+    dimension: int = Field(default=1024, gt=0)
     batch_size: int = Field(default=32, gt=0)
     device: str | None = None
 

@@ -165,6 +165,28 @@ export const GraphRevision = Schema.Struct({
 });
 export type GraphRevision = Schema.Schema.Type<typeof GraphRevision>;
 
+/** One entity or relation type the extractor is told to look for. */
+export const OntologyTerm = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+});
+export type OntologyTerm = Schema.Schema.Type<typeof OntologyTerm>;
+
+/**
+ * What a run extracts: its entity types and how relations are typed.
+ *
+ * `relations` is the profile's mode by another name: "guided" keeps the list
+ * as guidance and admits a predicate outside it (hybrid); "fixed" admits only
+ * the list (closed); "open" declares no list and lets the extractor name what
+ * the text states.
+ */
+export const OntologySelection = Schema.Struct({
+  entityTypes: Schema.Array(OntologyTerm),
+  relationTypes: Schema.Array(OntologyTerm),
+  relations: Schema.Literal("guided", "fixed", "open"),
+});
+export type OntologySelection = Schema.Schema.Type<typeof OntologySelection>;
+
 export const IngestionRequest = Schema.Struct({
   runtime: RuntimeMode,
   jobId: Schema.String,
@@ -186,6 +208,7 @@ export const IngestionRequest = Schema.Struct({
     { default: () => DEFAULT_PROVIDER_PARALLELISM },
   ),
   runtimeOptions: Schema.optionalWith(JsonRecord, { default: () => ({}) }),
+  ontology: Schema.optionalWith(Schema.NullOr(OntologySelection), { default: () => null }),
   revision: Schema.optionalWith(Schema.NullOr(GraphRevision), { default: () => null }),
 });
 export type IngestionRequest = Schema.Schema.Type<typeof IngestionRequest>;

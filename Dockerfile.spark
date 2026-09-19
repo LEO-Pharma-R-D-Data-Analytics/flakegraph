@@ -6,8 +6,8 @@ FROM apache/spark:4.1.2-python3@sha256:e334db9626cb9c5a3e72928c2c2f0efc668769a0b
 FROM python:3.14.6-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 
 ARG UV_VERSION=0.11.28
-ARG KG_LOCAL_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-ARG KG_LOCAL_EMBEDDING_REVISION=1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+ARG KG_LOCAL_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+ARG KG_LOCAL_EMBEDDING_REVISION=97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
 # Baking the weights in is the right default: an executor that downloads them on
 # first use turns a network problem into a finalization failure hours into a run.
 # Sites whose egress filtering blocks the Hugging Face CDN cannot build that

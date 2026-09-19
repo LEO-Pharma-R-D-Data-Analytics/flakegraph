@@ -302,12 +302,35 @@ async function seedKubernetes(stateRoot: string) {
     owner: "ALICE",
   });
   const done = path.join(stateRoot, "runs", "run_k8s_done");
+  // The configuration the run was submitted with, carrying the vocabulary it
+  // extracted: a revision of this run is typed like it.
+  await mkdir(done, { recursive: true });
+  await writeFile(
+    path.join(done, "config.yaml"),
+    [
+      "ontology:",
+      "  profile:",
+      "    name: console",
+      "    mode: hybrid",
+      "    entity_types:",
+      "      - name: PERSON",
+      "        description: A named human being.",
+      "      - name: SCHOOL",
+      "        description: A martial-arts school or lineage.",
+      "    relation_types:",
+      "      - name: FOUNDED_BY",
+      "        description: The source was founded by the target.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
   await writeRunRecord(done, {
     runId: "run_k8s_done",
     graphId: "graph_k8s_done",
     graphName: "Fleet judo",
     status: "succeeded",
     runtime: "kubernetes",
+    configPath: path.join(done, "config.yaml"),
     startedAt: "2026-09-05T00:00:00.000Z",
     updatedAt: "2026-09-05T01:30:00.000Z",
     outputPath: path.join(stateRoot, "graphs", "graph_martial_arts"),

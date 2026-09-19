@@ -848,7 +848,7 @@ name it by path, which involves no model-hub code at all:
 ```yaml
 embedding:
   provider: sentence_transformers
-  model: /mnt/models/all-MiniLM-L6-v2   # a path, not a hub identifier
+  model: /mnt/models/Qwen3-Embedding-0.6B   # a path, not a hub identifier
 
 extraEnv:
   # Any accidental hub lookup then fails at once instead of retrying.

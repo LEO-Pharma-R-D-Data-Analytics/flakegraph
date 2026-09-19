@@ -34,6 +34,7 @@ function request(stateRoot: string, overrides: Partial<IngestionRequest> = {}): 
     cacheProvider: "local",
     providerParallelism: 4,
     runtimeOptions: {},
+    ontology: null,
     revision: null,
     ...overrides,
   };

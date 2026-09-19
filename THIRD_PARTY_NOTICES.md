@@ -33,11 +33,11 @@ system packages in that artifact.
   credentials from the isolated subprocess environment as defense in depth.
   Source: https://github.com/opendatalab/MinerU/blob/master/LICENSE.md
 - `sentence-transformers` is used by the local embedding profile. The default
-  model, `sentence-transformers/all-MiniLM-L6-v2`, is published on Hugging Face
-  with an Apache-2.0 license. Production worker and Spark images preload its
-  pinned revision so ephemeral executors do not download mutable weights during
-  a run. Review the selected model card when changing models.
-  Source: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+  model, `Qwen/Qwen3-Embedding-0.6B`, is published on Hugging Face with an Apache-2.0
+  license. Production worker and Spark images preload its pinned revision so
+  ephemeral executors do not download mutable weights during a run. Review the
+  selected model card when changing models.
+  Source: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
 - Ollama remains a selectable LLM provider, defaulting to Unsloth's GGUF build
   of Qwen3.8 27B. The upstream `Qwen/Qwen3.8-27B` model is Apache-2.0 licensed.
   Ollama and model artifacts are obtained separately and are not redistributed

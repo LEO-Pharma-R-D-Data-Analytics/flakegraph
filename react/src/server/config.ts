@@ -4,11 +4,14 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   type IngestionRequest,
+  type OntologySelection,
+  type OntologyTerm,
   type ProviderSelection,
   type SourceKind,
   writerProvider,
   storageLocation,
 } from "./protocol/schema";
+import { appEnv } from "./env";
 import { embeddingDimension } from "./providers";
 import { composeAgainstFleet, type FleetProfile } from "./fleet";
 
@@ -68,6 +71,73 @@ export async function loadBaseConfig(file: string | null): Promise<Record<string
   return structuredClone(value);
 }
 
+/**
+ * The vocabulary a run gets when it chooses none: what the base config's
+ * profile file declares, as terms the form can edit.
+ */
+export async function defaultOntologySelection(baseConfigPath: string): Promise<OntologySelection> {
+  const config = await loadBaseConfig(baseConfigPath);
+  const profilePath = ontologyProfilePath(config, baseConfigPath);
+  const inline = asRecord(config.ontology).profile;
+  const profile = inline && typeof inline === "object"
+    ? (inline as Record<string, unknown>)
+    : profilePath
+      ? ((parseYaml(await readFile(profilePath, "utf8")) ?? {}) as Record<string, unknown>)
+      : {};
+  return ontologySelectionFromProfile(profile, asRecord(config.graph));
+}
+
+/**
+ * What a run extracted, read back from the configuration it was submitted
+ * with, or null when that run recorded no profile of its own.
+ */
+export async function runOntologySelection(configPath: string | null): Promise<OntologySelection | null> {
+  if (!configPath) {
+    return null;
+  }
+  let config: Record<string, unknown>;
+  try {
+    config = (parseYaml(await readFile(configPath, "utf8")) ?? {}) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const profile = asRecord(config.ontology).profile;
+  if (!profile || typeof profile !== "object") {
+    return null;
+  }
+  return ontologySelectionFromProfile(profile as Record<string, unknown>, asRecord(config.graph));
+}
+
+/** Read a pipeline profile (inline or a fleet's mounted one) back into form terms. */
+export function ontologySelectionFromProfile(
+  profile: Record<string, unknown>,
+  graph: Record<string, unknown> = {},
+): OntologySelection {
+  const terms = (value: unknown): OntologyTerm[] =>
+    Array.isArray(value)
+      ? value
+          .map((item) =>
+            typeof item === "string"
+              ? { name: item, description: "" }
+              : item && typeof item === "object"
+                ? {
+                    name: String((item as Record<string, unknown>).name ?? ""),
+                    description: String((item as Record<string, unknown>).description ?? ""),
+                  }
+                : { name: "", description: "" },
+          )
+          .filter((item) => item.name)
+      : [];
+  const entityTypes = terms(profile.entity_types);
+  const relationTypes = terms(profile.relation_types);
+  const mode = String(profile.mode ?? "hybrid");
+  return {
+    entityTypes: entityTypes.length ? entityTypes : terms(graph.entity_types),
+    relationTypes,
+    relations: mode === "closed" ? "fixed" : mode === "open" || relationTypes.length === 0 ? "open" : "guided",
+  };
+}
+
 export async function buildRunConfig(
   request: IngestionRequest,
   fleet: FleetProfile | null = null,
@@ -120,11 +190,12 @@ export async function buildRunConfig(
     overrides.generic_http_ocr = externalOcrConfig(request.ocr);
   }
   deepMerge(overrides, sourceConfig(request));
-  const entityTypes = request.runtimeOptions.entity_types;
-  if (Array.isArray(entityTypes) && entityTypes.length > 0) {
-    deepMerge(overrides, { ontology: { profile: { entity_types: entityTypes } } });
-  }
   deepMerge(config, overrides);
+  if (request.ontology) {
+    // The run's vocabulary travels inline so it describes itself wherever it
+    // runs; the base config's profile file is not consulted.
+    config.ontology = { profile: ontologyProfile(request.ontology) };
+  }
   sanitizeProviderSections(config, request);
   if (fleet) {
     composeAgainstFleet(config, fleet);
@@ -235,6 +306,22 @@ export function environmentForRequest(
 export function providerParallelismSettings(parallelism: number): Record<string, number> {
   const bounded = Math.max(1, Math.min(Math.trunc(parallelism), 64));
   return Object.fromEntries(PARALLELISM_SETTINGS.map((key) => [key, bounded]));
+}
+
+/** The pipeline's ontology profile for what the form selected. */
+export function ontologyProfile(selection: OntologySelection): Record<string, unknown> {
+  const term = (item: OntologyTerm) => ({
+    name: item.name.trim(),
+    description: item.description.trim() || `A source-grounded ${item.name.trim().replaceAll("_", " ").toLowerCase()}.`,
+  });
+  const mode = selection.relations === "fixed" ? "closed" : selection.relations === "open" ? "open" : "hybrid";
+  return {
+    name: "console",
+    description: "Chosen on the console for this graph.",
+    mode,
+    entity_types: selection.entityTypes.map(term),
+    relation_types: selection.relations === "open" ? [] : selection.relationTypes.map(term),
+  };
 }
 
 function sourceConfig(request: IngestionRequest): Record<string, unknown> {
@@ -422,16 +509,27 @@ function runtimeValue(request: IngestionRequest): string {
   return "local";
 }
 
+/**
+ * Where the base configuration's profile file is. The pipeline resolves a
+ * relative path against its working directory - the repository root, where
+ * the console runs it - not against the configuration file naming it.
+ */
 function ontologyProfilePath(config: Record<string, unknown>, baseConfigPath: string | null): string | null {
   const ontology = asRecord(config.ontology);
   const profilePath = ontology.profile_path;
   if (typeof profilePath !== "string" || !profilePath) {
     return null;
   }
-  if (path.isAbsolute(profilePath) || !baseConfigPath) {
+  if (path.isAbsolute(profilePath)) {
     return profilePath;
   }
-  return path.resolve(path.dirname(baseConfigPath), profilePath);
+  return path.resolve(baseConfigPath ? repositoryRootOf(baseConfigPath) : appEnv().repositoryRoot, profilePath);
+}
+
+/** The repository root a base configuration under `<root>/configs/` belongs to. */
+function repositoryRootOf(baseConfigPath: string): string {
+  const directory = path.dirname(path.resolve(baseConfigPath));
+  return path.basename(directory) === "configs" ? path.dirname(directory) : appEnv().repositoryRoot;
 }
 
 function inlineOntologyProfile(config: Record<string, unknown>, profilePath: string | null): void {

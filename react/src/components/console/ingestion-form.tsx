@@ -11,14 +11,14 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { GuideCard } from "@/components/console/guide-card";
+import { OntologyEditor, ontologyProblem } from "@/components/console/ontology-editor";
 import { PageHeader } from "@/components/console/page-header";
-import { FleetOntologyCard, OntologyPanel } from "@/components/console/workspace-panels";
 import { SnowflakeGrantsCard } from "@/components/console/operator-tools";
 import {
   DEFAULT_PROVIDER_PARALLELISM,
-  isSuccessStatus,
   type Capability,
   type IngestionRequest,
+  type OntologySelection,
   type ProviderSelection,
   type RuntimeMode,
   type SourceKind,
@@ -32,16 +32,15 @@ import {
   providerSelection,
   selectionFromOption,
 } from "@/server/providers";
-import { fleetOntologyTerms } from "@/lib/fleet-ontology";
 import { useStorageItem, writeStorage } from "@/lib/browser-storage";
-import { readLastIngestion, useLastIngestion, writeLastIngestion, type LastIngestionDraft } from "@/lib/last-ingestion";
+import { useLastIngestion, writeLastIngestion, type LastIngestionDraft } from "@/lib/last-ingestion";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { cn, formatBytes } from "@/lib/utils";
 
 /**
  * The form builds a new version of an existing graph instead of a new graph:
- * the graph's identity and name are the base run's, the documents it keeps
- * are decided elsewhere, and this form only adds to them.
+ * the graph's identity, name and vocabulary are the base run's, the documents
+ * it keeps are decided elsewhere, and this form only adds to them.
  */
 export interface RevisionTarget {
   baseRunId: string;
@@ -49,13 +48,14 @@ export interface RevisionTarget {
   graphName: string | null;
   dropFileIds: string[];
   keptCount: number;
+  /** What the base version extracted, when the run recorded it. */
+  ontology: OntologySelection | null;
 }
 
 interface IngestionFormProps {
   runtime: RuntimeMode;
   capabilities: Set<Capability>;
   lastSuccessRuntime?: string | null;
-  lastConfigDigest?: string | null;
   suggestionMode?: "off" | "on-request" | "auto-fill";
   revision?: RevisionTarget | null;
   onSubmitted?: (runId: string) => Promise<void> | void;
@@ -64,11 +64,18 @@ interface IngestionFormProps {
 /** A hosted corpus the session says is on this host. */
 type SamplePack = { name: string; path: string; graphName: string; why: string };
 
+/** The document source on the form: a source kind, or a sample pack standing in for a local path. */
+type SourceChoice = SourceKind | "sample";
+
+const EMPTY_ONTOLOGY: OntologySelection = { entityTypes: [], relationTypes: [], relations: "guided" };
+
+/** The credential slot a fleet's finalizer reads its Snowflake password from. */
+const FLEET_SNOWFLAKE_PASSWORD_SLOT = "KG_SNOWFLAKE_PASSWORD";
+
 export function IngestionForm({
   runtime,
   capabilities,
   lastSuccessRuntime,
-  lastConfigDigest,
   suggestionMode = "on-request",
   revision = null,
   onSubmitted,
@@ -81,13 +88,11 @@ export function IngestionForm({
   const samplePacks: readonly SamplePack[] = session.data?.samplePacks ?? [];
   const isSamplePath = (path: string) => samplePacks.some((sample) => sample.path === path);
   const clearPromotion = trpc.workspace.clearPromotion.useMutation();
-  const runs = trpc.runs.list.useQuery({ limit: 20 });
   const [jobId] = useState(() => cryptoRandom("run"));
   const [graphId, setGraphId] = useState(() => revision?.graphId ?? cryptoRandom("graph"));
   const [graphName, setGraphName] = useState(revision?.graphName ?? "");
-  const [sourceKind, setSourceKind] = useState<SourceKind>(defaultSourceKind(capabilities));
+  const [choice, setChoice] = useState<SourceChoice>(defaultSourceKind(capabilities));
   const [sourcePath, setSourcePath] = useState("");
-  const [sourceMode, setSourceMode] = useState<"files" | "sample">("files");
   const [uploadPath, setUploadPath] = useState<string | null>(null);
   const [uploadJobId, setUploadJobId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -101,9 +106,7 @@ export function IngestionForm({
   const [parallelism, setParallelism] = useState(DEFAULT_PROVIDER_PARALLELISM);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [preview, setPreview] = useState<string>("");
-  const [dismissedClone, setDismissedClone] = useState(false);
   const [promotionApplied, setPromotionApplied] = useState(false);
-  const [ontologyTypes, setOntologyTypes] = useState<string[]>([]);
   const [snowflake, setSnowflake] = useState({
     account: "",
     user: "",
@@ -117,15 +120,57 @@ export function IngestionForm({
     credentialEnvironmentVariable: "SNOWFLAKE_PASSWORD",
     credentialField: "password",
   });
+  const sourceKind: SourceKind = choice === "sample" ? "local_path" : choice;
 
   // On the fleet the workers' own profile decides the providers: a worker
   // claims only a run whose semantic configuration hashes to its own. The
-  // fields show what the fleet runs and are not editable there.
+  // card shows what the fleet runs; the choice is the deployment's.
   const fleet = trpc.fleet.profile.useQuery(undefined, { enabled: runtime === "kubernetes" });
   const fleetProfile = runtime === "kubernetes" ? fleet.data ?? null : null;
   const effectiveOcr = fleetProfile ? fleetSelection(fleetProfile, "ocr", ocr) : ocr;
   const effectiveLlm = fleetProfile ? fleetSelection(fleetProfile, "llm", llm) : llm;
   const effectiveEmbedding = fleetProfile ? fleetSelection(fleetProfile, "embedding", embedding) : embedding;
+  const fleetSnowflake = fleetProfile ? fleetSnowflakeAccount(fleetProfile) : null;
+
+  // What the run extracts: the runtime's default vocabulary until it is
+  // changed here; a revision keeps the base version's.
+  const baseConfigPath = `${session.data?.repositoryRoot ?? ""}/configs/app-defaults.yaml`;
+  const defaultOntology = trpc.ingestion.defaultOntology.useQuery(
+    { baseConfigPath },
+    { enabled: Boolean(session.data?.repositoryRoot) && !revision },
+  );
+  const ontologyDefaults = defaultOntology.data
+    ? {
+        selection: {
+          entityTypes: defaultOntology.data.entityTypes,
+          relationTypes: defaultOntology.data.relationTypes,
+          relations: defaultOntology.data.relations,
+        },
+        source: defaultOntology.data.source,
+      }
+    : null;
+  const [edited, setEdited] = useState<OntologySelection | null>(null);
+  // Until someone edits the vocabulary (or clones one), it follows the
+  // defaults, including when they arrive or the runtime changes. Derived
+  // while rendering rather than from an effect, so the form never paints
+  // an empty vocabulary first.
+  const [followingDefaults, setFollowingDefaults] = useState(true);
+  const [defaultsSeen, setDefaultsSeen] = useState<string | null>(null);
+  const defaultsKey = ontologyDefaults ? `${runtime}:${JSON.stringify(ontologyDefaults.selection)}` : null;
+  if (defaultsKey && defaultsSeen !== defaultsKey && ontologyDefaults) {
+    setDefaultsSeen(defaultsKey);
+    if (followingDefaults) {
+      setEdited(ontologyDefaults.selection);
+    }
+  }
+  function setOntology(next: OntologySelection) {
+    setEdited(next);
+    setFollowingDefaults(false);
+  }
+  // A revision's vocabulary is its base version's, read from that run; it
+  // is shown, never edited.
+  const ontology = revision ? revision.ontology : edited;
+  const effectiveOntology = ontology ?? EMPTY_ONTOLOGY;
 
   const preflight = trpc.ingestion.preflight.useMutation();
   const previewConfig = trpc.ingestion.config.preview.useMutation();
@@ -151,11 +196,10 @@ export function IngestionForm({
   );
 
   const lastDraft = useLastIngestion(runtime);
-  const lastSucceeded = (runs.data ?? []).find((run) => isSuccessStatus(run.status));
   // A draft is copied into the fields once per runtime: when the workspace
-  // asks for it, or when the previous page left a clone waiting. Both are
-  // derived while rendering rather than from an effect, so the form never
-  // paints its empty state first.
+  // asks for it, or when a run page left a clone waiting. Both are derived
+  // while rendering rather than from an effect, so the form never paints its
+  // empty state first.
   const cloneWaiting = useStorageItem("session", "flakegraph.pending-clone") === "1";
   const [clonedFor, setClonedFor] = useState<string | null>(null);
   if (lastDraft && (suggestionMode === "auto-fill" || cloneWaiting) && clonedFor !== runtime) {
@@ -180,12 +224,10 @@ export function IngestionForm({
     setGraphName(pendingPromotion.graphName);
     setGraphId(pendingPromotion.keepGraphId ? pendingPromotion.graphId : cryptoRandom("graph"));
     if (pendingPromotion.toRuntime === "snowflake") {
-      setSourceMode("files");
-      setSourceKind("snowflake_stage");
+      setChoice("snowflake_stage");
       setStage({ stage: `app/<user>/${pendingPromotion.graphId}`, prefix: pendingPromotion.graphId });
     } else if (pendingPromotion.toRuntime === "kubernetes") {
-      setSourceMode("files");
-      setSourceKind("s3");
+      setChoice("s3");
       setS3({ bucket: "flakegraph-corpus", prefix: pendingPromotion.graphId, endpointUrl: "", region: "" });
     }
   }
@@ -207,6 +249,30 @@ export function IngestionForm({
     if (!source && !dropsOnly) {
       return null;
     }
+    // On a fleet the account and credential are the fleet's; the form names
+    // only where inside that account the graph lands.
+    const snowflakeTarget =
+      outputKind === "snowflake"
+        ? fleetSnowflake
+          ? {
+              ...snowflake,
+              account: fleetSnowflake.account,
+              user: fleetSnowflake.user,
+              host: fleetSnowflake.host,
+              authenticator: fleetSnowflake.authenticator,
+              role: snowflake.role || null,
+              credentialEnvironmentVariable: FLEET_SNOWFLAKE_PASSWORD_SLOT,
+              credentialField: "password",
+            }
+          : {
+              ...snowflake,
+              role: snowflake.role || null,
+              host: snowflake.host || null,
+              authenticator: snowflake.authenticator || null,
+              credentialEnvironmentVariable: snowflake.credentialEnvironmentVariable || null,
+              credentialField: snowflake.credentialField || null,
+            }
+        : null;
     return {
       runtime,
       jobId,
@@ -220,48 +286,35 @@ export function IngestionForm({
       ocr: effectiveOcr,
       llm: effectiveLlm,
       embedding: effectiveEmbedding,
-      output: {
-        kind: outputKind,
-        workspacePath,
-        snowflake:
-          outputKind === "snowflake"
-            ? {
-                ...snowflake,
-                role: snowflake.role || null,
-                host: snowflake.host || null,
-                authenticator: snowflake.authenticator || null,
-                credentialEnvironmentVariable: snowflake.credentialEnvironmentVariable || null,
-                credentialField: snowflake.credentialField || null,
-              }
-            : null,
-      },
-      baseConfigPath: `${session.data?.repositoryRoot ?? ""}/configs/app-defaults.yaml`,
+      output: { kind: outputKind, workspacePath, snowflake: snowflakeTarget },
+      baseConfigPath,
       includeGlobs: ["**/*"],
       cacheProvider: capabilities.has("spcs") ? "snowflake" : "local",
       providerParallelism: parallelism,
-      runtimeOptions: ontologyTypes.length ? { entity_types: ontologyTypes } : {},
+      runtimeOptions: {},
+      ontology: ontology && ontology.entityTypes.length ? ontology : null,
     };
 
     function sourcePayload(): Record<string, unknown> | null {
-      if (sourceKind === "upload") {
+      if (choice === "upload") {
         if (!uploadPath) {
           return null;
         }
         return { kind: "local", path: uploadPath };
       }
-      if (sourceKind === "local_path") {
+      if (choice === "local_path" || choice === "sample") {
         if (!sourcePath.trim()) {
           return null;
         }
         return { kind: "local", path: sourcePath.trim() };
       }
-      if (sourceKind === "azure_blob") {
+      if (choice === "azure_blob") {
         if (!azure.accountUrl.trim() || !azure.container.trim()) {
           return null;
         }
         return { kind: "azure_blob", ...azure };
       }
-      if (sourceKind === "s3") {
+      if (choice === "s3") {
         if (!s3.bucket.trim()) {
           return null;
         }
@@ -274,8 +327,9 @@ export function IngestionForm({
     }
   }, [
     runtime,
-    revision,
     graphName,
+    revision,
+    choice,
     sourceKind,
     sourcePath,
     uploadPath,
@@ -287,9 +341,10 @@ export function IngestionForm({
     effectiveLlm,
     effectiveEmbedding,
     parallelism,
-    ontologyTypes,
+    ontology,
     snowflake,
-    session.data?.repositoryRoot,
+    fleetSnowflake,
+    baseConfigPath,
     session.data?.stateRoot,
     jobId,
     graphId,
@@ -304,34 +359,62 @@ export function IngestionForm({
     setCapabilitiesSeen(capabilities);
     setOutputKind(capabilities.has("spcs") ? "snowflake" : "local_files");
   }
-  if (sourceMode === "sample" && (!capabilities.has("local") || (session.data && samplePacks.length === 0))) {
-    setSourceMode("files");
-  }
-  if (!capabilities.has("local") && sourceKind === "local_path") {
-    setSourceKind(defaultSourceKind(capabilities));
+  if (choice === "sample" && (!capabilities.has("local") || (session.data && samplePacks.length === 0))) {
+    setChoice(defaultSourceKind(capabilities));
     setSourcePath("");
+  }
+  if (!capabilities.has("local") && choice === "local_path") {
+    setChoice(defaultSourceKind(capabilities));
+    setSourcePath("");
+  }
+  // A Snowflake destination needs an account to write into: the fleet's on
+  // Kubernetes, the form's elsewhere. When the fleet turns out to hold none,
+  // the destination falls back rather than submitting an unwritable run.
+  const snowflakeAvailable =
+    runtime === "snowflake" || runtime === "local" || (runtime === "kubernetes" && fleetSnowflake !== null);
+  if (outputKind === "snowflake" && fleet.isFetched && !snowflakeAvailable) {
+    setOutputKind("local_files");
   }
 
   function resolvedPath() {
-    return sourceKind === "upload" ? uploadPath ?? "" : sourcePath;
+    return choice === "upload" ? uploadPath ?? "" : sourcePath;
   }
 
   function browsableSource(): Record<string, unknown> | null {
-    if (sourceKind === "upload" || sourceKind === "local_path") {
+    if (choice === "upload" || choice === "local_path" || choice === "sample") {
       return resolvedPath() ? { kind: "local", path: resolvedPath() } : null;
     }
-    if (sourceKind === "s3") {
+    if (choice === "s3") {
       return s3.bucket.trim() ? { kind: "s3", ...s3 } : null;
     }
-    if (sourceKind === "azure_blob") {
+    if (choice === "azure_blob") {
       return azure.accountUrl.trim() && azure.container.trim() ? { kind: "azure_blob", ...azure } : null;
     }
     return runtime === "snowflake" && stage.stage.trim() ? { kind: "snowflake_stage", ...stage } : null;
   }
 
+  function chooseSource(next: SourceChoice) {
+    if (next === choice) {
+      return;
+    }
+    if (choice === "sample" || next === "sample") {
+      setSourcePath("");
+    }
+    if (next !== "upload") {
+      setUploadPath(null);
+      setUploadJobId(null);
+    }
+    setChoice(next);
+    if (next === "sample") {
+      const selected = samplePacks.find((sample) => sample.path === sourcePath) ?? samplePacks[0];
+      if (selected) {
+        applySample(selected);
+      }
+    }
+  }
+
   function applySample(sample: SamplePack) {
-    setSourceMode("sample");
-    setSourceKind("local_path");
+    setChoice("sample");
     setSourcePath(sample.path);
     setGraphName((current) => {
       const fromPack = samplePacks.some((item) => item.graphName === current);
@@ -339,38 +422,19 @@ export function IngestionForm({
     });
   }
 
-  function enableSamplePack() {
-    if (sourceMode === "sample") {
-      return;
-    }
-    const selected = samplePacks.find((sample) => sample.path === sourcePath) ?? samplePacks[0];
-    if (selected) {
-      applySample(selected);
-    }
-  }
-
-  function enableYourFiles() {
-    setSourceMode("files");
-    if (sourceMode === "sample") {
-      setSourceKind("upload");
-      setSourcePath("");
-    }
-  }
-
   function applyClone(draft: LastIngestionDraft) {
     setGraphName(draft.graphName);
     const kind = (draft.sourceKind as SourceKind) || "local_path";
     const source = draft.source ?? {};
     const field = (name: string, fallback = "") => (typeof source[name] === "string" ? source[name] : fallback);
-    setSourceKind(kind);
     setSourcePath(draft.sourcePath);
     if (kind === "upload") {
       setUploadPath(draft.sourcePath);
-      setSourceMode("files");
+      setChoice("upload");
     } else if (kind === "local_path" && isSamplePath(draft.sourcePath) && capabilities.has("local")) {
-      setSourceMode("sample");
+      setChoice("sample");
     } else {
-      setSourceMode("files");
+      setChoice(kind);
     }
     if (kind === "s3") {
       setS3({
@@ -391,18 +455,8 @@ export function IngestionForm({
     setOcr(providerSelection("ocr", draft.ocrProvider));
     setLlm(providerSelection("llm", draft.llmProvider));
     setEmbedding(providerSelection("embedding", draft.embeddingProvider));
-  }
-
-  function cloneLast() {
-    const draft = readLastIngestion(runtime);
-    if (draft) {
-      applyClone(draft);
-      toast.success("Cloned last submitted source, name, and providers");
-      return;
-    }
-    if (lastSucceeded) {
-      setGraphName(lastSucceeded.graphName || "");
-      toast.success(`Using display name from ${lastSucceeded.graphName || lastSucceeded.graphId}`);
+    if (draft.ontology) {
+      setOntology(draft.ontology);
     }
   }
 
@@ -410,8 +464,7 @@ export function IngestionForm({
     if (!files?.length) {
       return;
     }
-    setSourceMode("files");
-    setSourceKind("upload");
+    setChoice("upload");
     setUploading(true);
     const body = new FormData();
     for (const file of files) {
@@ -512,6 +565,7 @@ export function IngestionForm({
         ocrProvider: ocr.provider,
         llmProvider: llm.provider,
         embeddingProvider: embedding.provider,
+        ...(request.ontology ? { ontology: request.ontology } : {}),
         savedAt: new Date().toISOString(),
       });
       toast.success(
@@ -525,14 +579,8 @@ export function IngestionForm({
     }
   }
 
-  const sourceKinds = sourceKindOptions(capabilities);
+  const sourceChoices = sourceChoiceOptions(capabilities, samplePacks.length > 0 && !revision);
   const objectCount = sources.data?.length ?? 0;
-  const formMatchesLast =
-    Boolean(lastDraft) &&
-    lastDraft?.graphName === graphName &&
-    lastDraft.sourceKind === sourceKind &&
-    lastDraft.sourcePath === sourcePath;
-  const showClone = suggestionMode !== "off" && !dismissedClone && Boolean(lastDraft) && !formMatchesLast;
   const sourceKey = `${runtime}:${sourceKind}:${resolvedPath()}`;
   const estimate = trpc.ingestion.estimate.useQuery(
     {
@@ -544,11 +592,10 @@ export function IngestionForm({
     { enabled: objectCount > 0, placeholderData: (previous) => previous },
   );
   const totalBytes = (sources.data ?? []).reduce((sum, item) => sum + item.sizeBytes, 0);
-  const sourceNoun = sourceKind === "s3" ? "objects" : sourceKind === "azure_blob" ? "blobs" : "files";
-  const sourcePlace = sourceKind === "s3" || sourceKind === "azure_blob" ? "under this prefix" : "at this path";
+  const sourceNoun = choice === "s3" ? "objects" : choice === "azure_blob" ? "blobs" : "files";
+  const sourcePlace = choice === "s3" || choice === "azure_blob" ? "under this prefix" : "at this path";
   const largerThanSample = objectCount > 10 || totalBytes > 50 * 1024 * 1024;
   const envChanged = Boolean(lastSuccessRuntime && lastSuccessRuntime !== runtime);
-  const digestMismatch = Boolean(lastDraft && lastConfigDigest && lastDraft && lastConfigDigest !== `${lastDraft.sourceKind}:${lastDraft.sourcePath}`);
   const grantsBlocked = runtime === "snowflake" && Boolean(session.data?.grants?.some((grant) => !grant.ok));
   // A source the console can name ahead of the run is held to what it lists:
   // Start waits for the listing, and an empty or failed one keeps it closed
@@ -559,7 +606,7 @@ export function IngestionForm({
   const listingPending = browsable && (sources.isFetching || sources.isPaused) && !sources.data;
   const emptyLocalListing =
     listingPending ||
-    (sourceKind === "upload" && !uploadPath) ||
+    (choice === "upload" && !uploadPath) ||
     (browsable && Array.isArray(sources.data) && sources.data.length === 0);
   const listingFailed = browsable && Boolean(sources.error);
   const envBlocked = envChanged && !envConfirmed;
@@ -568,12 +615,26 @@ export function IngestionForm({
   // A version with nothing in it is not a graph: removing every document
   // without adding any is refused here, not after a run.
   const emptyRevision = Boolean(revision && revision.keptCount === 0 && objectCount === 0);
+  // The vocabulary must be usable before a run is built with it; a revision
+  // keeps its base version's and is not held to this.
+  const ontologyBlocked = !revision && ontology !== null && ontologyProblem(ontology) !== null;
+  // Hosted in Snowflake, the account and its defaults come with the session;
+  // elsewhere the target inside the account has to be named.
+  const snowflakeIncomplete =
+    outputKind === "snowflake" &&
+    runtime !== "snowflake" &&
+    (!snowflake.database.trim() ||
+      !snowflake.schema.trim() ||
+      !snowflake.bulkStage.trim() ||
+      (!fleetSnowflake && (!snowflake.account.trim() || !snowflake.user.trim())));
   const startBlocked =
     grantsBlocked ||
     (!dropsOnly && (emptyLocalListing || listingFailed)) ||
     envBlocked ||
     incompleteSource ||
-    emptyRevision;
+    emptyRevision ||
+    ontologyBlocked ||
+    snowflakeIncomplete;
 
   // A preflight verdict describes the inputs it ran against; once any of them
   // changes it is no longer shown, and the next check starts fresh.
@@ -586,45 +647,42 @@ export function IngestionForm({
     sourceKind,
     sourcePath,
     uploadPath,
+    outputKind,
+    ontology,
   ]);
   const [preflightRanFor, setPreflightRanFor] = useState<string | null>(null);
   const preflightVerdict = preflightRanFor === preflightInputs ? preflight.data : undefined;
 
-  const canUseSamplePack = capabilities.has("local") && samplePacks.length > 0;
-  const sourceKindSelect = (
-    <Field label="Source kind">
-      <Select
-        value={sourceKind}
-        onValueChange={(value) => {
-          setSourceMode("files");
-          setSourceKind(value as SourceKind);
-          if (value !== "upload") {
-            setUploadPath(null);
-            setUploadJobId(null);
-          }
-        }}
-      >
-        <SelectTrigger aria-label="Source kind">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {sourceKinds.map((kind) => (
-            <SelectItem key={kind.value} value={kind.value}>
-              {kind.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </Field>
-  );
   const kindFields = (
     <>
-      {sourceKind === "local_path" ? (
-        <Field label="Local path">
-          <Input aria-label="Local path" value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} />
+      {choice === "sample" ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {samplePacks.map((sample) => (
+            <ChoiceTile
+              key={sample.path}
+              name={sample.name}
+              title={sample.name}
+              description={sample.why}
+              selected={sourcePath === sample.path}
+              onClick={() => applySample(sample)}
+            />
+          ))}
+        </div>
+      ) : null}
+      {choice === "upload" ? (
+        <FileDropzone busy={uploading} hasFiles={Boolean(uploadPath)} onFiles={(files) => void onUpload(files)} />
+      ) : null}
+      {choice === "local_path" ? (
+        <Field label="Folder path">
+          <Input
+            aria-label="Folder path"
+            placeholder="A folder the workers can read, e.g. /data/contracts"
+            value={sourcePath}
+            onChange={(event) => setSourcePath(event.target.value)}
+          />
         </Field>
       ) : null}
-      {sourceKind === "azure_blob" ? (
+      {choice === "azure_blob" ? (
         <div className="grid gap-3 md:grid-cols-3">
           <Field label="Account URL">
             <Input value={azure.accountUrl} onChange={(event) => setAzure({ ...azure, accountUrl: event.target.value })} />
@@ -637,7 +695,7 @@ export function IngestionForm({
           </Field>
         </div>
       ) : null}
-      {sourceKind === "s3" ? (
+      {choice === "s3" ? (
         <div className="grid gap-3 md:grid-cols-2">
           <Field label="Bucket">
             <Input value={s3.bucket} onChange={(event) => setS3({ ...s3, bucket: event.target.value })} />
@@ -653,7 +711,7 @@ export function IngestionForm({
           </Field>
         </div>
       ) : null}
-      {sourceKind === "snowflake_stage" ? (
+      {choice === "snowflake_stage" ? (
         <div className="grid gap-3 md:grid-cols-2">
           <Field label="Stage">
             <Input value={stage.stage} onChange={(event) => setStage({ ...stage, stage: event.target.value })} />
@@ -677,15 +735,17 @@ export function IngestionForm({
             {largerThanSample ? " · larger than a typical sample (10 files / 50 MB)" : ""}
           </p>
         ) : null
-      ) : sourceKind === "snowflake_stage" ? (
+      ) : choice === "snowflake_stage" ? (
         <p className="text-sm text-muted-foreground">Stage contents are confirmed when the job starts.</p>
-      ) : (
+      ) : choice === "upload" ? null : (
         <p className="text-sm text-muted-foreground">
-          {sourceKind === "s3"
+          {choice === "s3"
             ? "Objects are listed once a bucket is named."
-            : sourceKind === "azure_blob"
+            : choice === "azure_blob"
               ? "Blobs are listed once an account URL and container are named."
-              : "Point at files to list them."}
+              : choice === "sample"
+                ? "Pick a pack to list its files."
+                : "Files are listed once a folder is named."}
         </p>
       )}
       {sources.error ? <Alert variant="destructive">{sources.error.message}</Alert> : null}
@@ -698,11 +758,7 @@ export function IngestionForm({
         <PageHeader
           kicker="Ingestion"
           title="Build a graph"
-          description={`This job runs on ${runtimeLabel(runtime)}. ${
-            canUseSamplePack
-              ? "Drop your files, or switch to a sample pack. OCR, LLM, and embeddings are required; Adaptive layout, Qwen3.8 27B, and MiniLM are filled in."
-              : "Point at a stage or upload the workers can LIST. OCR, LLM, and embeddings are required; Adaptive layout, Qwen3.8 27B, and MiniLM are filled in."
-          } Closing the browser does not cancel a submitted job. Destination is where artifacts are stored, not where workers run.`}
+          description={`Point FlakeGraph at documents, choose what to extract, and start. The job runs on ${runtimeLabel(runtime)} and keeps running if you close the browser.`}
         />
       )}
 
@@ -717,151 +773,130 @@ export function IngestionForm({
           actions={[]}
         />
       ) : null}
-      {showClone && !revision ? (
-        <GuideCard
-          title="Run like last time"
-          why={
-            lastDraft
-              ? `${digestMismatch ? "Config digest drifted from last success. " : ""}Last submitted config on ${runtime} used ${lastDraft.sourcePath || lastDraft.sourceKind}.`
-              : `${lastSucceeded?.graphName || lastSucceeded?.graphId} succeeded on this catalog.`
-          }
-          onDismiss={() => setDismissedClone(true)}
-          actions={[
-            { label: "Clone last config", onClick: cloneLast },
-            { label: "Preview current YAML", onClick: () => void onPreview(), variant: "outline" },
-          ]}
-        />
-      ) : null}
 
       <Card>
         <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 space-y-1">
-              <CardTitle>{revision ? "Documents to add" : "Documents"}</CardTitle>
-              <CardDescription>
-                {revision
-                  ? "Only these are parsed and extracted; the documents the graph keeps are read from where the earlier run left them. A file the graph already holds is skipped."
-                  : canUseSamplePack
-                  ? sourceMode === "sample"
-                    ? "Hosted example corpora. This replaces your files until you switch back."
-                    : "Drop files to ingest. Switch to a sample pack only if you want to prove the pipeline first."
-                  : "Where workers read documents. No sample pack is on this host."}
-              </CardDescription>
-            </div>
-            {canUseSamplePack && !revision ? (
-              <div
-                className="grid shrink-0 grid-cols-2 rounded-md border border-border p-0.5"
-                role="group"
-                aria-label="Document source"
-              >
-                <button
-                  type="button"
-                  aria-pressed={sourceMode === "files"}
-                  className={cn(
-                    "h-7 rounded-sm border-0 px-2.5 text-xs font-medium appearance-none",
-                    sourceMode === "files" ? "bg-foreground text-background" : "bg-transparent text-muted-foreground hover:bg-accent",
-                  )}
-                  onClick={enableYourFiles}
-                >
-                  Your files
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={sourceMode === "sample"}
-                  className={cn(
-                    "h-7 rounded-sm border-0 px-2.5 text-xs font-medium appearance-none",
-                    sourceMode === "sample" ? "bg-foreground text-background" : "bg-transparent text-muted-foreground hover:bg-accent",
-                  )}
-                  onClick={enableSamplePack}
-                >
-                  Sample pack
-                </button>
-              </div>
-            ) : null}
-          </div>
+          <CardTitle>{revision ? "Documents to add" : "Documents"}</CardTitle>
+          <CardDescription>
+            {revision
+              ? "Only these are parsed and extracted; the documents the graph keeps are read from where the earlier run left them. A file the graph already holds is skipped."
+              : "Where the documents come from. PDF, markdown, and office documents are parsed; anything else is skipped."}
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {sourceMode === "sample" && canUseSamplePack ? (
-            <>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {samplePacks.map((sample) => (
-                  <ChoiceTile
-                    key={sample.path}
-                    name={sample.name}
-                    title={sample.name}
-                    description={sample.why}
-                    selected={sourcePath === sample.path}
-                    onClick={() => applySample(sample)}
-                  />
-                ))}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Using <span className="font-mono">{sourcePath}</span>. Switch to Your files to drop your own documents.
-              </p>
-            </>
-          ) : (
-            <>
-              {canUseSamplePack ? null : sourceKindSelect}
-              {sourceKind === "upload" ? (
-                <FileDropzone busy={uploading} hasFiles={Boolean(uploadPath)} onFiles={(files) => void onUpload(files)} />
-              ) : (
-                kindFields
-              )}
-              {canUseSamplePack ? (
-                <details className="rounded-lg border border-border bg-muted/20 px-3 py-2">
-                  <summary className="cursor-pointer text-sm font-medium">Use a folder path or object storage instead</summary>
-                  <div className="mt-3 space-y-3">{sourceKindSelect}</div>
-                </details>
-              ) : null}
-            </>
-          )}
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Document source">
+            {sourceChoices.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={choice === option.value}
+                onClick={() => chooseSource(option.value)}
+                className={cn(
+                  "rounded-md border px-3 py-1.5 text-sm transition-colors",
+                  choice === option.value
+                    ? "border-primary bg-accent font-medium text-foreground ring-1 ring-primary"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted/50",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {kindFields}
           {listing}
         </CardContent>
       </Card>
 
       {revision ? null : (
-      <Card>
-        <CardHeader>
-          <CardTitle>Graph</CardTitle>
-          <CardDescription>
-            A friendly name is optional; the stable graph ID is assigned on submit. Destination is where artifacts are stored, not where the job runs.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <p className="text-xs text-muted-foreground sm:col-span-2">
-            Graph ID <span className="font-mono">{graphId}</span>
-            {promotionApplied && workspace.data?.pendingPromotion?.keepGraphId ? " · kept from the promotion" : " · minted for this Start"}
-          </p>
-          <Field label="Display name">
-            <Input
-              aria-label="Display name"
-              value={graphName}
-              onChange={(event) => setGraphName(event.target.value)}
-              placeholder="Optional display name"
-            />
-          </Field>
-          <Field label="Destination">
-            <Select value={outputKind} onValueChange={(value) => setOutputKind(value as StorageKind)}>
-              <SelectTrigger aria-label="Destination">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {capabilities.has("spcs") ? <SelectItem value="snowflake">Snowflake</SelectItem> : null}
-                <SelectItem value="local_files">Local files</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Graph</CardTitle>
+            <CardDescription>
+              A friendly name is optional; the stable graph ID is assigned on submit. The destination is where the
+              graph is written, not where the job runs.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <p className="text-xs text-muted-foreground sm:col-span-2">
+              Graph ID <span className="font-mono">{graphId}</span> · minted for this Start
+            </p>
+            <Field label="Display name">
+              <Input
+                aria-label="Display name"
+                value={graphName}
+                onChange={(event) => setGraphName(event.target.value)}
+                placeholder="Optional display name"
+              />
+            </Field>
+            <Field label="Destination">
+              <Select value={outputKind} onValueChange={(value) => setOutputKind(value as StorageKind)}>
+                <SelectTrigger aria-label="Destination">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="local_files">Local files</SelectItem>
+                  <SelectItem value="snowflake" disabled={!snowflakeAvailable}>
+                    Snowflake
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              {runtime === "kubernetes" && fleet.isFetched && !fleetSnowflake ? (
+                <span className="text-xs text-muted-foreground" data-testid="snowflake-unavailable">
+                  Snowflake is not set up on this fleet: its workers hold no Snowflake account. Set{" "}
+                  <span className="font-mono">snowflake.account</span> and <span className="font-mono">user</span> in
+                  the fleet&apos;s processing config and the{" "}
+                  <span className="font-mono">{FLEET_SNOWFLAKE_PASSWORD_SLOT}</span> key in its providers Secret.
+                </span>
+              ) : null}
+            </Field>
+          </CardContent>
+        </Card>
+      )}
+
+      {outputKind === "snowflake" ? (
+        <Card data-testid="snowflake-destination">
+          <CardHeader>
+            <CardTitle>Snowflake destination</CardTitle>
+            <CardDescription>
+              {fleetSnowflake
+                ? `The fleet writes as ${fleetSnowflake.user} into account ${fleetSnowflake.account}, with the credential its workers hold. Name where inside that account the graph lands.`
+                : "Credentials stay as environment variable references; the value is read where the run executes."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-3">
+            {(fleetSnowflake ? FLEET_SNOWFLAKE_FIELDS : ALL_SNOWFLAKE_FIELDS).map((key) => (
+              <Field key={key} label={humanizeField(key)}>
+                <Input
+                  aria-label={humanizeField(key)}
+                  value={snowflake[key]}
+                  onChange={(event) => setSnowflake({ ...snowflake, [key]: event.target.value })}
+                />
+              </Field>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {revision && !revision.ontology ? null : (
+        <OntologyEditor
+          value={effectiveOntology}
+          onChange={setOntology}
+          defaults={revision ? null : ontologyDefaults}
+          locked={
+            revision
+              ? "A new version is built with the vocabulary of the version it revises, so the documents it keeps and the ones it adds are typed alike. To extract different types, build a new graph."
+              : null
+          }
+        />
       )}
 
       <Card data-testid="compose-providers">
         <CardHeader>
-          <CardTitle>OCR, LLM, and embeddings</CardTitle>
+          <CardTitle>Processing</CardTitle>
           <CardDescription>
             {fleetProfile
-              ? `Set by the fleet: its workers mount one processing profile (${fleetProfile.configMap}) and take only runs that match it, so these are what this graph will be built with.`
-              : "Required for every run. Adaptive layout uses native document text first, then MinerU for scans, figures, and sparse PDFs. The default model is Qwen3.8 27B on vLLM, with MiniLM embeddings."}
+              ? `Set by the fleet: its workers run one parser, one model and one embedding model (profile ${fleetProfile.configMap}) and claim only runs built for them. Change the fleet's values to change these.`
+              : "The parser, the language model, and the embedding model this run uses. Adaptive layout reads native document text first and sends scans, figures, and sparse pages to MinerU."}
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-3">
@@ -880,13 +915,6 @@ export function IngestionForm({
 
       {runtime === "snowflake" ? <SnowflakeGrantsCard /> : null}
 
-      {revision ? null : fleetProfile ? (
-        <FleetOntologyCard {...fleetOntologyTerms(fleetProfile)} />
-      ) : suggestionMode !== "off" ? (
-        <OntologyPanel onApply={setOntologyTypes} />
-      ) : null}
-      {ontologyTypes.length ? <p className="text-sm text-muted-foreground">Using types: {ontologyTypes.join(", ")}</p> : null}
-
       {envChanged && !envConfirmed ? (
         <GuideCard
           tone="warning"
@@ -894,25 +922,6 @@ export function IngestionForm({
           why={`The last job on this control plane ran on ${runtimeLabel(lastSuccessRuntime ?? "local")}. This Start will use ${runtimeLabel(runtime)}. Confirm in the bar at the bottom of this page.`}
           actions={[]}
         />
-      ) : null}
-      {outputKind === "snowflake" ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Snowflake destination</CardTitle>
-            <CardDescription>Credentials stay as environment variable references.</CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-3 md:grid-cols-3">
-            {Object.entries(snowflake).map(([key, value]) => (
-              <Field key={key} label={humanizeField(key)}>
-                <Input
-                  aria-label={humanizeField(key)}
-                  value={value}
-                  onChange={(event) => setSnowflake({ ...snowflake, [key]: event.target.value })}
-                />
-              </Field>
-            ))}
-          </CardContent>
-        </Card>
       ) : null}
 
       <div>
@@ -977,20 +986,20 @@ export function IngestionForm({
             <CardDescription>Secrets are redacted. YAML is a downloadable preview, not the first screen.</CardDescription>
           </CardHeader>
           <CardContent>
-            <Textarea readOnly className="min-h-64 font-mono text-xs" value={preview} />
+            <Textarea aria-label="YAML configuration text" readOnly value={preview} rows={16} className="font-mono text-xs" />
           </CardContent>
         </Card>
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={() => void onPreview()} disabled={previewConfig.isPending}>
+        <Button variant="outline" onClick={() => void onPreview()} disabled={!request || previewConfig.isPending}>
           Preview configuration
         </Button>
-        <Button variant="outline" onClick={() => void onPreflight()} disabled={preflight.isPending}>
+        <Button variant="outline" onClick={() => void onPreflight()} disabled={!request || preflight.isPending}>
           Run preflight
         </Button>
         <Button
-          variant="ghost"
+          variant="outline"
           onClick={() => request && scanPii.mutate({ source: request.source, sourceKey })}
           disabled={!request || scanPii.isPending}
         >
@@ -998,12 +1007,10 @@ export function IngestionForm({
         </Button>
       </div>
 
-      <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex items-center gap-3 border-t border-border bg-background/95 px-4 py-2.5 backdrop-blur sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
-        <div className="min-w-0 flex-1">
+      <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex items-center justify-between gap-3 border-t border-border bg-background/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
+        <div className="min-w-0 flex-1 space-y-1">
           {grantsBlocked ? (
-            <p className="truncate text-sm text-destructive">
-              Start is blocked until warehouse, stage, and Cortex grants are marked granted.
-            </p>
+            <p className="truncate text-sm text-destructive">Snowflake grants are red. Mark them granted before Start.</p>
           ) : null}
           {envBlocked ? (
             <p className="truncate text-sm text-destructive">
@@ -1013,6 +1020,14 @@ export function IngestionForm({
           {listingFailed ? (
             <p className="truncate text-sm text-destructive">
               Listing failed. Start stays disabled until the source lists {sourceNoun}.
+            </p>
+          ) : null}
+          {ontologyBlocked && ontology ? (
+            <p className="truncate text-sm text-destructive">{ontologyProblem(ontology)}</p>
+          ) : null}
+          {snowflakeIncomplete && !incompleteSource ? (
+            <p className="truncate text-sm text-destructive">
+              Name the Snowflake database, schema and bulk stage before Start.
             </p>
           ) : null}
           {revision ? (
@@ -1032,10 +1047,8 @@ export function IngestionForm({
             <p className="truncate text-sm text-muted-foreground">Listing files to estimate cost and time…</p>
           ) : emptyLocalListing || incompleteSource ? (
             <p className="truncate text-sm text-destructive">
-              {sourceKind === "upload" && !uploadPath
-                ? capabilities.has("local")
-                  ? "Drop files or switch to a sample pack before Start."
-                  : "Drop files before Start."
+              {choice === "upload" && !uploadPath
+                ? "Drop files before Start."
                 : incompleteSource
                   ? "Fill the required source fields before Start."
                   : `No ${sourceNoun} found ${sourcePlace}. Start stays disabled.`}
@@ -1054,7 +1067,7 @@ export function IngestionForm({
                   ? `Listing ${sourceNoun} to estimate cost and time…`
                   : browsable
                     ? `No ${sourceNoun} found ${sourcePlace}.`
-                    : sourceKind === "snowflake_stage"
+                    : choice === "snowflake_stage"
                       ? "Cost is estimated after Start lists the stage."
                       : "Point at files to estimate cost and time."
                 : "Estimating cost and time…"}
@@ -1079,9 +1092,13 @@ export function IngestionForm({
                     ? "Confirm the environment change before Start"
                     : emptyRevision
                       ? "Keep at least one document, or add some"
-                      : emptyLocalListing || incompleteSource
-                        ? "Fill a usable source before Start"
-                        : undefined
+                      : ontologyBlocked && ontology
+                        ? (ontologyProblem(ontology) ?? undefined)
+                        : snowflakeIncomplete && !incompleteSource
+                          ? "Name the Snowflake database, schema and bulk stage before Start"
+                          : emptyLocalListing || incompleteSource
+                            ? "Fill a usable source before Start"
+                            : undefined
             }
           >
             {revision ? "Build new version" : "Start"}
@@ -1091,6 +1108,36 @@ export function IngestionForm({
     </div>
   );
 }
+
+type SnowflakeField =
+  | "account"
+  | "user"
+  | "database"
+  | "schema"
+  | "warehouse"
+  | "bulkStage"
+  | "role"
+  | "host"
+  | "authenticator"
+  | "credentialEnvironmentVariable"
+  | "credentialField";
+
+const ALL_SNOWFLAKE_FIELDS: SnowflakeField[] = [
+  "account",
+  "user",
+  "database",
+  "schema",
+  "warehouse",
+  "bulkStage",
+  "role",
+  "host",
+  "authenticator",
+  "credentialEnvironmentVariable",
+  "credentialField",
+];
+
+/** On a fleet the account, user and credential are the fleet's; only the target is named. */
+const FLEET_SNOWFLAKE_FIELDS: SnowflakeField[] = ["database", "schema", "warehouse", "bulkStage", "role"];
 
 function runtimeLabel(runtime: string): string {
   if (runtime === "kubernetes") {
@@ -1324,6 +1371,31 @@ function fleetSelection(
   };
 }
 
+/** The Snowflake account a fleet's workers write with, when its profile names one. */
+function fleetSnowflakeAccount(profile: { config: Record<string, unknown> }): {
+  account: string;
+  user: string;
+  host: string | null;
+  authenticator: string | null;
+} | null {
+  const values = profile.config.snowflake;
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    return null;
+  }
+  const record = values as Record<string, unknown>;
+  const text = (key: string) =>
+    typeof record[key] === "string" && !String(record[key]).startsWith("${") ? String(record[key]) : "";
+  if (!text("account") || !text("user")) {
+    return null;
+  }
+  return {
+    account: text("account"),
+    user: text("user"),
+    host: text("host") || null,
+    authenticator: text("authenticator") || null,
+  };
+}
+
 function humanizeField(key: string): string {
   return key
     .replace(/([A-Z])/g, " $1")
@@ -1344,13 +1416,16 @@ function defaultSourceKind(capabilities: Set<Capability>): SourceKind {
   return "upload";
 }
 
-function sourceKindOptions(capabilities: Set<Capability>) {
-  const options: Array<{ value: SourceKind; label: string }> = [];
+function sourceChoiceOptions(capabilities: Set<Capability>, samplePacks: boolean) {
+  const options: Array<{ value: SourceChoice; label: string }> = [];
   if (capabilities.has("upload")) {
     options.push({ value: "upload", label: "Upload" });
   }
+  if (capabilities.has("local") && samplePacks) {
+    options.push({ value: "sample", label: "Sample pack" });
+  }
   if (capabilities.has("local")) {
-    options.push({ value: "local_path", label: "Local path" });
+    options.push({ value: "local_path", label: "Folder path" });
   }
   if (capabilities.has("azure_blob")) {
     options.push({ value: "azure_blob", label: "Azure Blob" });

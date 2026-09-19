@@ -52,13 +52,23 @@ describe("fleet profile", () => {
     expect(config.llm).toEqual({ ...payload.config.llm, timeout_seconds: 120 });
     expect(config.embedding).toEqual({ ...payload.config.embedding, batch_size: 8 });
     expect(config.graph).toEqual({ fail_on_quality_error: true, extraction_parallelism: 4 });
-    expect(config.ontology).toEqual({ profile: { name: "general", mode: "hybrid" } });
+    // The run's own vocabulary is kept; it is the run's, not the fleet's.
+    expect(config.ontology).toEqual({ profile: { entity_types: ["X"] } });
     expect(config.writer).toEqual({ provider: "local_artifacts", output_path: "/run" });
   });
 
-  it("drops a run's ontology when the fleet mounts none", () => {
+  it("gives a run that names no vocabulary the one the fleet mounts", () => {
+    const mounted = fleetProfileFromPayload(payload)!;
+    const config: Record<string, unknown> = { ontology: { profile_path: "configs/ontologies/general.yaml" } };
+
+    composeAgainstFleet(config, mounted);
+
+    expect(config.ontology).toEqual({ profile: { name: "general", mode: "hybrid" } });
+  });
+
+  it("drops a path-only ontology when the fleet mounts none", () => {
     const profile = fleetProfileFromPayload({ ...payload, ontology: null })!;
-    const config: Record<string, unknown> = { ontology: { profile: { entity_types: ["X"] } } };
+    const config: Record<string, unknown> = { ontology: { profile_path: "configs/ontologies/general.yaml" } };
 
     composeAgainstFleet(config, profile);
 

@@ -10,29 +10,21 @@ async function confirmEnvironmentIfNeeded(page: Page) {
   }
 }
 
-async function chooseYourFiles(page: Page) {
-  const yours = page.getByRole("button", { name: "Your files", exact: true });
-  if (await yours.isVisible() && (await yours.getAttribute("aria-pressed")) !== "true") {
-    await yours.click();
-  }
-}
-
-async function useSamplePack(page: Page, name: "Martial arts" | "Deep learning papers" = "Martial arts") {
-  await page.getByRole("button", { name: "Sample pack", exact: true }).click();
-  const tile = page.getByRole("button", { name, exact: true });
+/** Pick where the documents come from; the choices are always on screen. */
+async function chooseSource(page: Page, name: string) {
+  const tile = page.getByRole("group", { name: "Document source" }).getByRole("button", { name, exact: true });
   await expect(tile).toBeVisible();
   if ((await tile.getAttribute("aria-pressed")) !== "true") {
     await tile.click();
   }
 }
 
-async function openMoreSources(page: Page) {
-  await chooseYourFiles(page);
-  const summary = page.locator("summary").filter({ hasText: /folder path or object storage/i });
-  await expect(summary).toBeVisible();
-  const details = page.locator("details").filter({ has: summary });
-  if ((await details.getAttribute("open")) === null) {
-    await summary.click();
+async function useSamplePack(page: Page, name: "Martial arts" | "Deep learning papers" = "Martial arts") {
+  await chooseSource(page, "Sample pack");
+  const tile = page.getByRole("button", { name, exact: true });
+  await expect(tile).toBeVisible();
+  if ((await tile.getAttribute("aria-pressed")) !== "true") {
+    await tile.click();
   }
 }
 
@@ -47,10 +39,8 @@ async function setVisibility(page: Page, state: "hidden" | "visible") {
 }
 
 async function useFolderPath(page: Page, path: string) {
-  await openMoreSources(page);
-  await page.getByLabel("Source kind").click();
-  await page.getByRole("option", { name: "Local path" }).click();
-  await page.getByLabel("Local path").fill(path);
+  await chooseSource(page, "Folder path");
+  await page.getByLabel("Folder path").fill(path);
 }
 
 test.describe("local martial arts graph", () => {
@@ -180,7 +170,10 @@ test.describe("ingestion", () => {
     await page.goto("/?runtime=local&page=new");
     await expect(page.getByRole("heading", { name: "Build a graph" })).toBeVisible();
     await expect(page.getByTestId("file-dropzone")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Your files", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("group", { name: "Document source" }).getByRole("button", { name: "Upload" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     await expect(page.getByRole("button", { name: "Martial arts", exact: true })).toHaveCount(0);
     await useSamplePack(page);
     await expect(page.getByRole("button", { name: "Martial arts", exact: true })).toHaveAttribute("aria-pressed", "true");
@@ -216,22 +209,17 @@ test.describe("ingestion", () => {
 
   test("shows Azure and S3 source fields from local capabilities", async ({ page }) => {
     await page.goto("/?runtime=local&page=new");
-    await openMoreSources(page);
-    await page.getByLabel("Source kind").click();
-    await page.getByRole("option", { name: "Azure Blob" }).click();
+    await chooseSource(page, "Azure Blob");
     await expect(page.getByLabel("Account URL")).toBeVisible();
     await expect(page.getByText("Blobs are listed once an account URL and container are named.")).toBeVisible();
-    await page.getByLabel("Source kind").click();
-    await page.getByRole("option", { name: "S3-compatible bucket" }).click();
+    await chooseSource(page, "S3-compatible bucket");
     await expect(page.getByLabel("Bucket")).toBeVisible();
     await expect(page.getByText("Objects are listed once a bucket is named.")).toBeVisible();
   });
 
   test("lists a bucket before Start and holds Start to what it lists", async ({ page }) => {
     await page.goto("/?runtime=local&page=new");
-    await openMoreSources(page);
-    await page.getByLabel("Source kind").click();
-    await page.getByRole("option", { name: "S3-compatible bucket" }).click();
+    await chooseSource(page, "S3-compatible bucket");
     const start = page.getByRole("button", { name: "Start", exact: true });
     await expect(start).toBeDisabled();
     await page.getByLabel("Bucket").fill("test-corpora");
@@ -337,9 +325,7 @@ test.describe("kubernetes fleet", () => {
   test("clones a bucket source back into compose with every field", async ({ page }) => {
     await page.goto("/?runtime=kubernetes&page=new");
     await confirmEnvironmentIfNeeded(page);
-    await openMoreSources(page);
-    await page.getByLabel("Source kind").click();
-    await page.getByRole("option", { name: "S3-compatible bucket" }).click();
+    await chooseSource(page, "S3-compatible bucket");
     await page.getByLabel("Bucket", { exact: true }).fill("test-corpora");
     await page.getByLabel("Prefix", { exact: true }).fill("martial_arts/");
     await page.getByLabel("Endpoint", { exact: true }).fill("http://minio.local:9000");
@@ -348,10 +334,12 @@ test.describe("kubernetes fleet", () => {
     await expect(page.getByTestId("source-count")).toContainText("2 selectable objects", { timeout: 20_000 });
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Bucket clone" })).toBeVisible({ timeout: 30_000 });
-    // Back on compose, "Clone last config" restores the bucket as it was named,
-    // not just its kind.
-    await page.goto("/?runtime=kubernetes&page=new");
-    await page.getByRole("button", { name: "Clone last config" }).click();
+    // A run page hands its configuration back to compose with the bucket as
+    // it was named, not just its kind.
+    await page.getByTestId("guide-card").getByRole("button", { name: "Cancel job" }).click();
+    await expect(page.getByRole("main").getByText("cancelled", { exact: true }).first()).toBeVisible();
+    await page.getByTestId("guide-card").getByRole("button", { name: "New graph from this config" }).click();
+    await expect(page.getByRole("heading", { name: "Build a graph" })).toBeVisible();
     await expect(page.getByLabel("Bucket", { exact: true })).toHaveValue("test-corpora");
     await expect(page.getByLabel("Prefix", { exact: true })).toHaveValue("martial_arts/");
     await expect(page.getByLabel("Endpoint", { exact: true })).toHaveValue("http://minio.local:9000");
@@ -560,8 +548,7 @@ test.describe("snowflake sharing", () => {
     await expect(page.getByRole("button", { name: "Sample pack", exact: true })).toHaveCount(0);
     await expect(page.getByLabel("LLM model")).toHaveValue("unsloth/Qwen3.8-27B-NVFP4");
     await page.getByLabel("Display name").fill("Snowflake smoke");
-    await page.getByLabel("Source kind").click();
-    await page.getByRole("option", { name: "Upload" }).click();
+    await chooseSource(page, "Upload");
     await page.locator('input[type="file"]').setInputFiles({
       name: "note.md",
       mimeType: "text/markdown",
@@ -631,23 +618,29 @@ test.describe("remaining report journeys", () => {
     await useSamplePack(page);
     await expect(page.getByTestId("credit-envelope")).toBeVisible();
     await expect(page.getByRole("button", { name: "Scan for PII" })).toBeVisible();
-    await expect(page.getByText("Describe the graph you want")).toBeVisible();
+    await expect(page.getByLabel("Describe the graph you want")).toBeVisible();
   });
 
   test("selects a sample pack and required providers on compose", async ({ page }) => {
     await page.goto("/?runtime=local&page=new");
-    await expect(page.getByRole("button", { name: "Your files", exact: true })).toHaveAttribute("aria-pressed", "true");
+    const sourceGroup = page.getByRole("group", { name: "Document source" });
+    await expect(sourceGroup.getByRole("button", { name: "Upload" })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("file-dropzone")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Sample pack" })).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "How to process" })).toHaveCount(0);
+    // Every source is one click away; nothing is folded behind a disclosure.
+    for (const name of ["Upload", "Sample pack", "Folder path", "Azure Blob", "S3-compatible bucket"]) {
+      await expect(sourceGroup.getByRole("button", { name, exact: true })).toBeVisible();
+    }
+    await expect(page.locator("summary")).toHaveCount(0);
+    await expect(page.getByText("Run like last time")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Fast / cheap" })).toHaveCount(0);
     await expect(page.getByTestId("compose-providers")).toBeVisible();
     await expect(page.getByLabel("OCR provider")).toContainText("Adaptive layout");
     await expect(page.getByLabel("LLM provider")).toContainText("vLLM");
     await expect(page.getByLabel("LLM model")).toHaveValue("unsloth/Qwen3.8-27B-NVFP4");
-    await expect(page.getByLabel("Embeddings model")).toHaveValue("sentence-transformers/all-MiniLM-L6-v2");
+    await expect(page.getByLabel("Embeddings model")).toHaveValue("Qwen/Qwen3-Embedding-0.6B");
+    await expect(page.getByLabel("Embeddings dimension")).toHaveValue("1024");
     await useSamplePack(page);
-    await expect(page.getByRole("button", { name: "Sample pack", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(sourceGroup.getByRole("button", { name: "Sample pack", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("button", { name: "Martial arts", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("file-dropzone")).toHaveCount(0);
     await expect(page.getByLabel("OCR provider")).toContainText("Adaptive layout");
@@ -660,10 +653,95 @@ test.describe("remaining report journeys", () => {
     await expect(page.getByRole("button", { name: "Deep learning papers", exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Display name")).toHaveValue("Martial arts history");
     await expect(page.getByLabel("LLM model")).toHaveValue("llama3.2");
-    await page.getByRole("button", { name: "Your files", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Your files", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await chooseSource(page, "Upload");
     await expect(page.getByTestId("file-dropzone")).toBeVisible();
     await expect(page.getByRole("button", { name: "Martial arts", exact: true })).toHaveCount(0);
+  });
+
+  test("chooses what to extract: types, relations, reset, and the run carries them", async ({ page }) => {
+    await page.goto("/?runtime=local&page=new");
+    await useSamplePack(page);
+    await confirmEnvironmentIfNeeded(page);
+    const editor = page.getByTestId("ontology-editor");
+    const entityTypes = editor.getByTestId("entity-types");
+    // The default profile arrives as editable chips.
+    await expect(entityTypes.getByRole("button", { name: "PERSON", exact: true })).toBeVisible();
+    await expect(editor).toContainText("These are the types from the default profile.");
+    // Add one (normalised to a type name), remove one.
+    await entityTypes.getByLabel("Add entity type").fill("martial technique");
+    await entityTypes.getByLabel("Add entity type").press("Enter");
+    await expect(entityTypes.getByRole("button", { name: "MARTIAL_TECHNIQUE", exact: true })).toBeVisible();
+    await entityTypes.getByRole("button", { name: "Remove DATE" }).click();
+    await expect(entityTypes.getByRole("button", { name: "DATE", exact: true })).toHaveCount(0);
+    // Describe a type.
+    await entityTypes.getByRole("button", { name: "MARTIAL_TECHNIQUE", exact: true }).click();
+    await entityTypes.getByLabel("Description of MARTIAL_TECHNIQUE").fill("A named throw, strike, or hold.");
+    await entityTypes.getByRole("button", { name: "Save" }).click();
+    await expect(editor).toContainText("Changed from the default profile.");
+    // Relations can be detected automatically, in which case no list is asked for.
+    await editor.getByRole("radio", { name: /Detected automatically/ }).click();
+    await expect(editor.getByTestId("relation-types")).toHaveCount(0);
+    // A fixed list with nothing in it cannot be built with.
+    await editor.getByRole("radio", { name: /Only this list/ }).click();
+    const relationTypes = editor.getByTestId("relation-types");
+    for (const name of ["RELATED_TO", "PART_OF", "LOCATED_IN", "CREATED_BY", "INFLUENCED_BY", "OCCURRED_AT"]) {
+      await relationTypes.getByRole("button", { name: `Remove ${name}` }).click();
+    }
+    await expect(page.getByRole("button", { name: "Start", exact: true })).toBeDisabled();
+    await expect(editor).toContainText("Add at least one relation type");
+    await relationTypes.getByLabel("Add relation type").fill("TRAINED_UNDER");
+    await relationTypes.getByLabel("Add relation type").press("Enter");
+    await expect(page.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
+    // The run's configuration carries exactly this vocabulary, inline.
+    await page.getByRole("button", { name: "Preview configuration" }).click();
+    const yaml = page.getByLabel("YAML configuration text");
+    await expect(yaml).toContainText("MARTIAL_TECHNIQUE");
+    await expect(yaml).toContainText("A named throw, strike, or hold.");
+    await expect(yaml).toContainText("mode: closed");
+    await expect(yaml).toContainText("TRAINED_UNDER");
+    await expect(yaml).not.toContainText("name: DATE");
+    // Reset returns to the defaults.
+    await editor.getByRole("button", { name: "Reset to the default profile" }).click();
+    await expect(entityTypes.getByRole("button", { name: "DATE", exact: true })).toBeVisible();
+    await expect(editor).toContainText("These are the types from the default profile.");
+  });
+
+  test("a revision keeps the vocabulary of the version it revises", async ({ page }) => {
+    await page.goto("/?runtime=kubernetes&page=run&run=run_k8s_done");
+    await page.getByRole("tab", { name: "Edit" }).click();
+    const editor = page.getByTestId("ontology-editor");
+    await expect(editor).toContainText("built with the vocabulary of the version it revises");
+    await expect(editor.getByTestId("entity-types")).toContainText("SCHOOL");
+    await expect(editor.getByTestId("relation-types")).toContainText("FOUNDED_BY");
+    await expect(editor.getByLabel("Add entity type")).toHaveCount(0);
+    await expect(editor.getByRole("button", { name: "Remove SCHOOL" })).toHaveCount(0);
+  });
+
+  test("offers Snowflake as a destination only where an account can write", async ({ page }) => {
+    await page.goto("/?runtime=kubernetes&page=new");
+    await confirmEnvironmentIfNeeded(page);
+    // The stub fleet holds no Snowflake account: the option is there, closed, and says why.
+    await expect(page.getByTestId("snowflake-unavailable")).toContainText("no Snowflake account");
+    await page.getByLabel("Destination").click();
+    await expect(page.getByRole("option", { name: "Snowflake" })).toHaveAttribute("data-disabled", "");
+    await page.keyboard.press("Escape");
+    // Locally the account is named on the form, and Start waits for the target.
+    await page.goto("/?runtime=local&page=new");
+    await useSamplePack(page);
+    await confirmEnvironmentIfNeeded(page);
+    await page.getByLabel("Destination").click();
+    await page.getByRole("option", { name: "Snowflake" }).click();
+    await expect(page.getByTestId("snowflake-destination")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Start", exact: true })).toBeDisabled();
+    await expect(page.getByText("Name the Snowflake database, schema and bulk stage before Start.")).toBeVisible();
+    await page.getByLabel("Account").fill("xy123");
+    await page.getByLabel("User").fill("ALICE");
+    await page.getByLabel("Database").fill("FG");
+    await page.getByLabel("Schema").fill("PUBLIC");
+    await page.getByLabel("Bulk Stage").fill("@stage");
+    await expect(page.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
+    await page.getByRole("button", { name: "Preview configuration" }).click();
+    await expect(page.getByLabel("YAML configuration text")).toContainText("provider: snowflake_bulk");
   });
 
   test("logo returns home from a graph workspace", async ({ page }) => {
@@ -867,8 +945,9 @@ test.describe("remaining report journeys", () => {
 
   test("proposes an ontology with gold coverage", async ({ page }) => {
     await page.goto("/?runtime=local&page=new");
-    await page.getByRole("button", { name: "Propose ontology" }).click();
-    await expect(page.getByTestId("ontology-coverage")).toBeVisible();
+    await page.getByLabel("Describe the graph you want").fill("people, schools, and techniques in these histories");
+    await page.getByRole("button", { name: "Suggest types" }).click();
+    await expect(page.getByTestId("ontology-proposal")).toBeVisible();
   });
 
   test("shows a 1-hop neighborhood from a selected relation", async ({ page }) => {

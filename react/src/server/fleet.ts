@@ -125,6 +125,13 @@ export function composeAgainstFleet(config: Record<string, unknown>, profile: Fl
     ocr.mineru_api_url = profile.parsingEndpoint;
     config.ocr = ocr;
   }
+  // The vocabulary is the run's: a profile the request carries stays. A run
+  // that names none is built with what the workers mount, carried inline so
+  // the run describes itself.
+  const requested = config.ontology as Record<string, unknown> | undefined;
+  if (requested?.profile && typeof requested.profile === "object") {
+    return;
+  }
   if (profile.ontology) {
     config.ontology = { profile: structuredClone(profile.ontology) };
   } else {

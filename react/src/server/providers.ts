@@ -60,8 +60,8 @@ export const EMBEDDING_PROVIDERS: ProviderOption[] = [
     name: "sentence_transformers",
     label: "Sentence Transformers",
     needsModel: true,
-    defaultModel: "sentence-transformers/all-MiniLM-L6-v2",
-    defaultDimension: 384,
+    defaultModel: "Qwen/Qwen3-Embedding-0.6B",
+    defaultDimension: 1024,
   },
   {
     name: "openai_compatible",
@@ -129,7 +129,7 @@ export function embeddingDimension(
       return Number(match[0]);
     }
   }
-  return 384;
+  return 1024;
 }
 
 export function selectionFromOption(option: ProviderOption): ProviderSelection {

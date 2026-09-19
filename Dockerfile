@@ -34,8 +34,8 @@ ARG KG_INSTALL_TESSERACT=false
 ARG KG_INSTALL_LOCAL_EMBEDDINGS=true
 ARG KG_INSTALL_GLINER=false
 ARG KG_PRELOAD_LOCAL_EMBEDDING=true
-ARG KG_LOCAL_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-ARG KG_LOCAL_EMBEDDING_REVISION=1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+ARG KG_LOCAL_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+ARG KG_LOCAL_EMBEDDING_REVISION=97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
 # Bounded, because the failure this guards against does not announce itself. The
 # accelerated Hub transfer client waits on an interception proxy instead of
 # failing, so without a limit the build stops making progress and reports

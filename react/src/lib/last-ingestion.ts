@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { readStorage, useStorageItem, writeStorage } from "./browser-storage";
+import type { OntologySelection } from "@/server/protocol/schema";
 
 const STORAGE_KEY = "flakegraph.last-ingestion";
 
@@ -10,6 +11,8 @@ export interface LastIngestionDraft {
   sourcePath: string;
   /** The source as it was named (bucket, prefix, endpoint…), for kinds a path alone cannot restore. */
   source?: Record<string, unknown>;
+  /** What the run extracted, when it chose its own types. */
+  ontology?: OntologySelection;
   ocrProvider: string;
   llmProvider: string;
   embeddingProvider: string;

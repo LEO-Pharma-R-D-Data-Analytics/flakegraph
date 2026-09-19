@@ -34,8 +34,11 @@ embedding:
   # Keep graph vectors independent from the generative model server so either
   # provider can be replaced without coupling their model inventories.
   provider: sentence_transformers
-  model: sentence-transformers/all-MiniLM-L6-v2
-  dimension: 384
+  # Qwen3-Embedding-0.6B: the strongest open embedding model that still runs on
+  # a CPU worker, 1024-wide - the width the Snowflake graph tables use - and
+  # multilingual, so a graph built here can be written there unchanged.
+  model: Qwen/Qwen3-Embedding-0.6B
+  dimension: 1024
   batch_size: 32
 ontology:
   # Domain datasets can select a stricter ontology, while ordinary app runs use

@@ -281,8 +281,8 @@ def test_settings_defaults_match_local_open_source_runtime_profile() -> None:
     assert settings.llm.provider == "openai_compatible"
     assert settings.llm.timeout_seconds == 180
     assert settings.embedding.provider == "sentence_transformers"
-    assert settings.embedding.model == "sentence-transformers/all-MiniLM-L6-v2"
-    assert settings.embedding.dimension == 384
+    assert settings.embedding.model == "Qwen/Qwen3-Embedding-0.6B"
+    assert settings.embedding.dimension == 1024
     assert settings.embedding.batch_size == 32
     assert settings.graph.chunk_token_size == 500
     assert settings.graph.chunk_token_overlap == 60
@@ -677,7 +677,7 @@ snowflake:
         },
     )
 
-    assert settings.embedding.dimension == 384
+    assert settings.embedding.dimension == 1024
     assert settings.snowflake.account is None
     assert settings.snowflake.host is None
 

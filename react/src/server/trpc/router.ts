@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { defaultOntologySelection, ontologySelectionFromProfile, runOntologySelection } from "../config";
 import { TRPCError } from "@trpc/server";
 import { appEnv } from "../env";
 import { availableSamplePacks } from "../sample-packs";
@@ -139,6 +140,12 @@ export const appRouter = router({
     skipFile: publicProcedure
       .input(z.object({ runId: z.string().min(1), fileId: z.string().min(1) }))
       .mutation(({ input }) => skipFile(input.runId, input.fileId)),
+    // The vocabulary a run was built with, for a revision to keep.
+    ontology: publicProcedure.input(runIdInput).query(async ({ ctx, input }) => {
+      const snapshot = await runEffect(ctx.controlPlane.getRun(input.runId));
+      const configPath = snapshot.raw.config_path;
+      return runOntologySelection(typeof configPath === "string" ? configPath : null);
+    }),
     documents: publicProcedure.input(runIdInput).query(async ({ ctx, input }) => {
       const statuses = await runEffect(ctx.controlPlane.documents(input.runId));
       const workspace = await loadWorkspace();
@@ -195,6 +202,21 @@ export const appRouter = router({
     acknowledgePii: publicProcedure
       .input(z.object({ sourceKey: z.string() }))
       .mutation(({ input }) => acknowledgePii(input.sourceKey)),
+    // What a run extracts unless the form changes it: on a fleet, the profile
+    // its workers mount; elsewhere, the base configuration's profile file.
+    defaultOntology: publicProcedure
+      .input(z.object({ baseConfigPath: z.string().min(1) }))
+      .query(async ({ ctx, input }) => {
+        const plane = ctx.controlPlane as { fleetProfile?: () => Promise<FleetProfile | null> };
+        const fleet = plane.fleetProfile ? await plane.fleetProfile() : null;
+        if (fleet?.ontology) {
+          return {
+            ...ontologySelectionFromProfile(fleet.ontology, (fleet.config.graph ?? {}) as Record<string, unknown>),
+            source: `the fleet profile (${fleet.configMap})`,
+          };
+        }
+        return { ...(await defaultOntologySelection(input.baseConfigPath)), source: "the default profile" };
+      }),
     ontology: publicProcedure
       .input(z.object({ intent: z.string().min(8) }))
       .mutation(async ({ input }) => {

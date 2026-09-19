@@ -259,7 +259,6 @@ function ConsoleInner() {
             runtime={effectiveRuntime}
             capabilities={capabilities}
             lastSuccessRuntime={session.data?.lastSuccessRuntime ?? null}
-            lastConfigDigest={session.data?.lastConfigDigest ?? null}
             suggestionMode={session.data?.suggestionMode ?? "on-request"}
             onSubmitted={async (id) => {
               await utils.runs.list.invalidate();

@@ -39,6 +39,9 @@ export function GraphEditor({
   // nothing to keep or remove; the rest were extracted (this run's own) or
   // kept from an earlier version.
   const held = documents.filter((item) => item.phase === "indexed" || item.phase === "inherited");
+  // The base version's vocabulary: a new version is typed like the documents
+  // it keeps, so the form shows it and does not offer to change it.
+  const baseOntology = trpc.runs.ontology.useQuery({ runId: snapshot.runId });
   const revision = useMemo<RevisionTarget>(
     () => ({
       baseRunId: snapshot.runId,
@@ -46,8 +49,9 @@ export function GraphEditor({
       graphName: snapshot.graphName,
       dropFileIds: held.filter((item) => removed.has(item.fileId)).map((item) => item.fileId),
       keptCount: held.filter((item) => !removed.has(item.fileId)).length,
+      ontology: baseOntology.data ?? null,
     }),
-    [held, removed, snapshot.graphId, snapshot.graphName, snapshot.runId],
+    [held, removed, snapshot.graphId, snapshot.graphName, snapshot.runId, baseOntology.data],
   );
   const toggle = (fileId: string) =>
     setRemoved((current) => {
