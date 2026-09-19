@@ -321,11 +321,12 @@ helm upgrade --install flakegraph deploy/helm/flakegraph \
 The release is not reported ready until an idempotent database-bootstrap Job
 has validated the mounted processing configuration, provider credentials,
 provider binaries, and ontology, then applied the coordination schema used by
-workers and KEDA. A missing credential, invalid provider setup, unreachable
-database, or incompatible schema therefore fails the Helm operation instead of
-leaving a superficially installed but inert worker fleet. Paths supplied only by
-worker data volumes are intentionally deferred because the bootstrap hook does
-not mount corpus or output storage.
+workers and KEDA and declared, for every stage of every enabled worker pool,
+the configuration digest this release serves. A missing credential, invalid
+provider setup, unreachable database, or incompatible schema therefore fails
+the Helm operation instead of leaving a superficially installed but inert
+worker fleet. Paths supplied only by worker data volumes are intentionally
+deferred because the bootstrap hook does not mount corpus or output storage.
 
 Provider Secrets use an explicit environment-variable allowlist. Keep provider
 and model identity in the mounted config, and map only credentials from the
@@ -931,13 +932,20 @@ and the recovery drill below succeed.
 ### Upgrading a fleet with runs in flight
 
 A worker claims only tasks whose run was planned under its own configuration
-digest, and the demand signal counts only work the fleet can take. A change to
-provider, model, prompt, or graph settings therefore leaves every
+digest, and the demand signal counts only work the declared fleet can take. A
+change to provider, model, prompt, or graph settings therefore leaves every
 run in flight with no workers and no autoscaling demand: it does not fail, it
 waits. Drain first — `distributed list` should show nothing active — before a
 digest-changing upgrade. Where that was not possible, `distributed status`
 reports `FLEET_DIGEST_MISMATCH` on the run; roll the fleet back, or cancel the
 run and resubmit it under the new configuration.
+
+The declaration itself is the bootstrap hook's, not only the workers': each
+worker declares its digest when it starts, but a pool that has scaled to zero
+has no worker to declare a new one, and the demand signal would go on counting
+nothing for it. `distributed init --serve-stage` records the release's digest
+for every enabled pool's stages at every install and upgrade, so a run
+submitted under the new configuration scales the idle fleet up.
 
 ## Observability
 

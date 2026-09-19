@@ -589,5 +589,3 @@ def _without_keys(value: object, excluded: set[str]) -> dict[str, object]:
     if not isinstance(value, dict):
         raise TypeError("serialized settings section must be a mapping")
     return {str(key): item for key, item in value.items() if str(key) not in excluded}
-
-

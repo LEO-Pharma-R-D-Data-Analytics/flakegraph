@@ -305,6 +305,62 @@ embedding:
     assert "CREATE TABLE IF NOT EXISTS KG_GRAPH_METRICS" in result.stdout
 
 
+def test_distributed_init_declares_what_the_deployed_fleet_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deployment, not only a running worker, records the fleet's digest.
+
+    A pool scaled to zero has no worker to declare a new digest, and the demand
+    signal counts only work the declared fleet can take, so the bootstrap hook
+    declares it for every stage it deploys.
+    """
+
+    settings = Settings.load(overrides={"distributed": {"database_url": "postgresql://fleet"}})
+    declared: dict[str, object] = {}
+
+    class FleetStore:
+        def initialize(self) -> None:
+            declared["initialized"] = True
+
+        def record_served_configuration(self, stages: set[TaskStage], config_digest: str) -> None:
+            declared["stages"] = stages
+            declared["digest"] = config_digest
+
+    monkeypatch.setattr(
+        "kg_processor.factories.build_distributed_store", lambda _settings: FleetStore()
+    )
+    monkeypatch.setattr("kg_processor.cli.Settings.load", lambda _config: settings)
+
+    result = runner.invoke(
+        app,
+        [
+            "distributed",
+            "init",
+            "--serve-stage",
+            "prepare_document",
+            "--serve-stage",
+            "finalize_graph",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert declared == {
+        "initialized": True,
+        "stages": {TaskStage.PREPARE_DOCUMENT, TaskStage.FINALIZE_GRAPH},
+        "digest": distributed_processing_config_digest(settings),
+    }
+    payload = json.loads(result.stdout)
+    assert payload["served_stages"] == ["finalize_graph", "prepare_document"]
+    assert payload["config_digest"] == distributed_processing_config_digest(settings)
+
+    declared.clear()
+    result = runner.invoke(app, ["distributed", "init"])
+
+    assert result.exit_code == 0, result.output
+    assert declared == {"initialized": True}
+    assert json.loads(result.stdout)["served_stages"] == []
+
+
 def test_distributed_status_keeps_the_fleet_warning_when_tasks_are_included(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

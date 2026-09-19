@@ -45,7 +45,12 @@ spec:
               # Validate the exact mounted configuration and provider environment
               # before publishing coordination schema that autoscalers depend on.
               flakegraph preflight --deployment-worker --config /etc/flakegraph/{{ .Values.config.key }}
-              exec flakegraph distributed init --config /etc/flakegraph/{{ .Values.config.key }}
+              # Declare what the worker pools serve under this release's
+              # configuration. A pool scaled to zero has no worker to declare its
+              # new digest, and the demand signal counts only work the declared
+              # fleet can take, so without this an upgrade of an idle fleet
+              # would never scale up for a run planned under the new digest.
+              exec flakegraph distributed init --config /etc/flakegraph/{{ .Values.config.key }}{{ include "flakegraph.servedStageFlags" . }}
           env:
             - name: KG_DISTRIBUTED_DATABASE_URL
               valueFrom:

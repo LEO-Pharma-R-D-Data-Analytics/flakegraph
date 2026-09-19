@@ -339,3 +339,15 @@ Skip the duplicate instead.
 {{- end }}
 {{- end }}
 {{- end -}}
+
+{{/*
+One --serve-stage flag per stage of every enabled worker pool, for the
+database-bootstrap Job to declare what this release's fleet serves.
+*/}}
+{{- define "flakegraph.servedStageFlags" -}}
+{{- range $poolName, $pool := .Values.workers }}
+{{- if $pool.enabled }}
+{{- range $stage := $pool.stages }} --serve-stage {{ $stage }}{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -2501,10 +2501,13 @@ _SCHEMA_STATEMENTS = (
     -- goes on asking for workers to do work none of them is able to take - which
     -- holds an autoscaled pool at its ceiling indefinitely.
     --
-    -- Written by workers at startup rather than on a heartbeat, and never expired,
-    -- because the question is "what does this fleet serve", not "who is alive".
-    -- Expiring it would erase the answer exactly when a pool has scaled to zero,
-    -- which is when the demand signal has to work.
+    -- Written by the deployment at every install and upgrade (``distributed init
+    -- --serve-stage``) and by workers at startup, rather than on a heartbeat, and
+    -- never expired, because the question is "what does this fleet serve", not
+    -- "who is alive". Expiring it would erase the answer exactly when a pool has
+    -- scaled to zero, which is when the demand signal has to work; and a pool at
+    -- zero has no worker to declare a new digest, which is why the deployment
+    -- declares it too.
     CREATE TABLE IF NOT EXISTS flakegraph_worker_fleet (
         stage TEXT PRIMARY KEY,
         config_digest TEXT NOT NULL,

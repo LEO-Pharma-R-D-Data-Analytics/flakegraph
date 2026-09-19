@@ -305,15 +305,40 @@ def sources_list(
 @distributed_app.command("init")
 def distributed_init(
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
+    serve_stages: Annotated[
+        list[TaskStage] | None,
+        typer.Option(
+            "--serve-stage",
+            help="A stage the fleet deployed with this configuration serves; repeatable.",
+        ),
+    ] = None,
 ) -> None:
-    """Create the durable PostgreSQL coordination schema idempotently."""
+    """Create the durable PostgreSQL coordination schema idempotently.
 
+    With ``--serve-stage``, also declare this configuration as what the fleet
+    serves for those stages. A deployment runs this at every upgrade because a
+    pool scaled to zero has no worker left to declare its new digest, and the
+    autoscaler asks for workers only for work the declared fleet can take: with
+    a stale declaration nothing would ever scale up to correct it.
+    """
+
+    from kg_processor.application.distributed_planner import distributed_processing_config_digest
     from kg_processor.factories import build_distributed_store
 
     settings = Settings.load(config)
     store = build_distributed_store(settings)
     store.initialize()
-    _echo_json({"initialized": True})
+    stages = set(serve_stages or [])
+    digest = distributed_processing_config_digest(settings)
+    if stages:
+        store.record_served_configuration(stages, digest)
+    _echo_json(
+        {
+            "initialized": True,
+            "config_digest": digest,
+            "served_stages": sorted(stage.value for stage in stages),
+        }
+    )
 
 
 @distributed_app.command("submit")

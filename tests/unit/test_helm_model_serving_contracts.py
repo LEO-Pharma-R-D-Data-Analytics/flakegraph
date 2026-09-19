@@ -1058,6 +1058,17 @@ def test_database_schema_is_bootstrapped_before_a_helm_release_is_ready() -> Non
     commands = [line.strip() for line in script.splitlines() if not line.strip().startswith("#")]
     assert commands[0].startswith("flakegraph preflight --deployment-worker")
     assert commands[1].startswith("exec flakegraph distributed init")
+    # The hook declares what every enabled pool serves under this release: a
+    # pool scaled to zero has no worker to do it, and the demand signal counts
+    # only work the declared fleet can take, so an idle fleet upgraded without
+    # this would never scale up for a run planned under the new digest.
+    words = commands[1].split()
+    served = {words[i + 1] for i, word in enumerate(words) if word == "--serve-stage"}
+    expected = {
+        stage for pool in values["workers"].values() if pool["enabled"] for stage in pool["stages"]
+    }
+    assert served == expected
+    assert "finalize_graph" in served
     assert _env(initialize)["KG_DISTRIBUTED_DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {
         "name": values["database"]["secretName"],
         "key": values["database"]["secretKey"],
