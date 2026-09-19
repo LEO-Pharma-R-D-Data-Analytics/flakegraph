@@ -33,6 +33,7 @@ export function AskPanel({
   const production = perspectives.filter((item) => item.lifecycle === "production");
   const [question, setQuestion] = useState(production[0]?.suggestedQuestions[0] ?? "Who developed judo?");
   const [mode, setMode] = useState<QueryMode | "auto">("local");
+  const [showAllCitations, setShowAllCitations] = useState(false);
   const [perspectiveId, setPerspectiveId] = useState(production[0]?.id ?? "");
   const transport = useMemo(
     () =>
@@ -183,20 +184,29 @@ export function AskPanel({
               </p>
             )}
             {citations.length ? (
-              <ul className="list-disc pl-5">
-                {citations.map((citation, index) => (
-                  <li key={`${citation.documentId}-${index}`}>
-                    <button
-                      type="button"
-                      className="text-left underline"
-                      onClick={() => onOpenEntity?.(citation.entityName || citation.quote.slice(0, 48))}
-                    >
-                      <span className="font-medium">{citation.documentName || citation.documentId || "document"}:</span>{" "}
-                      {citation.quote}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <div className="space-y-1.5" data-testid="ask-citations">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Sources
+                  <span className="ml-1.5 font-normal normal-case tracking-normal">
+                    {citations.length.toLocaleString()} passage{citations.length === 1 ? "" : "s"}
+                  </span>
+                </p>
+                <ul className="space-y-1.5">
+                  {(showAllCitations ? citations : citations.slice(0, CITATION_PREVIEW)).map((citation, index) => (
+                    <Citation
+                      key={`${citation.documentId}-${index}`}
+                      documentName={citation.documentName || citation.documentId || "document"}
+                      quote={citation.quote}
+                      onOpen={() => onOpenEntity?.(citation.entityName || citation.quote.slice(0, 48))}
+                    />
+                  ))}
+                </ul>
+                {citations.length > CITATION_PREVIEW ? (
+                  <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setShowAllCitations((current) => !current)}>
+                    {showAllCitations ? "Show fewer" : `Show all ${citations.length.toLocaleString()} passages`}
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -295,4 +305,30 @@ function consumptionFromTools(tools: Array<{ output?: unknown }>): { entities: n
     }
   }
   return null;
+}
+
+/** Passages listed under an answer before "Show all". */
+const CITATION_PREVIEW = 8;
+/** Characters of a passage shown before it has to be opened; a passage can be a whole page. */
+const QUOTE_PREVIEW = 240;
+
+function Citation({ documentName, quote, onOpen }: { documentName: string; quote: string; onOpen: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const long = quote.length > QUOTE_PREVIEW;
+  const shown = expanded || !long ? quote : `${quote.slice(0, QUOTE_PREVIEW).trimEnd()}…`;
+  return (
+    <li className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+      <div className="flex items-baseline justify-between gap-3">
+        <button type="button" className="min-w-0 truncate text-left font-medium underline-offset-2 hover:underline" onClick={onOpen}>
+          {documentName}
+        </button>
+        {long ? (
+          <button type="button" className="shrink-0 text-xs text-muted-foreground hover:text-foreground" onClick={() => setExpanded((current) => !current)}>
+            {expanded ? "Less" : "More"}
+          </button>
+        ) : null}
+      </div>
+      <p className="mt-0.5 text-muted-foreground">{shown}</p>
+    </li>
+  );
 }

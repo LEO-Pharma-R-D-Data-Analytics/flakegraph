@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/console/sidebar";
 import { GraphExplorer } from "@/components/console/graph-explorer";
 import { GuideCard } from "@/components/console/guide-card";
+import { DocumentTable, PhaseSummary, documentsNeedingAttention } from "@/components/console/document-table";
 import { GraphEditor, GraphVersionsCard } from "@/components/console/graph-editor";
 import { PageHeader } from "@/components/console/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -31,7 +32,7 @@ import {
   type StageProgress,
 } from "@/server/protocol/schema";
 import { readLastIngestion, writeLastIngestion } from "@/lib/last-ingestion";
-import { formatDocumentPhase, documentPhaseNeedsSkip, formatDuration, formatInstant, formatRelativeTime, titleCaseStage } from "@/lib/utils";
+import { formatDocumentPhase, formatDuration, formatInstant, formatRelativeTime, titleCaseStage } from "@/lib/utils";
 import type { DocumentStatus } from "@/server/documents";
 import { statusSentence } from "@/lib/status-sentence";
 
@@ -842,6 +843,7 @@ function ProgressPanel({
   onSkip: (fileId: string) => void;
 }) {
   const kept = documents.filter((item) => item.phase === "inherited").length;
+  const attention = documentsNeedingAttention(documents);
   return (
     <Card>
       <CardHeader>
@@ -876,25 +878,53 @@ function ProgressPanel({
           );
         })}
         {documents.length ? (
-          <ul className="space-y-1 text-sm">
-            {documents.map((item) => (
-              <li key={item.fileId} className="flex items-center justify-between gap-2">
-                <span title={item.fileId}>
-                  {item.name ?? item.fileId} · {formatDocumentPhase(item.phase)} · {item.detail}
-                </span>
-                {documentPhaseNeedsSkip(item.phase) ? (
-                  <Button size="sm" variant="outline" onClick={() => onSkip(item.fileId)}>
-                    Skip file
-                  </Button>
+          <div className="space-y-3 border-t border-border pt-3">
+            <PhaseSummary documents={documents} />
+            {attention.length ? (
+              <div className="space-y-1.5" data-testid="documents-needing-attention">
+                <p className="text-sm font-medium text-destructive">
+                  {attention.length === 1 ? "One document needs a decision" : `${attention.length} documents need a decision`}
+                </p>
+                <ul className="space-y-1 text-sm">
+                  {attention.slice(0, ATTENTION_PREVIEW).map((item) => (
+                    <li key={item.fileId} className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate" title={item.fileId}>
+                        <span className="font-medium">{item.name ?? item.fileId}</span>
+                        <span className="text-muted-foreground">
+                          {" "}
+                          · {formatDocumentPhase(item.phase)} · {item.detail}
+                        </span>
+                      </span>
+                      <Button size="sm" variant="outline" className="shrink-0" onClick={() => onSkip(item.fileId)}>
+                        Skip file
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+                {attention.length > ATTENTION_PREVIEW ? (
+                  <p className="text-xs text-muted-foreground">
+                    {attention.length - ATTENTION_PREVIEW} more in the list below, under Needs attention.
+                  </p>
                 ) : null}
-              </li>
-            ))}
-          </ul>
+              </div>
+            ) : null}
+            <details className="group" data-testid="all-documents">
+              <summary className="cursor-pointer select-none text-sm text-muted-foreground hover:text-foreground">
+                All {documents.length.toLocaleString()} documents
+              </summary>
+              <div className="pt-3">
+                <DocumentTable documents={documents} onSkip={onSkip} />
+              </div>
+            </details>
+          </div>
         ) : null}
       </CardContent>
     </Card>
   );
 }
+
+/** Documents needing a decision that the Progress card lists inline; the rest are in the table. */
+const ATTENTION_PREVIEW = 5;
 
 function RunDetails({
   snapshot,
@@ -1022,40 +1052,12 @@ function RunDetails({
           <CardHeader>
             <CardTitle>Documents</CardTitle>
             <CardDescription>
-              {documents.length} document{documents.length === 1 ? "" : "s"} the run discovered, and where each stands.
+              {documents.length.toLocaleString()} document{documents.length === 1 ? "" : "s"} the run discovered, and where each stands.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Document</TableHead>
-                  <TableHead>Phase</TableHead>
-                  <TableHead>Detail</TableHead>
-                  {onSkip ? <TableHead /> : null}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {documents.map((item) => (
-                  <TableRow key={item.fileId}>
-                    <TableCell className="font-medium" title={item.fileId}>
-                      {item.name ?? item.fileId}
-                    </TableCell>
-                    <TableCell>{formatDocumentPhase(item.phase)}</TableCell>
-                    <TableCell className="max-w-md break-words text-muted-foreground">{item.detail}</TableCell>
-                    {onSkip ? (
-                      <TableCell className="text-right">
-                        {documentPhaseNeedsSkip(item.phase) ? (
-                          <Button size="sm" variant="outline" onClick={() => onSkip(item.fileId)}>
-                            Skip file
-                          </Button>
-                        ) : null}
-                      </TableCell>
-                    ) : null}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+          <CardContent className="space-y-3">
+            <PhaseSummary documents={documents} />
+            <DocumentTable documents={documents} onSkip={onSkip} />
           </CardContent>
         </Card>
       ) : null}

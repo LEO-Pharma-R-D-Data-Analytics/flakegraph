@@ -52,6 +52,9 @@ interface SidebarProps {
   showClose?: boolean;
 }
 
+/** Graphs the catalog loads, newest first; the server allows up to 500. */
+const CATALOG_LIMIT = 500;
+
 export function Sidebar(props: SidebarProps) {
   const [search, setSearch] = useState("");
   const [storage, setStorage] = useState("all");
@@ -63,7 +66,9 @@ export function Sidebar(props: SidebarProps) {
   // Where the last checkbox click landed, so shift-click can take the range.
   const lastToggled = useRef<string | null>(null);
   const utils = trpc.useUtils();
-  const runs = trpc.runs.list.useQuery({ limit: 100 }, { refetchInterval: 4_000 });
+  // The list's cap: search and the filters work on what is loaded, so the
+  // cap has to be said when it is reached rather than look like the whole.
+  const runs = trpc.runs.list.useQuery({ limit: CATALOG_LIMIT }, { refetchInterval: 4_000 });
   const forget = trpc.runs.forget.useMutation({
     onSuccess: async (_void, variables) => {
       toast.success("Removed from this catalog. Stored files were not deleted.");
@@ -502,6 +507,11 @@ export function Sidebar(props: SidebarProps) {
           {runs.error ? (
             <p className="px-1 text-sm text-destructive" role="alert">
               {runs.error.message}
+            </p>
+          ) : null}
+          {(runs.data?.length ?? 0) >= CATALOG_LIMIT ? (
+            <p className="px-1 pb-1 text-xs text-muted-foreground" data-testid="catalog-capped">
+              The {CATALOG_LIMIT} most recent graphs are listed; older ones open from their run link.
             </p>
           ) : null}
           {empty && !runs.error ? (

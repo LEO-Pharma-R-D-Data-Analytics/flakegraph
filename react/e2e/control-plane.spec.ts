@@ -361,7 +361,11 @@ test.describe("kubernetes fleet", () => {
     // Nothing removed and nothing added: there is no version to build yet.
     await expect(page.getByTestId("revision-summary")).toContainText("Keeps 2 documents");
     await expect(page.getByRole("button", { name: "Build new version" })).toBeDisabled();
-    // Removing one is enough on its own.
+    // The whole set can be left out at once and kept again; then one is enough on its own.
+    await editor.getByRole("button", { name: /Remove all/ }).click();
+    await expect(page.getByTestId("removal-summary")).toContainText("2 of 2 documents will be left out");
+    await editor.getByRole("button", { name: "Keep all" }).click();
+    await expect(page.getByTestId("removal-summary")).toHaveCount(0);
     await page.getByLabel("Remove karate-history.md").check();
     await expect(page.getByTestId("removal-summary")).toContainText("1 of 2 documents will be left out");
     await expect(page.getByTestId("revision-summary")).toContainText("removes 1");
@@ -761,9 +765,17 @@ test.describe("remaining report journeys", () => {
 
   test("skips a poison document on an active run", async ({ page }) => {
     await page.goto("/?runtime=local&page=run&run=run_active_ocr");
-    await expect(page.getByText(/doc_poison_scan · OCR failed/i)).toBeVisible();
-    await page.getByRole("button", { name: "Skip file" }).click();
-    await expect(page.getByText(/doc_poison_scan · Skipped/i)).toBeVisible();
+    // The document needing a decision is listed on the Progress card itself.
+    const attention = page.getByTestId("documents-needing-attention");
+    await expect(attention).toContainText("One document needs a decision");
+    await expect(attention).toContainText("doc_poison_scan");
+    await attention.getByRole("button", { name: "Skip file" }).click();
+    // Skipped, it needs nothing more: the list goes, the summary counts it.
+    await expect(page.getByTestId("documents-needing-attention")).toHaveCount(0);
+    await expect(page.getByTestId("phase-summary")).toContainText("Skipped");
+    await page.getByText(/^All \d+ documents$/).click();
+    await expect(page.getByTestId("document-table")).toContainText("doc_poison_scan");
+    await expect(page.getByTestId("document-table")).toContainText("Quarantined");
   });
 
   test("analyst chrome hides New graph after CAROL signs in", async ({ page }) => {
@@ -922,6 +934,38 @@ test.describe("remaining report journeys", () => {
     await page.getByRole("button", { name: "Confirm forget" }).click();
     await expect(page.getByLabel(label!)).toHaveCount(0);
     await expect(bar).toContainText("Select all");
+  });
+
+  test("keeps a 300-document run readable while it runs", async ({ page }) => {
+    await page.goto("/?runtime=local&page=run&run=run_large_corpus");
+    // The Progress card sums the corpus up and lists only what needs a decision.
+    const summary = page.getByTestId("phase-summary");
+    await expect(summary).toContainText("6");
+    await expect(summary).toContainText("OCR failed");
+    await expect(summary).toContainText("Indexed");
+    const attention = page.getByTestId("documents-needing-attention");
+    // paper-043 and paper-086 are here only because the whole events file is
+    // read: the snapshot's tail of 200 events does not reach them.
+    await expect(attention).toContainText("6 documents need a decision");
+    await expect(attention).toContainText("paper-043.pdf");
+    await expect(attention.getByRole("button", { name: "Skip file" })).toHaveCount(5);
+    await expect(attention).toContainText("1 more in the list below");
+    // Every document is one click away, a page at a time, searchable, filterable.
+    await expect(page.getByTestId("document-table")).toBeHidden();
+    await page.getByText("All 300 documents").click();
+    await expect(page.getByTestId("document-table")).toBeVisible();
+    const table = page.getByTestId("document-table");
+    await expect(table.getByRole("row")).toHaveCount(51);
+    await expect(table).toContainText("Showing 50 of 300");
+    await table.getByRole("button", { name: /Show 50 more/ }).click();
+    await expect(table.getByRole("row")).toHaveCount(101);
+    await table.getByLabel("Search documents").fill("paper-29");
+    await expect(page.getByTestId("document-table-count")).toContainText("10 of 300 documents");
+    await table.getByLabel("Search documents").fill("");
+    await table.getByLabel("Phase filter").click();
+    await page.getByRole("option", { name: /Needs attention/ }).click();
+    await expect(page.getByTestId("document-table-count")).toContainText("6 of 300 documents");
+    await expect(table.getByRole("button", { name: "Skip file" })).toHaveCount(6);
   });
 
   test("selects every shown graph at once, leaving running ones out", async ({ page }) => {

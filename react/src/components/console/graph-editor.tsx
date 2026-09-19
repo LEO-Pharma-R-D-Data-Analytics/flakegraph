@@ -6,10 +6,11 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { DocumentTable } from "@/components/console/document-table";
 import { IngestionForm, type RevisionTarget } from "@/components/console/ingestion-form";
 import type { DocumentStatus } from "@/server/documents";
 import type { Capability, GraphVersion, RunSnapshot, RuntimeMode } from "@/server/protocol/schema";
-import { formatDocumentPhase, formatInstant } from "@/lib/utils";
+import { formatInstant } from "@/lib/utils";
 
 /**
  * Edit a finished graph by building its next version.
@@ -86,46 +87,26 @@ export function GraphEditor({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {held.length === 0 ? (
-            <p className="text-sm text-muted-foreground">This version holds no documents.</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-24">Remove</TableHead>
-                  <TableHead>Document</TableHead>
-                  <TableHead>In this version</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {held.map((item) => (
-                  <TableRow key={item.fileId} data-removed={removed.has(item.fileId) ? "true" : undefined}>
-                    <TableCell>
-                      <input
-                        type="checkbox"
-                        aria-label={`Remove ${item.name ?? item.fileId}`}
-                        checked={removed.has(item.fileId)}
-                        onChange={() => toggle(item.fileId)}
-                      />
-                    </TableCell>
-                    <TableCell
-                      className={removed.has(item.fileId) ? "line-through text-muted-foreground" : "font-medium"}
-                      title={item.fileId}
-                    >
-                      {item.name ?? item.fileId}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">{formatDocumentPhase(item.phase)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+          <DocumentTable
+            documents={held}
+            emptyText="This version holds no documents."
+            selection={{
+              removed,
+              onToggle: toggle,
+              onRemove: (ids) => setRemoved((current) => new Set([...current, ...ids])),
+              onKeep: (ids) =>
+                setRemoved((current) => {
+                  const next = new Set(current);
+                  for (const id of ids) {
+                    next.delete(id);
+                  }
+                  return next;
+                }),
+            }}
+          />
           {removed.size ? (
             <p className="mt-3 text-sm" data-testid="removal-summary">
-              {removed.size} of {held.length} document{held.length === 1 ? "" : "s"} will be left out.{" "}
-              <Button size="sm" variant="ghost" onClick={() => setRemoved(new Set())}>
-                Keep all
-              </Button>
+              {removed.size.toLocaleString()} of {held.length.toLocaleString()} document{held.length === 1 ? "" : "s"} will be left out.
             </p>
           ) : null}
         </CardContent>

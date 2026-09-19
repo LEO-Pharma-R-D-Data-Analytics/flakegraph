@@ -37,6 +37,9 @@ import { documentNameIndex, evidenceDocumentId, evidenceEntityId, evidenceRelati
 /** The overview draws only the best-connected core; a focus widens the cap. */
 const OVERVIEW_NODE_LIMIT = 400;
 
+/** Neighborhood chips shown before "n more". */
+const NEIGHBORHOOD_PREVIEW = 12;
+
 export function GraphExplorer({
   dataset,
   perspectives = [],
@@ -175,7 +178,26 @@ export function GraphExplorer({
     const node = dataset.nodes.find((item) => graphNodeId(item) === id);
     return node ? graphNodeLabel(node) : id;
   });
-  const neighborhoodHints = dataset.communities ?? [];
+  const neighborhoodHints = useMemo(() => dataset.communities ?? [], [dataset.communities]);
+  // A large graph has hundreds of neighborhoods; a row of chips holds a
+  // dozen. The chosen ones and the matches of a search always show.
+  const [neighborhoodSearch, setNeighborhoodSearch] = useState("");
+  const [showAllNeighborhoods, setShowAllNeighborhoods] = useState(false);
+  const matchingNeighborhoods = useMemo(() => {
+    const needle = neighborhoodSearch.trim().toLowerCase();
+    return needle
+      ? neighborhoodHints.filter((community) => String(community.title ?? community.id ?? "").toLowerCase().includes(needle))
+      : neighborhoodHints;
+  }, [neighborhoodHints, neighborhoodSearch]);
+  const visibleNeighborhoods = useMemo(() => {
+    if (showAllNeighborhoods || matchingNeighborhoods.length <= NEIGHBORHOOD_PREVIEW) {
+      return matchingNeighborhoods;
+    }
+    const chosen = matchingNeighborhoods.filter((community) => communityIds.includes(String(community.id ?? "")));
+    const rest = matchingNeighborhoods.filter((community) => !communityIds.includes(String(community.id ?? "")));
+    return [...chosen, ...rest.slice(0, Math.max(0, NEIGHBORHOOD_PREVIEW - chosen.length))];
+  }, [matchingNeighborhoods, showAllNeighborhoods, communityIds]);
+  const hiddenNeighborhoods = matchingNeighborhoods.length - visibleNeighborhoods.length;
   const communityTitles = useMemo(
     () =>
       Object.fromEntries(
@@ -324,9 +346,23 @@ export function GraphExplorer({
       </div>
       {neighborhoodHints.length > 0 ? (
         <div className="space-y-2">
-          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Neighborhoods</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Neighborhoods
+              <span className="ml-1.5 normal-case tracking-normal">{neighborhoodHints.length.toLocaleString()}</span>
+            </p>
+            {neighborhoodHints.length > NEIGHBORHOOD_PREVIEW ? (
+              <Input
+                aria-label="Find a neighborhood"
+                className="h-7 w-56 text-xs"
+                placeholder="Find a neighborhood"
+                value={neighborhoodSearch}
+                onChange={(event) => setNeighborhoodSearch(event.target.value)}
+              />
+            ) : null}
+          </div>
           <div className="flex flex-wrap gap-2">
-          {neighborhoodHints.map((community) => {
+          {visibleNeighborhoods.map((community) => {
             const id = String(community.id ?? "");
             const title = String(community.title ?? id);
             return (
@@ -345,6 +381,11 @@ export function GraphExplorer({
               </Button>
             );
           })}
+          {hiddenNeighborhoods > 0 ? (
+            <Button size="sm" variant="ghost" onClick={() => setShowAllNeighborhoods((current) => !current)}>
+              {showAllNeighborhoods ? "Show fewer" : `${hiddenNeighborhoods.toLocaleString()} more`}
+            </Button>
+          ) : null}
           {selectedId ? (
             <Button
               size="sm"

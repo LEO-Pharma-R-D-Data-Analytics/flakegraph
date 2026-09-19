@@ -961,7 +961,7 @@ export function IngestionForm({
       {scanPii.data?.hits.length ? (
         scanPii.data.blocked ? (
           <Alert variant="destructive">
-            PII {scanPii.data.hits.map((hit) => `${hit.kind} in ${hit.source}`).join("; ")}. Embeddings will not be
+            PII {summarizeHits(scanPii.data.hits)}. Embeddings will not be
             written until you acknowledge residual risk.
             <Button className="ml-2" size="sm" variant="secondary" onClick={() => ackPii.mutate({ sourceKey })}>
               Acknowledge residual risk
@@ -971,7 +971,7 @@ export function IngestionForm({
           // What was found stays on screen after the acknowledgement, so the
           // person starting the run still sees what it carries.
           <Alert variant="warning" data-testid="pii-acknowledged">
-            PII {scanPii.data.hits.map((hit) => `${hit.kind} in ${hit.source}`).join("; ")} · residual risk acknowledged
+            PII {summarizeHits(scanPii.data.hits)} · residual risk acknowledged
             for this source.
           </Alert>
         )
@@ -1442,4 +1442,11 @@ function cryptoRandom(prefix: string): string {
     return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
   }
   return `${prefix}_${Math.random().toString(16).slice(2, 14)}`;
+}
+
+/** A PII finding list a sentence can carry: the first few, then a count. */
+function summarizeHits(hits: ReadonlyArray<{ kind: string; source: string }>): string {
+  const shown = hits.slice(0, 5).map((hit) => `${hit.kind} in ${hit.source}`);
+  const more = hits.length - shown.length;
+  return more > 0 ? `${shown.join("; ")} and ${more.toLocaleString()} more` : shown.join("; ");
 }

@@ -28,16 +28,51 @@ export async function readJsonlEvents(file: string, limit = 2_000): Promise<Prog
   }
   const records: ProgressEvent[] = [];
   for (const line of await tailLines(file, limit)) {
-    try {
-      const raw = JSON.parse(line) as Record<string, unknown>;
-      if (raw && raw.event === "kg_processor.progress") {
-        records.push(progressEvent(raw));
-      }
-    } catch {
-      continue;
+    const event = parseProgressLine(line);
+    if (event) {
+      records.push(event);
     }
   }
   return records;
+}
+
+/**
+ * Every document's events, read from the whole file rather than its tail.
+ *
+ * A run over hundreds of documents writes thousands of lines; the tail that
+ * serves the stage bars and the recent-events card would lose the first
+ * documents entirely. This streams the file once and keeps only the events
+ * that name a document, which is what a document list is built from.
+ */
+export async function readDocumentEvents(file: string): Promise<ProgressEvent[]> {
+  if (!existsSync(file)) {
+    return [];
+  }
+  const records: ProgressEvent[] = [];
+  const handle = await open(file, "r");
+  try {
+    for await (const line of handle.readLines({ encoding: "utf8" })) {
+      const event = parseProgressLine(line);
+      if (event?.fileId) {
+        records.push(event);
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+  return records;
+}
+
+function parseProgressLine(line: string): ProgressEvent | null {
+  if (!line.trim()) {
+    return null;
+  }
+  try {
+    const raw = JSON.parse(line) as Record<string, unknown>;
+    return raw && raw.event === "kg_processor.progress" ? progressEvent(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function readLocalProgress(file: string, limit = 2_000): Promise<LocalProgress> {

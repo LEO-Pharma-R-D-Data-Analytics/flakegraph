@@ -18,7 +18,7 @@ import { buildRunConfig, environmentForRequest, redactedConfig, writeRunConfig }
 import { appEnv } from "../env";
 import { graphArtifactsExist, loadLocalGraph } from "../graph";
 import { unidentifiedViewer } from "../identity";
-import { readLocalProgress } from "../progress";
+import { readDocumentEvents, readLocalProgress } from "../progress";
 import {
   ARTIFACTS_UNAVAILABLE_STATUS,
   LOCAL_CAPABILITIES,
@@ -231,7 +231,15 @@ export class LocalRuntime implements ControlPlane {
   }
 
   documents(runId: string): Effect.Effect<readonly DocumentStatus[], ControlPlaneError> {
-    return Effect.map(this.getRun(runId), (snapshot) => documentStatusesFromEvents(snapshot.events));
+    // From the whole events file, not the snapshot's tail: a corpus of
+    // hundreds of documents outruns any tail long before it finishes.
+    return Effect.flatMap(this.getRun(runId), () =>
+      Effect.tryPromise({
+        try: async () =>
+          documentStatusesFromEvents(await readDocumentEvents(path.join(runDirectory(this.stateRoot, runId), "events.jsonl"))),
+        catch: (cause) => fromCause(cause, `Unable to read documents for ${runId}`),
+      }),
+    );
   }
 
   versions(_graphId: string): Effect.Effect<readonly GraphVersion[], ControlPlaneError> {

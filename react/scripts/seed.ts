@@ -66,6 +66,7 @@ async function main() {
   await seedSnowflake(stateRoot);
   await seedWorkspace(stateRoot);
   await seedCancellingRun(stateRoot);
+  await seedLargeCorpusRun(stateRoot);
   await seedPiiPack(stateRoot);
   console.log(`Seeded control-plane fixtures under ${stateRoot}`);
 }
@@ -605,6 +606,75 @@ async function seedCancellingRun(stateRoot: string) {
     documentsCompleted: 4,
     owner: "ALICE",
   });
+}
+
+/**
+ * A corpus the size FlakeGraph is built for: 300 documents in flight, a
+ * few of them failed. Every document list in the console has to stay
+ * readable here, not only on the ten-file packs.
+ */
+async function seedLargeCorpusRun(stateRoot: string) {
+  const directory = path.join(stateRoot, "runs", "run_large_corpus");
+  const total = 300;
+  await writeRunRecord(directory, {
+    runId: "run_large_corpus",
+    graphId: "graph_large_corpus",
+    graphName: "Large corpus",
+    status: "running",
+    runtime: "local",
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    outputPath: path.join(stateRoot, "graphs", "graph_large_corpus"),
+    storageKind: "local_files",
+    storageLocation: path.join(stateRoot, "graphs", "graph_large_corpus"),
+    documentsTotal: total,
+    documentsCompleted: 120,
+    documentsFailed: 6,
+    owner: "ALICE",
+  });
+  const events = [];
+  for (let index = 1; index <= total; index += 1) {
+    const fileId = `paper-${String(index).padStart(3, "0")}.pdf`;
+    if (index % 43 === 0) {
+      events.push(
+        makeProgressRecord({
+          timestamp: new Date().toISOString(),
+          stage: "ocr",
+          status: "failed",
+          fileId,
+          message: "Poison PDF quarantined",
+          elapsedMs: 900,
+          counts: {},
+        }),
+      );
+      continue;
+    }
+    events.push(
+      makeProgressRecord({
+        timestamp: new Date().toISOString(),
+        stage: "ocr",
+        status: "completed",
+        fileId,
+        message: null,
+        elapsedMs: 100,
+        counts: {},
+      }),
+    );
+    if (index <= 120) {
+      events.push(
+        makeProgressRecord({
+          timestamp: new Date().toISOString(),
+          stage: "extract",
+          status: "completed",
+          fileId,
+          message: null,
+          elapsedMs: 100,
+          counts: {},
+        }),
+      );
+    }
+  }
+  await writeFile(path.join(directory, "events.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + "\n", "utf8");
 }
 
 async function seedPiiPack(stateRoot: string) {

@@ -80,6 +80,8 @@ export function ReviewPanel({
   const items = (workspace.data?.reviews ?? []).filter((item) => item.graphId === graphId);
   const pins = (workspace.data?.pins ?? []).filter((item) => item.graphId === graphId);
   const visible = items.filter((item) => (item.confidence ?? 0) <= ceiling);
+  const [reviewLimit, setReviewLimit] = useState(REVIEW_PAGE_SIZE);
+  const page = visible.slice(0, reviewLimit);
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
@@ -107,7 +109,7 @@ export function ReviewPanel({
             : `All ${items.length} queued triples sit above the ${ceiling.toFixed(2)} ceiling.`}
         </p>
       ) : null}
-      {visible.map((item) => (
+      {page.map((item) => (
         <Card key={item.id}>
           <CardHeader>
             <CardTitle className="text-base">
@@ -144,9 +146,22 @@ export function ReviewPanel({
           </CardContent>
         </Card>
       ))}
+      {visible.length > page.length ? (
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span>
+            Showing {page.length} of {visible.length.toLocaleString()} queued triples
+          </span>
+          <Button size="sm" variant="outline" className="h-7" onClick={() => setReviewLimit((current) => current + REVIEW_PAGE_SIZE)}>
+            Show {Math.min(REVIEW_PAGE_SIZE, visible.length - page.length)} more
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
+
+/** Review cards shown before "Show more"; a sampled queue can hold hundreds. */
+const REVIEW_PAGE_SIZE = 25;
 
 export function WatchPanel({
   graphId,
