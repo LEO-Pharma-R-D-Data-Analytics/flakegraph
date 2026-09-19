@@ -46,6 +46,22 @@ export function AppProviders({ children }: { children: ReactNode }) {
             const runtime = getRuntimeHeader();
             return runtime ? { "x-flakegraph-runtime": runtime } : {};
           },
+          // While the control plane restarts, the edge answers in prose
+          // ("no available server"); the parse error that follows says
+          // nothing to anyone. Name the outage instead.
+          fetch: async (input, init) => {
+            const response = await fetch(input, init);
+            const type = response.headers.get("content-type") ?? "";
+            if (!response.ok && !type.includes("json")) {
+              const text = (await response.text()).trim().slice(0, 120);
+              throw new Error(
+                response.status >= 500
+                  ? `The control plane is not answering (${response.status}${text ? `: ${text}` : ""}). It may be restarting; try again in a moment.`
+                  : `The control plane refused the request (${response.status}${text ? `: ${text}` : ""}).`,
+              );
+            }
+            return response;
+          },
         }),
       ],
     }),
