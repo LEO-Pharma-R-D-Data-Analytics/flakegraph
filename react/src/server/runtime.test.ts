@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -74,6 +74,39 @@ describe("local runtime", () => {
     const renamed = await Effect.runPromise(runtime.renameGraph(ingestion.graphId, "Renamed demo"));
     expect(renamed).toBe("Renamed demo");
   }, 20_000);
+
+  it("lists an object-storage source through the pipeline's own listing", async () => {
+    const stateRoot = await mkdtemp(path.join(tmpdir(), "fg-local-s3-"));
+    process.env.FLAKEGRAPH_APP_STATE_ROOT = stateRoot;
+    process.env.FLAKEGRAPH_CLI = `bun ${path.resolve(import.meta.dirname, "../../scripts/fake-flakegraph.ts")}`;
+    resetAppEnv();
+    const runtime = new LocalRuntime(path.resolve(import.meta.dirname, "../../.."), stateRoot);
+    const objects = await Effect.runPromise(
+      runtime.listSourceObjects({
+        kind: "s3",
+        bucket: "test-corpora",
+        prefix: "martial_arts/",
+        endpointUrl: "http://minio.local:9000",
+        region: "us-east-1",
+      }),
+    );
+    expect(objects.map((object) => object.uri)).toEqual([
+      "s3://test-corpora/martial_arts/judo.md",
+      "s3://test-corpora/martial_arts/karate.pdf",
+    ]);
+    expect(objects[0]).toMatchObject({ name: "judo.md", sizeBytes: 512, checksum: "etag-judo.md" });
+    expect(objects[0]?.modifiedAt).toBe("2026-09-18T10:00:00+00:00");
+    const limited = await Effect.runPromise(runtime.listSourceObjects({ kind: "s3", bucket: "test-corpora" }, 1));
+    expect(limited).toHaveLength(1);
+    // The listing's config is a scratch file the browser cleans up after itself.
+    expect(await readdir(path.join(stateRoot, "browse"))).toEqual([]);
+    await expect(
+      Effect.runPromise(runtime.listSourceObjects({ kind: "azure_blob", container: "", prefix: "" })),
+    ).rejects.toThrow(/requires a bucket/);
+    await expect(
+      Effect.runPromise(runtime.listSourceObjects({ kind: "snowflake_stage", stage: "@docs" })),
+    ).rejects.toThrow(/not available for snowflake_stage/);
+  });
 
   it("fails preflight for a missing corpus marker", async () => {
     const stateRoot = await mkdtemp(path.join(tmpdir(), "fg-local-fail-"));

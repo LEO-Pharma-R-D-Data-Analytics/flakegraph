@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier
 
@@ -268,6 +269,33 @@ def test_azure_blob_file_source_exposes_streaming_discovery(tmp_path: Path) -> N
     assert [file.path.name for file in remaining] == ["second.pdf"]
 
 
+def test_azure_blob_source_browses_the_listing_without_downloading(tmp_path: Path) -> None:
+    container = _FakeContainer(
+        {
+            "incoming/documents/report.pdf": b"pdf-bytes",
+            "incoming/scratch.tmp": b"ignored",
+            "incoming/documents/readme.txt": b"hello",
+        },
+        size_in_listing=True,
+    )
+    source = AzureBlobFileSource(
+        _config(tmp_path),
+        client_factory=lambda _config: _FakeService(container),
+    )
+
+    listing = list(source.browse(limit=10))
+
+    # Listing order is the container's own; only unsupported blobs drop out.
+    assert [item.name for item in listing] == ["documents/report.pdf", "documents/readme.txt"]
+    assert listing[0].uri == "https://storage.example/container/incoming/documents/report.pdf"
+    assert listing[0].size_bytes == 9
+    assert listing[0].modified_at == "2026-09-18T10:00:00+00:00"
+    assert listing[0].checksum == "etag-incoming/documents/report.pdf"
+    assert [item.name for item in source.browse(limit=1)] == ["documents/report.pdf"]
+    assert container.downloaded == []
+    assert not any(tmp_path.iterdir())
+
+
 def _config(tmp_path: Path) -> AzureBlobFileSourceConfig:
     return AzureBlobFileSourceConfig(
         account_url="https://storage.example",
@@ -289,6 +317,8 @@ class _FakeBlob:
     name: str
     content_type: str | None = None
     size: int | None = None
+    last_modified: datetime | None = None
+    etag: str | None = None
 
     @property
     def content_settings(self) -> _ContentSettings:
@@ -308,6 +338,7 @@ class _FakeContainer:
     def __init__(self, blobs: dict[str, bytes], size_in_listing: bool = False) -> None:
         self.blobs = blobs
         self.size_in_listing = size_in_listing
+        self.downloaded: list[str] = []
 
     def list_blobs(self, name_starts_with: str | None = None) -> list[object]:
         return [
@@ -315,12 +346,15 @@ class _FakeContainer:
                 name,
                 "text/custom" if name.endswith(".txt") else None,
                 len(payload) if self.size_in_listing else None,
+                datetime(2026, 9, 18, 10, 0, tzinfo=UTC) if self.size_in_listing else None,
+                f'"etag-{name}"' if self.size_in_listing else None,
             )
             for name, payload in self.blobs.items()
             if name_starts_with is None or name.startswith(name_starts_with)
         ]
 
     def download_blob(self, blob: str) -> _FakeDownloader:
+        self.downloaded.append(blob)
         return _FakeDownloader(self.blobs[blob])
 
 

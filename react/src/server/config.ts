@@ -5,6 +5,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   type IngestionRequest,
   type ProviderSelection,
+  type SourceKind,
   writerProvider,
   storageLocation,
 } from "./protocol/schema";
@@ -237,22 +238,38 @@ export function providerParallelismSettings(parallelism: number): Record<string,
 }
 
 function sourceConfig(request: IngestionRequest): Record<string, unknown> {
-  const source = request.source;
-  if (request.sourceKind === "upload" || request.sourceKind === "local_path") {
+  return sourceSettings(request.sourceKind, request.source, {
+    downloadPath: path.join(path.dirname(request.output.workspacePath), "source-cache"),
+  });
+}
+
+/**
+ * The `files` section (plus its backend block) that makes the pipeline read
+ * one source. A run writes it inside its full config; browsing a bucket
+ * before a run writes it alone, so the listing and the run agree on what the
+ * source contains.
+ */
+export function sourceSettings(
+  sourceKind: SourceKind,
+  source: Record<string, unknown>,
+  options: { downloadPath?: string } = {},
+): Record<string, unknown> {
+  const download = options.downloadPath ? { download_path: options.downloadPath } : {};
+  if (sourceKind === "upload" || sourceKind === "local_path") {
     return { files: { source: "local", input_path: String(source.path ?? "") } };
   }
-  if (request.sourceKind === "azure_blob") {
+  if (sourceKind === "azure_blob") {
     return {
       files: { source: "azure_blob" },
       azure_blob: {
         account_url: source.accountUrl ?? source.account_url,
         container: source.container,
         prefix: source.prefix,
-        download_path: path.join(path.dirname(request.output.workspacePath), "source-cache"),
+        ...download,
       },
     };
   }
-  if (request.sourceKind === "s3") {
+  if (sourceKind === "s3") {
     return {
       files: { source: "s3" },
       s3: {
@@ -260,17 +277,17 @@ function sourceConfig(request: IngestionRequest): Record<string, unknown> {
         prefix: source.prefix,
         endpoint_url: source.endpointUrl ?? source.endpoint_url,
         region: source.region,
-        download_path: path.join(path.dirname(request.output.workspacePath), "source-cache"),
+        ...download,
       },
     };
   }
-  if (request.sourceKind === "snowflake_stage") {
+  if (sourceKind === "snowflake_stage") {
     return {
       files: { source: "snowflake_stage", stage_prefix: source.prefix },
       snowflake: { stage: source.stage },
     };
   }
-  throw new Error(`Unsupported source kind: ${request.sourceKind}`);
+  throw new Error(`Unsupported source kind: ${sourceKind}`);
 }
 
 function providerConfig(selection: ProviderSelection): Record<string, unknown> {

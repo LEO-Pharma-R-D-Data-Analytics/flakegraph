@@ -11,6 +11,7 @@ import re
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
@@ -27,7 +28,7 @@ from kg_processor.adapters.files.common import (
     normalized_prefix,
     object_download_path,
 )
-from kg_processor.domain.documents import InputFile
+from kg_processor.domain.documents import InputFile, SourceListing
 from kg_processor.domain.ids import stable_id
 
 
@@ -118,6 +119,33 @@ class AzureBlobFileSource:
                 ),
                 candidates,
                 buffersize=DOWNLOAD_PARALLELISM,
+            )
+
+    def browse(self, limit: int) -> Iterator[SourceListing]:
+        """Name up to ``limit`` supported blobs from the listing alone."""
+
+        client = self.client_factory(self.config)
+        container_client = client.get_container_client(self.config.container)
+        prefix = normalized_prefix(self.config.prefix)
+        candidates = self._download_candidates(container_client, prefix)
+        for index, (blob, blob_name, relative_path) in enumerate(candidates):
+            if index >= limit:
+                return
+            size = _object_value(blob, "size")
+            modified = _object_value(blob, "last_modified")
+            etag = _object_value(blob, "etag")
+            yield SourceListing(
+                uri=_source_uri(self.config, blob_name),
+                name=relative_path,
+                size_bytes=int(size) if isinstance(size, int | str) and str(size) else None,
+                modified_at=(
+                    modified.isoformat()
+                    if isinstance(modified, datetime)
+                    else str(modified)
+                    if modified
+                    else None
+                ),
+                checksum=str(etag).strip('"') if etag else None,
             )
 
     def _download_candidates(

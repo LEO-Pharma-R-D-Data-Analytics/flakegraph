@@ -12,6 +12,7 @@ import mimetypes
 from collections.abc import Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -26,7 +27,7 @@ from kg_processor.adapters.files.common import (
     normalized_prefix,
     object_download_path,
 )
-from kg_processor.domain.documents import InputFile
+from kg_processor.domain.documents import InputFile, SourceListing
 from kg_processor.domain.ids import stable_id
 
 
@@ -104,6 +105,21 @@ class S3FileSource:
                 buffersize=DOWNLOAD_PARALLELISM,
             )
 
+    def browse(self, limit: int) -> Iterator[SourceListing]:
+        """Name up to ``limit`` supported objects from the listing alone."""
+
+        client = self.client or _build_s3_client(self.config)
+        for index, (key, relative_path, identity) in enumerate(self._candidates(client)):
+            if index >= limit:
+                return
+            yield SourceListing(
+                uri=f"s3://{self.config.bucket}/{key}",
+                name=relative_path,
+                size_bytes=int(identity["size"]) if identity.get("size") else None,
+                modified_at=_iso_timestamp(identity.get("last_modified", "")),
+                checksum=identity.get("etag", "").strip('"') or None,
+            )
+
     def _candidates(self, client: S3Client) -> Iterable[tuple[str, str, dict[str, str]]]:
         """Yield supported object keys and metadata without buffering the listing."""
 
@@ -174,6 +190,17 @@ def _download_input_file(
         mimetypes.guess_type(key)[0] or "application/octet-stream",
         open_body,
     )
+
+
+def _iso_timestamp(value: str) -> str | None:
+    """Render the listing's ``LastModified`` (stringified by ``_candidates``) as ISO 8601."""
+
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).isoformat()
+    except ValueError:
+        return value
 
 
 def _relative_object_path(key: str, prefix: str) -> str:

@@ -730,6 +730,21 @@ uv run flakegraph distributed submit --config configs/your-config.yaml
 uv run flakegraph distributed status --run-id <run-id> --config configs/your-config.yaml
 ```
 
+Before submitting against a bucket or container, see what the run would read:
+
+```bash
+uv run flakegraph sources list --config configs/your-config.yaml --limit 50
+```
+
+This prints a JSON array of `{uri, name, size_bytes, modified_at, checksum}`
+from the listing alone — nothing is downloaded, and the same include globs and
+suffix rules the run applies decide what appears. Local paths, S3-compatible
+buckets and Azure containers can be listed; a manifest or a Snowflake stage,
+which the pipeline only discovers by fetching, exits with status 2 instead of
+quietly pulling the corpus. The console's source browser and PII scan call
+this command for object-storage sources, so the count it shows before "Start"
+is the count the run ingests, read with the pipeline's own credentials.
+
 Every worker emits one `worker_ready` JSON event containing its eligible stages,
 provider/model identities, and semantic `config_digest`; endpoints and credentials
 are omitted. `distributed status` compares the caller's digest with the run and

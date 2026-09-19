@@ -82,6 +82,7 @@ from kg_processor.fleet.kubectl import ClusterTarget
 from kg_processor.fleet.preflight import fleet_preflight
 from kg_processor.fleet.profile import fleet_profile
 from kg_processor.fleet.recover import queued_worker_components, recover_workers
+from kg_processor.ports.file_source import BrowsableFileSource
 from kg_processor.serving.ocr_shim import OcrShimConfig
 from kg_processor.serving.ocr_shim import run as run_ocr_shim
 from kg_processor.serving.sidecar import SidecarConfig
@@ -306,6 +307,30 @@ def fleet_recover_command(
         namespace, queued_worker_components(counts), ClusterTarget(context=context)
     )
     _echo_json({"run_id": run_id, "message": message})
+
+
+sources_app = typer.Typer(help="Look at a run's document source before submitting it.")
+app.add_typer(sources_app, name="sources")
+
+
+@sources_app.command("list")
+def sources_list(
+    config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=10_000)] = 1000,
+) -> None:
+    """Name the documents the configured source would offer, without fetching them.
+
+    Prints a JSON array of ``{uri, name, size_bytes, modified_at, checksum}``.
+    A source that can only be discovered by fetching is refused rather than
+    quietly downloaded.
+    """
+
+    settings = Settings.load(config)
+    source = build_file_source(settings)
+    if not isinstance(source, BrowsableFileSource):
+        typer.echo(f"{settings.files.source} sources cannot be listed without fetching", err=True)
+        raise typer.Exit(code=2)
+    _echo_json([item.model_dump(mode="json") for item in source.browse(limit)])
 
 
 @distributed_app.command("init")

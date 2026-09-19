@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Protocol, runtime_checkable
 
-from kg_processor.domain.documents import InputFile
+from kg_processor.domain.documents import InputFile, SourceListing
 
 
 class FileSource(Protocol):
@@ -27,4 +27,17 @@ class IterableFileSource(Protocol):
 
     def iter_files(self) -> Iterator[InputFile]:
         """Yield deterministically ordered input records without retaining them all."""
+        ...
+
+
+@runtime_checkable
+class BrowsableFileSource(Protocol):
+    """Optional source capability: name what is there without fetching any of it.
+
+    A console browsing a bucket before a run needs counts, names and sizes; a
+    listing that downloaded every object to answer would be the run itself.
+    """
+
+    def browse(self, limit: int) -> Iterator[SourceListing]:
+        """Yield up to ``limit`` supported objects in the source's listing order."""
         ...

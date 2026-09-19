@@ -45,7 +45,7 @@ import {
   notSupported,
 } from "../protocol/errors";
 import type { ControlPlane } from "../protocol/runtime";
-import { listLocalObjects } from "../sources";
+import { listLocalObjects, listRemoteObjects } from "../sources";
 import { pidIsRunning, processRegistry, terminateProcess } from "./process-registry";
 import { stringify as stringifyYaml } from "yaml";
 import { catalogWriterPrincipal } from "../workspace";
@@ -74,7 +74,14 @@ export class LocalRuntime implements ControlPlane {
           const input = this.resolvePath(String(source.path ?? ""));
           return listLocalObjects(input, limit);
         }
-        throw invalid(`Source browser is not available locally: ${kind}`);
+        if (kind === "s3" || kind === "azure_blob") {
+          return listRemoteObjects(kind, source, {
+            cwd: this.repositoryRoot,
+            stateRoot: this.stateRoot,
+            limit,
+          });
+        }
+        throw invalid(`Source browser is not available for ${kind} sources on this runtime`);
       },
       catch: (cause) => fromCause(cause, "Unable to list source objects"),
     });

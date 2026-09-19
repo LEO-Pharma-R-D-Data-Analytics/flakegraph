@@ -30,6 +30,16 @@ class InputFile(BaseModel):
     provider_checksum: str | None = None
 
 
+class SourceListing(BaseModel):
+    """One object a source would offer, as a listing names it - never fetched."""
+
+    uri: str
+    name: str
+    size_bytes: int | None = None
+    modified_at: str | None = None
+    checksum: str | None = None
+
+
 class LayoutBlock(BaseModel):
     """A normalized layout or text block emitted by an OCR provider."""
 

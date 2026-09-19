@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,32 @@ def test_s3_source_exposes_lazy_discovery(tmp_path: Path) -> None:
 
     assert first.path.name == "first.pdf"
     assert [item.path.name for item in iterator] == ["second.pdf"]
+
+
+def test_s3_source_browses_the_listing_without_downloading(tmp_path: Path) -> None:
+    client = _FakeS3Client(
+        {
+            "incoming/first.pdf": b"first",
+            "incoming/scratch.tmp": b"ignored",
+            "incoming/second.txt": b"second",
+        },
+        listed_at=datetime(2026, 9, 18, 10, 0, tzinfo=UTC),
+    )
+    source = S3FileSource(_config(tmp_path), client=client)
+
+    listing = list(source.browse(limit=1))
+    everything = list(source.browse(limit=10))
+
+    assert [item.name for item in listing] == ["first.pdf"]
+    assert [item.uri for item in everything] == [
+        "s3://documents/incoming/first.pdf",
+        "s3://documents/incoming/second.txt",
+    ]
+    assert everything[0].size_bytes == 5
+    assert everything[0].modified_at == "2026-09-18T10:00:00+00:00"
+    assert everything[0].checksum == "etag-incoming/first.pdf"
+    assert client.requested_keys == []
+    assert not any(tmp_path.iterdir())
 
 
 def test_s3_source_isolates_noncanonical_object_key(tmp_path: Path) -> None:
@@ -150,14 +177,24 @@ class _FakeBody:
 
 
 class _FakePaginator:
-    def __init__(self, objects: Mapping[str, bytes]) -> None:
+    def __init__(self, objects: Mapping[str, bytes], listed_at: datetime | None) -> None:
         self.objects = objects
+        self.listed_at = listed_at
 
     def paginate(self, *, Bucket: str, Prefix: str) -> Iterable[dict[str, Any]]:
         assert Bucket == "documents"
         yield {
             "Contents": [
-                {"Key": key, "Size": len(payload)}
+                {
+                    "Key": key,
+                    "Size": len(payload),
+                    # boto3 hands back a datetime and a quoted ETag; the fake does too.
+                    **(
+                        {"LastModified": self.listed_at, "ETag": f'"etag-{key}"'}
+                        if self.listed_at
+                        else {}
+                    ),
+                }
                 for key, payload in self.objects.items()
                 if key.startswith(Prefix)
             ]
@@ -165,15 +202,16 @@ class _FakePaginator:
 
 
 class _FakeS3Client:
-    def __init__(self, objects: Mapping[str, bytes]) -> None:
+    def __init__(self, objects: Mapping[str, bytes], listed_at: datetime | None = None) -> None:
         self.objects = objects
+        self.listed_at = listed_at
         self.requested_keys: list[str] = []
         self.omit_body = False
         self.truncate_after_bytes: int | None = None
 
     def get_paginator(self, operation_name: str) -> _FakePaginator:
         assert operation_name == "list_objects_v2"
-        return _FakePaginator(self.objects)
+        return _FakePaginator(self.objects, self.listed_at)
 
     def get_object(self, *, Bucket: str, Key: str) -> Mapping[str, Any]:
         assert Bucket == "documents"

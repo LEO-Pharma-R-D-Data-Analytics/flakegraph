@@ -79,6 +79,39 @@ generic_http_ocr:
     assert payload["generic_http_ocr"]["api_key_prefix"] == ""
 
 
+def test_cli_sources_list_names_local_documents_as_json(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "judo.md").write_text("Judo was founded by Kano Jigoro.", encoding="utf-8")
+    (corpus / "karate.txt").write_text("Karate comes from Okinawa.", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text(f"files:\n  source: local\n  input_path: {corpus}\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["sources", "list", "--config", str(config), "--limit", "1"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)
+    assert [row["name"] for row in rows] == ["judo.md"]
+    assert rows[0]["uri"] == (corpus / "judo.md").resolve().as_uri()
+    assert rows[0]["size_bytes"] == 32
+    assert rows[0]["checksum"] is None
+
+
+def test_cli_sources_list_refuses_a_source_that_can_only_be_fetched(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("[]", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"files:\n  source: manifest\n  manifest_path: {manifest}\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["sources", "list", "--config", str(config)])
+
+    assert result.exit_code == 2
+    assert "manifest sources cannot be listed without fetching" in result.output
+
+
 def test_cli_config_providers_lists_supported_provider_catalog() -> None:
     result = runner.invoke(app, ["config", "providers", "--kind", "ocr"])
 

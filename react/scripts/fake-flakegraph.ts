@@ -20,6 +20,10 @@ async function main() {
     await distributed(rest[0] ?? "", argValue("--config"), argValue("--run-id"));
     return;
   }
+  if (command === "sources" && rest[0] === "list") {
+    await sourcesList(argValue("--config"), Number(argValue("--limit") || 1000));
+    return;
+  }
   console.error(`Unknown flakegraph command: ${command}`);
   process.exit(1);
 }
@@ -39,6 +43,36 @@ async function preflight(configPath: string) {
   process.stdout.write(
     `${JSON.stringify({ ok: true, errors: [], warnings: [], checks: [{ name: "source", ok: true }] })}\n`,
   );
+}
+
+// A bucket listing shaped like the real command's: the fake bucket holds
+// three objects under the requested prefix, one of them unsupported.
+async function sourcesList(configPath: string, limit: number) {
+  const config = await readConfig(configPath);
+  const kind = String((config.files as Record<string, unknown> | undefined)?.source ?? "");
+  if (kind !== "s3" && kind !== "azure_blob") {
+    process.stderr.write(`${kind} sources cannot be listed without fetching\n`);
+    process.exit(2);
+  }
+  const backend = (config[kind] ?? {}) as Record<string, unknown>;
+  const container = String(backend.bucket ?? backend.container ?? "");
+  if (!container) {
+    process.stderr.write(`${kind} file source requires a bucket\n`);
+    process.exit(1);
+  }
+  const prefix = String(backend.prefix ?? "");
+  const scheme = kind === "s3" ? "s3" : "az";
+  const rows = [
+    { name: "judo.md", size_bytes: 512 },
+    { name: "karate.pdf", size_bytes: 40_960 },
+  ].map((row) => ({
+    uri: `${scheme}://${container}/${prefix}${row.name}`,
+    name: row.name,
+    size_bytes: row.size_bytes,
+    modified_at: "2026-09-18T10:00:00+00:00",
+    checksum: "etag-" + row.name,
+  }));
+  process.stdout.write(`${JSON.stringify(rows.slice(0, limit), null, 2)}\n`);
 }
 
 async function worker(configPath: string) {
