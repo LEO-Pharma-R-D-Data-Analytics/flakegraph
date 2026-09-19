@@ -1,10 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/components/providers";
 import { graphCounts } from "@/server/protocol/schema";
-import { CANVAS_NODE_LIMIT, capGraph, filterGraph, graphFacets, type GraphFilters } from "@/server/graph-filter";
+import { CANVAS_NODE_LIMIT, capGraph, filterGraph, type GraphFilters } from "@/server/graph-filter";
 import { actualUsdFromConsumption, compareEstimateToActual, type ConsumptionEstimate } from "@/server/estimate";
 import type { GraphDataset } from "@/server/protocol/schema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,8 +16,20 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { GraphCanvas } from "@/components/console/graph-canvas";
-import { NeighborhoodPicker, neighborhoodsOf } from "@/components/console/neighborhood-picker";
+import { FacetPicker } from "@/components/console/facet-picker";
 import { communityMembership } from "@/server/graph-filter";
+import {
+  ENTITY_NOUN,
+  ENTITY_TYPE_NOUN,
+  NEIGHBORHOOD_NOUN,
+  RELATION_NOUN,
+  RELATION_TYPE_NOUN,
+  filterSummary,
+  graphFacetOptions,
+  prettyLabel,
+  rankFacetOptions,
+  type FacetOption,
+} from "@/lib/graph-facets";
 import {
   buildGraphML,
   colorForCommunity,
@@ -37,6 +50,13 @@ import { documentNameIndex, evidenceDocumentId, evidenceEntityId, evidenceRelati
 
 /** The overview draws only the best-connected core; a focus widens the cap. */
 const OVERVIEW_NODE_LIMIT = 400;
+
+/**
+ * A canvas legend names this many colours before folding the rest behind
+ * "+N more": eight swatches read at a glance, and the palette repeats past
+ * that anyway.
+ */
+const LEGEND_LIMIT = 8;
 
 export function GraphExplorer({
   dataset,
@@ -80,7 +100,6 @@ export function GraphExplorer({
   const [includeIsolates, setIncludeIsolates] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showNeighborhood, setShowNeighborhood] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
   const [perspectiveId, setPerspectiveId] = useState<string>("");
   // Empty until named: a pre-filled name invites typing into the middle of
   // it, and a perspective is worth naming for what it shows.
@@ -111,7 +130,8 @@ export function GraphExplorer({
   const namedPerspectives = analyst
     ? perspectives.filter((item) => item.lifecycle === "production")
     : perspectives;
-  const facets = useMemo(() => graphFacets(dataset), [dataset]);
+  const facets = useMemo(() => graphFacetOptions(dataset), [dataset]);
+  const neighborhoods = facets.neighborhoods;
   const membership = useMemo(() => communityMembership(dataset.communities ?? []), [dataset.communities]);
   const documentNames = useMemo(() => documentNameIndex(dataset.documents ?? []), [dataset.documents]);
   const filters: GraphFilters = useMemo(
@@ -161,13 +181,15 @@ export function GraphExplorer({
       dst ?? "",
     );
   }, [canvas.edges, pathEndpoints]);
+  // Ranked like the Filters facet, so the legend and the picker agree on
+  // which types matter most.
   const typeLegend = useMemo(() => {
     const counts = new Map<string, number>();
     for (const node of canvas.nodes) {
       const type = String(node.primary_type ?? node.type ?? "Unknown");
       counts.set(type, (counts.get(type) ?? 0) + 1);
     }
-    return [...counts.entries()].sort((left, right) => left[0].localeCompare(right[0]));
+    return rankFacetOptions([...counts.entries()].map(([id, count]) => ({ id, label: prettyLabel(id), count })));
   }, [canvas.nodes]);
   const hiddenTypeSet = useMemo(() => new Set(hiddenTypes), [hiddenTypes]);
   const hoverNode = hover?.kind === "node" ? dataset.nodes.find((node) => graphNodeId(node) === hover.id) : null;
@@ -176,14 +198,13 @@ export function GraphExplorer({
     const node = dataset.nodes.find((item) => graphNodeId(item) === id);
     return node ? graphNodeLabel(node) : id;
   });
-  const neighborhoods = useMemo(() => neighborhoodsOf(dataset.communities ?? []), [dataset.communities]);
-  const communityTitles = useMemo(
-    () =>
-      Object.fromEntries(
-        (dataset.communities ?? []).map((community) => [String(community.id ?? ""), String(community.title ?? community.id ?? "")]),
-      ),
-    [dataset.communities],
-  );
+  const cardSummary = filterSummary({
+    nodeTypes,
+    relationTypes,
+    communityIds,
+    minimumConfidence: confidence,
+    includeIsolates,
+  });
   const filtersActive =
     search.trim().length > 0 ||
     nodeTypes.length > 0 ||
@@ -323,35 +344,6 @@ export function GraphExplorer({
           </>
         ) : null}
       </div>
-      {neighborhoods.length > 0 ? (
-        <NeighborhoodPicker
-          neighborhoods={neighborhoods}
-          value={communityIds}
-          onChange={setCommunityIds}
-          trailing={
-            selectedId ? (
-              <Button
-                size="sm"
-                variant={showNeighborhood ? "default" : "ghost"}
-                className="h-7 text-xs"
-                aria-pressed={showNeighborhood}
-                onClick={() => setShowNeighborhood((current) => !current)}
-              >
-                {showNeighborhood ? "Hide neighborhood" : "Show neighborhood"}
-              </Button>
-            ) : null
-          }
-        />
-      ) : selectedId ? (
-        <Button
-          size="sm"
-          variant={showNeighborhood ? "default" : "outline"}
-          aria-pressed={showNeighborhood}
-          onClick={() => setShowNeighborhood((current) => !current)}
-        >
-          {showNeighborhood ? "Hide neighborhood" : "Show neighborhood"}
-        </Button>
-      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
           {counts.documents} docs · {counts.nodes} entities · {counts.edges} relations · {counts.evidence} evidence
@@ -402,62 +394,82 @@ export function GraphExplorer({
           ) : null}
         </div>
       </div>
-      <details
-        className="rounded-md border border-border p-3"
-        onToggle={(event) => setFiltersOpen((event.currentTarget as HTMLDetailsElement).open)}
-      >
-        <summary className="cursor-pointer text-sm font-medium">Filters</summary>
-        <div className={filtersOpen ? "mt-3 grid gap-3 md:grid-cols-3" : ""}>
-          <MultiSelect
+      <details className="group rounded-md border border-border" data-testid="explore-filters">
+        {/*
+          The summary is the card's one-line state: what narrows the graph
+          while the card is closed, and a way to undo it without opening
+          it. The button cancels the click's default so it does not also
+          toggle the card.
+        */}
+        <summary
+          className="flex cursor-pointer list-none items-center gap-x-3 gap-y-1 px-3 py-2 text-sm [&::-webkit-details-marker]:hidden"
+          data-testid="filters-summary"
+        >
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
+          <span className="font-medium">Filters</span>
+          {cardSummary ? <span className="min-w-0 truncate text-muted-foreground">{cardSummary}</span> : null}
+          {cardSummary ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="ml-auto h-6 px-2 text-xs"
+              onClick={(event) => {
+                event.preventDefault();
+                clearFilters();
+              }}
+            >
+              Clear filters
+            </Button>
+          ) : null}
+        </summary>
+        <div className="grid gap-4 border-t border-border p-3 md:grid-cols-3">
+          <FacetPicker
             label="Entity types"
+            noun={ENTITY_TYPE_NOUN}
+            unit={ENTITY_NOUN}
             options={facets.nodeTypes}
             value={nodeTypes}
             onChange={setNodeTypes}
-            visible={filtersOpen}
+            testId="facet-entity-types"
           />
-          <MultiSelect
+          <FacetPicker
             label="Relation types"
+            noun={RELATION_TYPE_NOUN}
+            unit={RELATION_NOUN}
             options={facets.relationTypes}
             value={relationTypes}
             onChange={setRelationTypes}
-            visible={filtersOpen}
+            testId="facet-relation-types"
           />
-          <MultiSelect
-            label="Communities"
-            options={facets.communityIds}
-            labels={communityTitles}
+          <FacetPicker
+            label="Neighborhoods"
+            noun={NEIGHBORHOOD_NOUN}
+            unit={ENTITY_NOUN}
+            options={neighborhoods}
             value={communityIds}
             onChange={setCommunityIds}
-            visible={filtersOpen}
+            testId="facet-neighborhoods"
           />
-          {filtersOpen ? (
-            <>
-              <label className="grid gap-2 text-sm">
-                <span className="text-sm font-medium leading-none">Minimum confidence ({confidence.toFixed(2)})</span>
-                <Slider
-                  aria-label="Minimum confidence"
-                  value={[confidence]}
-                  max={1}
-                  step={0.05}
-                  onValueChange={(value) => setConfidence(value[0] ?? 0)}
-                />
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <Switch checked={includeIsolates} onCheckedChange={setIncludeIsolates} aria-label="Include isolated entities" />
-                Include isolated entities
-              </label>
-            </>
-          ) : null}
+          <label className="grid content-start gap-2 text-sm">
+            <span className="text-sm font-medium leading-none">Minimum confidence ({confidence.toFixed(2)})</span>
+            <Slider
+              aria-label="Minimum confidence"
+              value={[confidence]}
+              max={1}
+              step={0.05}
+              onValueChange={(value) => setConfidence(value[0] ?? 0)}
+            />
+          </label>
+          <label className="flex items-center gap-2 self-start text-sm">
+            <Switch checked={includeIsolates} onCheckedChange={setIncludeIsolates} aria-label="Include isolated entities" />
+            Include isolated entities
+          </label>
         </div>
-        {filtersOpen && filtersActive ? (
-          <Button className="mt-3" size="sm" variant="outline" onClick={clearFilters}>
-            Clear filters
-          </Button>
-        ) : null}
       </details>
       {focusedGraph.nodes.length > 0 ? (
         <p className="text-sm text-muted-foreground" data-testid="explore-scope">
-          Showing {canvas.nodes.length.toLocaleString()} of {canvas.totalNodes.toLocaleString()} entities on the canvas
+          Showing {canvas.nodes.length.toLocaleString()} of {canvas.totalNodes.toLocaleString()} entities and{" "}
+          {canvas.edges.length.toLocaleString()} {canvas.edges.length === 1 ? "relation" : "relations"} on the canvas
           {showNeighborhood && selectedId ? " in the selected neighborhood" : ""}.
           {canvas.totalNodes > canvas.nodes.length
             ? " The best-connected ones are drawn; search or a neighborhood focuses the rest. Summary metrics cover the full graph."
@@ -479,7 +491,7 @@ export function GraphExplorer({
                   Type
                 </TabsTrigger>
                 <TabsTrigger value="community" className="h-6 px-2 text-xs" disabled={neighborhoods.length === 0}>
-                  Community
+                  Neighborhood
                 </TabsTrigger>
                 <TabsTrigger value="degree" className="h-6 px-2 text-xs">
                   Degree
@@ -581,47 +593,24 @@ export function GraphExplorer({
             </div>
           ) : null}
           {typeLegend.length > 0 && colorMode === "type" ? (
-            <div className="absolute bottom-2 left-2 z-10 max-w-[min(100%,28rem)] rounded-md border border-border bg-background/95 px-2 py-1.5 shadow-sm backdrop-blur-sm">
-              <div className="mb-1 flex items-center justify-between gap-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Entity types</p>
-                {hiddenTypes.length > 0 ? (
-                  <button type="button" className="text-[10px] font-medium text-primary hover:underline" onClick={() => setHiddenTypes([])}>
-                    Show all
-                  </button>
-                ) : null}
-              </div>
-              <ul className="flex flex-wrap gap-1.5" aria-label="Entity type colors">
-                {typeLegend.map(([type, count]) => {
-                  const hidden = hiddenTypes.includes(type);
-                  return (
-                    <li key={type}>
-                      <button
-                        type="button"
-                        aria-pressed={!hidden}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-[11px]",
-                          hidden ? "text-muted-foreground line-through opacity-50" : "text-foreground",
-                        )}
-                        onClick={() => toggleHiddenType(type)}
-                      >
-                        <span className="size-2.5 shrink-0 rounded-full" style={{ background: colorForType(type) }} aria-hidden="true" />
-                        {prettyLabel(type)}
-                        <span className="text-muted-foreground">{count}</span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
+            <CanvasLegend
+              key="types"
+              title="Entity types"
+              listLabel="Entity type colors"
+              items={typeLegend}
+              colorOf={colorForType}
+              hiddenIds={hiddenTypeSet}
+              onToggle={toggleHiddenType}
+              onShowAll={() => setHiddenTypes([])}
+            />
           ) : colorMode === "community" && neighborhoods.length > 0 ? (
-            <ul className="absolute bottom-2 left-2 z-10 flex max-w-[min(100%,28rem)] flex-wrap gap-1.5 rounded-md border border-border bg-background/95 px-2 py-1.5 text-[11px] shadow-sm" aria-label="Community colors">
-              {neighborhoods.slice(0, 8).map((community) => (
-                <li key={community.id} className="inline-flex items-center gap-1.5">
-                  <span className="size-2.5 shrink-0 rounded-full" style={{ background: colorForCommunity(community.id) }} aria-hidden="true" />
-                  {prettyLabel(community.title)}
-                </li>
-              ))}
-            </ul>
+            <CanvasLegend
+              key="neighborhoods"
+              title="Neighborhoods"
+              listLabel="Neighborhood colors"
+              items={neighborhoods}
+              colorOf={colorForCommunity}
+            />
           ) : null}
         </div>
         {selectedNode || selectedEdge ? (
@@ -749,7 +738,7 @@ export function GraphExplorer({
         <TabsList className="h-auto min-h-9 w-auto max-w-full flex-wrap justify-start">
           <TabsTrigger value="entities">Entities</TabsTrigger>
           <TabsTrigger value="relations">Relations</TabsTrigger>
-          <TabsTrigger value="communities">Communities</TabsTrigger>
+          <TabsTrigger value="communities">Neighborhoods</TabsTrigger>
           <TabsTrigger value="evidence">Evidence</TabsTrigger>
           <TabsTrigger value="consumption">Consumption</TabsTrigger>
         </TabsList>
@@ -859,69 +848,95 @@ function ConsumptionPanel({
   );
 }
 
-function MultiSelect({
-  label,
-  options,
-  labels = {},
-  value,
-  onChange,
-  visible = true,
+function CanvasLegend({
+  title,
+  listLabel,
+  items,
+  colorOf,
+  hiddenIds,
+  onToggle,
+  onShowAll,
 }: {
-  label: string;
-  options: string[];
-  /** Display names for options that are ids, such as community titles. */
-  labels?: Record<string, string>;
-  value: string[];
-  onChange: (value: string[]) => void;
-  visible?: boolean;
+  title: string;
+  listLabel: string;
+  /** Ranked largest first; only the first LEGEND_LIMIT show until expanded. */
+  items: readonly FacetOption[];
+  colorOf: (id: string) => string;
+  /** With a toggle, each swatch is a button that hides or shows its type. */
+  hiddenIds?: ReadonlySet<string>;
+  onToggle?: (id: string) => void;
+  onShowAll?: () => void;
 }) {
-  const labelOf = (option: string) => labels[option] ?? prettyLabel(option);
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? items : items.slice(0, LEGEND_LIMIT);
+  const folded = items.slice(shown.length);
   return (
-    // Content sits at the top of its column: the three facet columns share a
-    // row, and the tallest one must not stretch the others' chips.
-    <div className={visible ? "grid content-start gap-1.5 text-sm" : "sr-only"}>
-      <span className="text-sm font-medium leading-none">{label}</span>
-      <select
-        multiple
-        tabIndex={-1}
-        aria-label={label}
-        className="sr-only"
-        value={value}
-        onChange={(event) => onChange([...event.target.selectedOptions].map((option) => option.value))}
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {labelOf(option)}
-          </option>
-        ))}
-      </select>
-      {visible ? (
-      <div className="flex flex-wrap content-start items-start gap-1.5">
-        {options.length === 0 ? (
-          <p className="text-xs text-muted-foreground">None on this graph.</p>
-        ) : (
-          options.map((option) => {
-            const selected = value.includes(option);
-            return (
-              <button
-                key={option}
-                type="button"
-                aria-pressed={selected}
-                className={cn(
-                  "rounded-md border px-2 py-1 text-xs",
-                  selected ? "border-primary bg-accent text-foreground" : "border-border bg-background text-muted-foreground hover:bg-muted/60",
-                )}
-                onClick={() =>
-                  onChange(selected ? value.filter((item) => item !== option) : [...value, option])
-                }
-              >
-                {labelOf(option)}
-              </button>
-            );
-          })
-        )}
+    <div className="absolute bottom-2 left-2 z-10 max-w-[min(100%,28rem)] rounded-md border border-border bg-background/95 px-2 py-1.5 shadow-sm backdrop-blur-sm">
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+        {hiddenIds && hiddenIds.size > 0 && onShowAll ? (
+          <button type="button" className="text-[10px] font-medium text-primary hover:underline" onClick={onShowAll}>
+            Show all
+          </button>
+        ) : null}
       </div>
-      ) : null}
+      <ul className="flex flex-wrap items-center gap-1.5 text-[11px]" aria-label={listLabel}>
+        {shown.map((item) => {
+          const swatch = (
+            <span className="size-2.5 shrink-0 rounded-full" style={{ background: colorOf(item.id) }} aria-hidden="true" />
+          );
+          if (!onToggle) {
+            return (
+              <li key={item.id} className="inline-flex items-center gap-1.5 px-1.5 py-0.5">
+                {swatch}
+                {item.label}
+              </li>
+            );
+          }
+          const hidden = hiddenIds?.has(item.id) ?? false;
+          return (
+            <li key={item.id}>
+              <button
+                type="button"
+                aria-pressed={!hidden}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5",
+                  hidden ? "text-muted-foreground line-through opacity-50" : "text-foreground",
+                )}
+                onClick={() => onToggle(item.id)}
+              >
+                {swatch}
+                {item.label}
+                <span className="text-muted-foreground">{item.count.toLocaleString()}</span>
+              </button>
+            </li>
+          );
+        })}
+        {folded.length > 0 ? (
+          <li>
+            <button
+              type="button"
+              className="rounded-sm px-1.5 py-0.5 text-muted-foreground hover:text-foreground hover:underline"
+              title={folded.map((item) => item.label).join(", ")}
+              aria-expanded={false}
+              onClick={() => setExpanded(true)}
+            >
+              +{folded.length.toLocaleString()} more
+            </button>
+          </li>
+        ) : items.length > LEGEND_LIMIT ? (
+          <li>
+            <button
+              type="button"
+              className="rounded-sm px-1.5 py-0.5 text-muted-foreground hover:text-foreground hover:underline"
+              aria-expanded
+              onClick={() => setExpanded(false)}
+            >
+              Show fewer
+            </button>
+          </li>
+        ) : null}
+      </ul>
     </div>
   );
 }
@@ -981,13 +996,6 @@ function RecordTable({
       </Table>
     </div>
   );
-}
-
-function prettyLabel(value: string): string {
-  return value
-    .replaceAll("_", " ")
-    .toLowerCase()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function stringify(value: unknown): string {
