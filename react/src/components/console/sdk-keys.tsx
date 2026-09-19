@@ -25,6 +25,8 @@ import {
 
 export function SdkKeysPage() {
   const workspace = trpc.workspace.get.useQuery();
+  const session = trpc.auth.session.useQuery();
+  const viewerName = session.data?.viewer.userName || "you";
   const [name, setName] = useState("ci-eval");
   const [secret, setSecret] = useState<string | null>(null);
   const [revokeId, setRevokeId] = useState<string | null>(null);
@@ -200,7 +202,7 @@ export function SdkKeysPage() {
               <span className="font-mono text-xs">FLAKEGRAPH_API_KEY</span> in the job that calls the control plane.
             </p>
             <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-              <li>CI evals and scripts authenticate as the key, not as ALICE in a browser.</li>
+              <li>CI evals and scripts authenticate as the key, not as {viewerName} in a browser.</li>
               <li>
                 Send <span className="font-mono text-xs text-foreground">Authorization: Bearer $FLAKEGRAPH_API_KEY</span> or{" "}
                 <span className="font-mono text-xs text-foreground">x-flakegraph-api-key</span>. Browser SSO is ignored when a

@@ -184,7 +184,10 @@ export class KubernetesRuntime implements ControlPlane {
             { cwd: this.repositoryRoot, env: environmentForRequest(configured) },
           );
           if (revision && result.exitCode === 2) {
-            // The planner refused before creating anything: nothing to record.
+            // The planner refused the revision. It may have cancelled a run
+            // row it had already created; the catalog does not list that
+            // attempt, the same way a forgotten run is not listed.
+            await hideRun(this.stateRoot, request.jobId);
             throw invalid(result.stderr.trim() || "The revision was refused");
           }
           const payload = lastJsonObject(result.stdout) ?? {};

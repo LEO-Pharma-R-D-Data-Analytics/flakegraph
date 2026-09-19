@@ -1304,6 +1304,32 @@ def test_a_revision_keeps_drops_and_adds_documents_without_re_extracting_kept_on
     assert head == {"run_id": drop_only_run_id}
 
 
+def test_an_invalid_initial_plan_leaves_no_tasks_behind(isolated_postgres_dsn: str) -> None:
+    """A refused plan must not leave a half-plan a worker could claim.
+
+    Batches are committed as they stream, so a plan whose final task
+    inherits nothing and prepares nothing had already copied its finalizer
+    before the check refused it. Nothing of it may remain: the planner then
+    sees an empty run and cancels it, and the console lists no phantom.
+    """
+
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    store.create_run(_run(run_id))
+    with pytest.raises(ValueError, match="preparation tasks unless the final task inherits"):
+        store.add_initial_tasks(
+            run_id, iter([_task(run_id, "final", TaskStage.FINALIZE_GRAPH, "graph")])
+        )
+    assert store.get_run_summary(run_id).total_tasks == 0
+
+    # The same plan with an inheriting finalizer is a drop-only revision.
+    inheriting = _task(run_id, "final", TaskStage.FINALIZE_GRAPH, "graph").model_copy(
+        update={"payload": {"inherit": [{"run_id": "earlier", "file_ids": ["doc"]}]}}
+    )
+    store.add_initial_tasks(run_id, iter([inheriting]))
+    assert store.get_run_summary(run_id).total_tasks == 1
+
+
 def _worker_demand(dsn: str) -> dict[str, int]:
     """Read the database contract consumed by KEDA's PostgreSQL scaler."""
 

@@ -437,6 +437,14 @@ class PostgresDistributedStore:
         # A revision that only drops documents prepares nothing: its
         # finalizer builds the graph from what it inherits.
         if final_count != 1 or (preparation_count == 0 and not final_inherits):
+            # Batches were committed as they streamed; an invalid plan leaves
+            # none of them behind, so the planner sees a run with no tasks
+            # and cancels it rather than a half-plan a worker could claim.
+            with self._connection() as connection:
+                connection.execute(
+                    "DELETE FROM flakegraph_task WHERE run_id = %s",
+                    (run_id,),
+                )
             raise ValueError(
                 "initial plan requires exactly one final task, and preparation tasks "
                 "unless the final task inherits documents"
