@@ -594,7 +594,6 @@ export function IngestionForm({
   const totalBytes = (sources.data ?? []).reduce((sum, item) => sum + item.sizeBytes, 0);
   const sourceNoun = choice === "s3" ? "objects" : choice === "azure_blob" ? "blobs" : "files";
   const sourcePlace = choice === "s3" || choice === "azure_blob" ? "under this prefix" : "at this path";
-  const largerThanSample = objectCount > 10 || totalBytes > 50 * 1024 * 1024;
   const envChanged = Boolean(lastSuccessRuntime && lastSuccessRuntime !== runtime);
   const grantsBlocked = runtime === "snowflake" && Boolean(session.data?.grants?.some((grant) => !grant.ok));
   // A source the console can name ahead of the run is held to what it lists:
@@ -732,7 +731,6 @@ export function IngestionForm({
           <p className="text-sm text-muted-foreground" data-testid="source-count">
             {sources.data.length} selectable {sources.data.length === 1 ? "object" : "objects"}
             {sources.data.length === 0 ? ` ${sourcePlace}` : totalBytes > 0 ? ` · ${formatBytes(totalBytes)}` : ""}
-            {largerThanSample ? " · larger than a typical sample (10 files / 50 MB)" : ""}
           </p>
         ) : null
       ) : choice === "snowflake_stage" ? (
