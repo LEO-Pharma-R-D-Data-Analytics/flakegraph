@@ -9,10 +9,15 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Alert } from "@/components/ui/alert";
 import { PageHeader } from "@/components/console/page-header";
+import { ShowMore } from "@/components/console/show-more";
 import { useStorageItem, writeStorage } from "@/lib/browser-storage";
+import { orderVersions } from "@/lib/paging";
 import { AskPanel } from "@/components/console/ask-panel";
 
 export { AskPanel };
+
+/** Workspace versions on screen before "Show more"; each publish and each watch ingest adds one. */
+const VERSION_PAGE_SIZE = 10;
 
 export function VersionsPanel({ graphId, canPublish = true }: { graphId: string; canPublish?: boolean }) {
   const workspace = trpc.workspace.get.useQuery();
@@ -23,7 +28,16 @@ export function VersionsPanel({ graphId, canPublish = true }: { graphId: string;
     },
     onError: (error) => toast.error(error.message),
   });
-  const versions = (workspace.data?.versions ?? []).filter((item) => item.graphId === graphId);
+  const [limit, setLimit] = useState(VERSION_PAGE_SIZE);
+  // The production version is this graph's head; it reads first, then the
+  // rest newest first. The workspace appends versions as they are recorded,
+  // so position is the version number.
+  const versions = orderVersions(
+    (workspace.data?.versions ?? [])
+      .map((item, index) => ({ ...item, number: index + 1, head: item.lifecycle === "production", runId: item.id }))
+      .filter((item) => item.graphId === graphId),
+  );
+  const page = versions.slice(0, limit);
   return (
     <Card>
       <CardHeader>
@@ -41,13 +55,22 @@ export function VersionsPanel({ graphId, canPublish = true }: { graphId: string;
         {versions.length === 0 ? (
           <p className="text-sm text-muted-foreground">No published versions yet.</p>
         ) : (
-          <ul className="space-y-2 text-sm">
-            {versions.map((item) => (
-              <li key={item.id}>
-                <span className="font-medium">{item.label}</span> · {item.lifecycle} · {item.note}
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="space-y-2 text-sm" data-testid="workspace-versions">
+              {page.map((item) => (
+                <li key={item.id}>
+                  <span className="font-medium">{item.label}</span> · {item.lifecycle} · {item.note}
+                </li>
+              ))}
+            </ul>
+            <ShowMore
+              shown={page.length}
+              total={versions.length}
+              pageSize={VERSION_PAGE_SIZE}
+              noun="versions"
+              onMore={() => setLimit((current) => current + VERSION_PAGE_SIZE)}
+            />
+          </>
         )}
       </CardContent>
     </Card>
@@ -256,7 +279,9 @@ export function AnalystHome({
 }) {
   const workspace = trpc.workspace.get.useQuery();
   const runs = trpc.runs.list.useQuery({ limit: 100 });
+  const [limit, setLimit] = useState(PERSPECTIVE_PAGE_SIZE);
   const perspectives = (workspace.data?.perspectives ?? []).filter((item) => item.lifecycle === "production");
+  const page = perspectives.slice(0, limit);
   return (
     <div className="space-y-6">
       <PageHeader
@@ -268,7 +293,7 @@ export function AnalystHome({
         <p className="text-sm text-muted-foreground">No production perspectives yet. Ask a builder to publish one after gold.</p>
       ) : null}
       <div className="grid items-start gap-3 md:grid-cols-2">
-        {perspectives.map((item) => {
+        {page.map((item) => {
           const run = (runs.data ?? []).find((row) => row.graphId === item.graphId);
           return (
             <Card key={item.id}>
@@ -291,9 +316,19 @@ export function AnalystHome({
           );
         })}
       </div>
+      <ShowMore
+        shown={page.length}
+        total={perspectives.length}
+        pageSize={PERSPECTIVE_PAGE_SIZE}
+        noun="perspectives"
+        onMore={() => setLimit((current) => current + PERSPECTIVE_PAGE_SIZE)}
+      />
     </div>
   );
 }
+
+/** Perspective cards on the analyst home before "Show more"; every production graph can publish one or more. */
+const PERSPECTIVE_PAGE_SIZE = 24;
 
 export function WelcomeBack({
   identified,

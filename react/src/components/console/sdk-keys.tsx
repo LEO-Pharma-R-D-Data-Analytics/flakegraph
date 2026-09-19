@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/components/providers";
 import { Alert } from "@/components/ui/alert";
@@ -11,6 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/console/page-header";
+import { ShowMore } from "@/components/console/show-more";
+import { filterKeys } from "@/lib/paging";
 import {
   CONTROL_PLANE_API,
   CONTROL_PLANE_PROCEDURES,
@@ -22,6 +24,9 @@ import {
   type ExampleLanguage,
   type TaskExamples,
 } from "@/lib/control-plane-api";
+
+/** Keys on screen before "Show more"; a deployment that mints one per pipeline accrues dozens. */
+export const KEY_PAGE_SIZE = 25;
 
 export function SdkKeysPage() {
   const workspace = trpc.workspace.get.useQuery();
@@ -47,7 +52,13 @@ export function SdkKeysPage() {
     },
     onError: (error) => toast.error(error.message),
   });
-  const keys = workspace.data?.apiKeys ?? [];
+  const keys = useMemo(() => workspace.data?.apiKeys ?? [], [workspace.data?.apiKeys]);
+  const [keySearch, setKeySearch] = useState("");
+  const [keyLimit, setKeyLimit] = useState(KEY_PAGE_SIZE);
+  // Revoking removes a key outright, so every key listed is live; the list
+  // reads newest first, which puts a key just created at the top.
+  const shownKeys = useMemo(() => filterKeys(keys, keySearch), [keys, keySearch]);
+  const keyPage = shownKeys.slice(0, keyLimit);
   const origin = typeof window === "undefined" ? "http://127.0.0.1:3000" : window.location.origin;
   const docsUrl = `${origin}${CONTROL_PLANE_API.docsPath}`;
 
@@ -161,32 +172,63 @@ export function SdkKeysPage() {
             {keys.length === 0 ? (
               <p className="text-sm text-muted-foreground">No machine keys yet. Create one for CI or a script.</p>
             ) : (
-              <ul className="divide-y divide-border rounded-md border border-border">
-                {keys.map((key) => (
-                  <li key={key.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
-                    <div className="min-w-0">
-                      <p className="font-medium">{key.name}</p>
-                      <p className="truncate font-mono text-xs text-muted-foreground">
-                        {key.preview} · {key.createdAt.slice(0, 10)}
-                      </p>
-                    </div>
-                    <Button
-                      size="sm"
-                      className="shrink-0"
-                      variant={revokeId === key.id ? "destructive" : "ghost"}
-                      onClick={() => {
-                        if (revokeId !== key.id) {
-                          setRevokeId(key.id);
-                          return;
-                        }
-                        revoke.mutate({ id: key.id });
-                      }}
-                    >
-                      {revokeId === key.id ? "Confirm revoke" : "Revoke"}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
+              <div className="space-y-3" data-testid="sdk-key-list">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    aria-label="Search keys"
+                    className="h-8 sm:max-w-xs"
+                    placeholder="Search by name"
+                    value={keySearch}
+                    onChange={(event) => {
+                      setKeySearch(event.target.value);
+                      setKeyLimit(KEY_PAGE_SIZE);
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground sm:ml-auto" data-testid="sdk-key-count">
+                    {keySearch.trim()
+                      ? `${shownKeys.length.toLocaleString()} of ${keys.length.toLocaleString()} keys`
+                      : `${keys.length.toLocaleString()} key${keys.length === 1 ? "" : "s"}`}
+                  </p>
+                </div>
+                {shownKeys.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No key matches this search.</p>
+                ) : (
+                  <ul className="divide-y divide-border rounded-md border border-border">
+                    {keyPage.map((key) => (
+                      <li key={key.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
+                        <div className="min-w-0">
+                          <p className="font-medium">{key.name}</p>
+                          <p className="truncate font-mono text-xs text-muted-foreground">
+                            {key.preview} · {key.createdAt.slice(0, 10)}
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          className="shrink-0"
+                          variant={revokeId === key.id ? "destructive" : "ghost"}
+                          aria-label={`${revokeId === key.id ? "Confirm revoke" : "Revoke"} ${key.name}`}
+                          onClick={() => {
+                            if (revokeId !== key.id) {
+                              setRevokeId(key.id);
+                              return;
+                            }
+                            revoke.mutate({ id: key.id });
+                          }}
+                        >
+                          {revokeId === key.id ? "Confirm revoke" : "Revoke"}
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <ShowMore
+                  shown={keyPage.length}
+                  total={shownKeys.length}
+                  pageSize={KEY_PAGE_SIZE}
+                  noun="keys"
+                  onMore={() => setKeyLimit((current) => current + KEY_PAGE_SIZE)}
+                />
+              </div>
             )}
           </CardContent>
         </Card>

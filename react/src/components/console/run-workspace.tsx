@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/components/providers";
 import { Alert } from "@/components/ui/alert";
@@ -21,6 +21,7 @@ import { PageHeader } from "@/components/console/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AskPanel, ReviewPanel, VersionsPanel, WatchPanel } from "@/components/console/workspace-panels";
 import { PromotionCard } from "@/components/console/operator-tools";
+import { ShowMore } from "@/components/console/show-more";
 import {
   ARTIFACTS_UNAVAILABLE_STATUS,
   graphCounts,
@@ -32,6 +33,7 @@ import {
   type StageProgress,
 } from "@/server/protocol/schema";
 import { readLastIngestion, writeLastIngestion } from "@/lib/last-ingestion";
+import { tailLabel } from "@/lib/paging";
 import { formatDocumentPhase, formatDuration, formatInstant, formatRelativeTime, titleCaseStage } from "@/lib/utils";
 import type { DocumentStatus } from "@/server/documents";
 import { statusSentence } from "@/lib/status-sentence";
@@ -791,13 +793,7 @@ function QualityPanel({
               {report.gold.matchedRequired}/{report.gold.requiredTotal} required relations.
             </p>
             {report.gold.missingRequired.length > 0 ? (
-              <ul className="list-disc pl-5">
-                {report.gold.missingRequired.slice(0, 12).map((item) => (
-                  <li key={item.id}>
-                    {item.source} —{item.relationType}→ {item.target}
-                  </li>
-                ))}
-              </ul>
+              <MissingRequiredList items={report.gold.missingRequired} />
             ) : (
               <p className="text-muted-foreground">Required gold relations are present.</p>
             )}
@@ -822,6 +818,44 @@ function QualityPanel({
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+/** Missing gold relations on screen before "Show more"; a gold file can name hundreds. */
+const MISSING_REQUIRED_PAGE_SIZE = 12;
+
+/**
+ * The required gold relations the graph lacks, a page at a time. The count
+ * is in the heading because the number is the QA verdict; the rows are
+ * where to look next.
+ */
+function MissingRequiredList({
+  items,
+}: {
+  items: ReadonlyArray<{ id: string; source: string; target: string; relationType: string }>;
+}) {
+  const [limit, setLimit] = useState(MISSING_REQUIRED_PAGE_SIZE);
+  const page = items.slice(0, limit);
+  return (
+    <div className="space-y-2" data-testid="missing-required">
+      <p className="text-muted-foreground">
+        {items.length.toLocaleString()} required relation{items.length === 1 ? " is" : "s are"} missing.
+      </p>
+      <ul className="list-disc pl-5">
+        {page.map((item) => (
+          <li key={item.id}>
+            {item.source} —{item.relationType}→ {item.target}
+          </li>
+        ))}
+      </ul>
+      <ShowMore
+        shown={page.length}
+        total={items.length}
+        pageSize={MISSING_REQUIRED_PAGE_SIZE}
+        noun="missing relations"
+        onMore={() => setLimit((current) => current + MISSING_REQUIRED_PAGE_SIZE)}
+      />
+    </div>
   );
 }
 
@@ -1062,25 +1096,49 @@ function RunDetails({
         </Card>
       ) : null}
 
-      {snapshot.events.length ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent events</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ol className="space-y-2 text-sm">
-              {snapshot.events.slice(-30).reverse().map((event, index) => (
-                <li key={`${event.timestamp}-${index}`}>
-                  <span className="text-muted-foreground">{event.timestamp}</span> {event.stage} {event.status}
-                  {event.fileId ? ` · ${event.fileId}` : ""}
-                  {event.message ? ` — ${event.message}` : ""}
-                </li>
-              ))}
-            </ol>
-          </CardContent>
-        </Card>
-      ) : null}
+      {snapshot.events.length ? <RecentEvents events={snapshot.events} /> : null}
     </div>
+  );
+}
+
+/** Events on screen before "Show more"; the snapshot carries up to the last 2,000 of the run's log. */
+const EVENT_PAGE_SIZE = 30;
+
+/**
+ * The tail of the run's event log, newest first. The heading says how much
+ * of the log this is, so a short tail is not mistaken for a quiet run. The
+ * total is what the snapshot holds; on a very long run that is itself the
+ * log's tail.
+ */
+function RecentEvents({ events }: { events: RunSnapshot["events"] }) {
+  const [limit, setLimit] = useState(EVENT_PAGE_SIZE);
+  const newestFirst = useMemo(() => [...events].reverse(), [events]);
+  const page = newestFirst.slice(0, limit);
+  return (
+    <Card data-testid="recent-events">
+      <CardHeader>
+        <CardTitle>Recent events</CardTitle>
+        <CardDescription data-testid="recent-events-count">{tailLabel(page.length, events.length, "events")}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <ol className="space-y-2 text-sm">
+          {page.map((event, index) => (
+            <li key={`${event.timestamp}-${index}`}>
+              <span className="text-muted-foreground">{event.timestamp}</span> {event.stage} {event.status}
+              {event.fileId ? ` · ${event.fileId}` : ""}
+              {event.message ? ` — ${event.message}` : ""}
+            </li>
+          ))}
+        </ol>
+        <ShowMore
+          shown={page.length}
+          total={events.length}
+          pageSize={EVENT_PAGE_SIZE}
+          noun="events"
+          onMore={() => setLimit((current) => current + EVENT_PAGE_SIZE)}
+        />
+      </CardContent>
+    </Card>
   );
 }
 

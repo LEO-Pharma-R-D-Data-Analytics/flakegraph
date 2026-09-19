@@ -8,9 +8,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DocumentTable } from "@/components/console/document-table";
 import { IngestionForm, type RevisionTarget } from "@/components/console/ingestion-form";
+import { ShowMore } from "@/components/console/show-more";
 import type { DocumentStatus } from "@/server/documents";
 import type { Capability, GraphVersion, RunSnapshot, RuntimeMode } from "@/server/protocol/schema";
+import { orderVersions } from "@/lib/paging";
 import { formatInstant } from "@/lib/utils";
+
+/** Versions on screen before "Show more"; a graph revised weekly has dozens. */
+export const VERSION_PAGE_SIZE = 10;
 
 /**
  * Edit a finished graph by building its next version.
@@ -122,7 +127,12 @@ export function GraphEditor({
   );
 }
 
-/** Every published version of the graph, with the one being viewed and the head marked. */
+/**
+ * Every published version of the graph, with the one being viewed and the
+ * head marked. The head comes first because it is what the fleet serves,
+ * then the version on screen, so both are in view whatever the page; the
+ * rest read newest first, a page at a time.
+ */
 export function GraphVersionsCard({
   graphId,
   runId,
@@ -133,7 +143,9 @@ export function GraphVersionsCard({
   onOpenRun?: (runId: string) => void;
 }) {
   const versions = trpc.graphs.versions.useQuery({ graphId });
-  const rows: readonly GraphVersion[] = versions.data ?? [];
+  const [limit, setLimit] = useState(VERSION_PAGE_SIZE);
+  const rows: readonly GraphVersion[] = useMemo(() => orderVersions(versions.data ?? [], runId), [versions.data, runId]);
+  const page = rows.slice(0, limit);
   return (
     <Card data-testid="graph-versions">
       <CardHeader>
@@ -149,36 +161,48 @@ export function GraphVersionsCard({
         ) : rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">No version has been published for this graph yet.</p>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Version</TableHead>
-                <TableHead>Run</TableHead>
-                <TableHead>Published</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {[...rows].reverse().map((version) => (
-                <TableRow key={version.runId}>
-                  <TableCell className="font-medium">
-                    v{version.number}
-                    {version.head ? <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">head</span> : null}
-                    {version.runId === runId ? <span className="ml-2 text-xs text-muted-foreground">viewing</span> : null}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">{version.runId}</TableCell>
-                  <TableCell>{formatInstant(version.createdAt)}</TableCell>
-                  <TableCell className="text-right">
-                    {version.runId !== runId && onOpenRun ? (
-                      <Button size="sm" variant="outline" onClick={() => onOpenRun(version.runId)}>
-                        Open
-                      </Button>
-                    ) : null}
-                  </TableCell>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground" data-testid="graph-versions-count">
+              {rows.length.toLocaleString()} version{rows.length === 1 ? "" : "s"}
+            </p>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Version</TableHead>
+                  <TableHead>Run</TableHead>
+                  <TableHead>Published</TableHead>
+                  <TableHead />
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {page.map((version) => (
+                  <TableRow key={version.runId}>
+                    <TableCell className="font-medium">
+                      v{version.number}
+                      {version.head ? <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">head</span> : null}
+                      {version.runId === runId ? <span className="ml-2 text-xs text-muted-foreground">viewing</span> : null}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">{version.runId}</TableCell>
+                    <TableCell>{formatInstant(version.createdAt)}</TableCell>
+                    <TableCell className="text-right">
+                      {version.runId !== runId && onOpenRun ? (
+                        <Button size="sm" variant="outline" onClick={() => onOpenRun(version.runId)}>
+                          Open
+                        </Button>
+                      ) : null}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <ShowMore
+              shown={page.length}
+              total={rows.length}
+              pageSize={VERSION_PAGE_SIZE}
+              noun="versions"
+              onMore={() => setLimit((current) => current + VERSION_PAGE_SIZE)}
+            />
+          </div>
         )}
       </CardContent>
     </Card>
