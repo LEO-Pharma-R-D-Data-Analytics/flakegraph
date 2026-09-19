@@ -53,22 +53,19 @@ export async function generateDriftFollowUps(
     const result = await generateText({
       model: model.languageModel,
       output: Output.object({ schema: FollowUpsSchema }),
-      messages: [
-        {
-          role: "system",
-          content: `You plan multi-hop retrieval for a graph RAG system. Given a user question and community-level primers, generate ${DRIFT_FOLLOWUP_COUNT} targeted sub-questions whose answers together cover the user's question.
+      instructions: `You plan multi-hop retrieval for a graph RAG system. Given a user question and community-level primers, generate ${DRIFT_FOLLOWUP_COUNT} targeted sub-questions whose answers together cover the user's question.
 
 Rules:
 - Each sub-question must be answerable from specific entities / passages, not abstract themes.
 - Prefer questions that drill down into concrete entities named in the primers.
 - Do not paraphrase the original question; decompose it.
 - Keep each sub-question under ${DRIFT_FOLLOWUP_QUESTION_CHAR_MAX} characters.`,
-        },
-        { role: "user", content: `User question:\n${query}\n\nPrimer communities:\n${primerBlock}` },
-      ],
+      prompt: `User question:\n${query}\n\nPrimer communities:\n${primerBlock}`,
     });
     return result.output?.followUps.slice(0, DRIFT_FOLLOWUP_COUNT) ?? [];
-  } catch {
+  } catch (error) {
+    // Without follow-ups the pass answers from the primers alone; say why.
+    console.error("DRIFT: the model did not write follow-up questions", error);
     return [];
   }
 }

@@ -39,10 +39,7 @@ export async function planQueryRetrieval(query: string): Promise<QueryRetrievalP
     const result = await generateText({
       model: model.languageModel,
       output: Output.object({ schema: QueryPlanSchema }),
-      messages: [
-        {
-          role: "system",
-          content: `You plan retrieval for a graph-based RAG system. Given a user question, return JSON with:
+      instructions: `You plan retrieval for a graph-based RAG system. Given a user question, return JSON with:
 
 - mode: "local" for questions about specific named entities / relationships; "global" for overarching themes, summaries, and cross-document patterns; "hybrid" when the question mixes both.
 - "drift" for multi-hop exploratory questions that need a high-level primer and targeted follow-up retrieval (e.g. "how did X evolve and what influenced it?", "compare and contrast strategy A vs B across teams"). Only pick drift when both breadth and depth matter.
@@ -50,9 +47,7 @@ export async function planQueryRetrieval(query: string): Promise<QueryRetrievalP
 - lowLevelKeywords: 1-6 specific entity-like keywords (e.g. "GPT-4o", "Acme Q3 contract", "billing service"). These retrieve entity- and relation-level context.
 
 Return empty arrays for a side when no keywords of that kind exist. Never invent entities. Keep each keyword short (ideally 1-4 words) and grounded in the question.`,
-        },
-        { role: "user", content: `Question: ${trimmed}` },
-      ],
+      prompt: `Question: ${trimmed}`,
     });
     const object = result.output;
     if (!object) {
@@ -63,7 +58,10 @@ Return empty arrays for a side when no keywords of that kind exist. Never invent
       highLevelKeywords: dedupeKeywords(object.highLevelKeywords),
       lowLevelKeywords: dedupeKeywords(object.lowLevelKeywords),
     };
-  } catch {
+  } catch (error) {
+    // The lexical plan still retrieves; a model that is configured but
+    // refuses every call must not do so invisibly.
+    console.error("Query planner: the model did not plan the question", error);
     return lexicalPlan(trimmed);
   }
 }

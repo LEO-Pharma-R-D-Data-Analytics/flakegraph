@@ -149,15 +149,19 @@ async function rerankWithLlm<T>(args: {
         output: Output.object({ schema: RelevanceSchema }),
         temperature: 0,
         abortSignal: AbortSignal.timeout(RERANK_LLM_CALL_TIMEOUT_MS),
-        messages: [
-          { role: "system", content: prompt.system },
-          { role: "user", content: prompt.user },
-        ],
+        instructions: prompt.system,
+        prompt: prompt.user,
       });
       completed += 1;
       report();
       return { ...item, relevanceScore: result.output?.score };
-    } catch {
+    } catch (error) {
+      // The item keeps its vector order. Say why once per batch rather than
+      // never: a call the SDK rejects outright (not a timeout) means every
+      // item falls back, and that has to be visible in the server log.
+      if (failed === 0) {
+        console.error("Rerank: the model did not score an item", error);
+      }
       completed += 1;
       failed += 1;
       report();

@@ -65,10 +65,8 @@ export async function proposeOntologyForIntent(
         output: Output.object({ schema: ProposalSchema }),
         temperature: 0,
         abortSignal: AbortSignal.timeout(PROPOSAL_TIMEOUT_MS),
-        messages: [
-          { role: "system", content: SYSTEM },
-          { role: "user", content: `The graph I want: ${intent.trim()}` },
-        ],
+        instructions: SYSTEM,
+        prompt: `The graph I want: ${intent.trim()}`,
       });
       const output = result.output;
       if (output) {
