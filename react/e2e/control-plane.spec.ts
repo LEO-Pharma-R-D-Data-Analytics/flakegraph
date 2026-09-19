@@ -198,6 +198,13 @@ test.describe("unavailable and failed runs", () => {
   test("shows a failed run error", async ({ page }) => {
     await page.goto("/?runtime=local&page=run&run=run_failed_llm");
     await expect(page.getByTestId("status-sentence")).toContainText("LLM endpoint timed out");
+    // The catalog row carries that error on one line; it must truncate in
+    // its column rather than widen the list into a sideways scroll.
+    const overflow = await page.evaluate(() => {
+      const viewport = document.querySelector("aside [data-radix-scroll-area-viewport]");
+      return viewport ? viewport.scrollWidth - viewport.clientWidth : -1;
+    });
+    expect(overflow).toBe(0);
     await expect(page.getByTestId("guide-card")).toContainText("This run did not finish");
     await expect(page.getByTestId("guide-card")).toContainText("Clone the config");
     await expect(page.getByRole("button", { name: "Forget this graph" })).toBeVisible();
