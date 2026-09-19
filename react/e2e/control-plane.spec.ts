@@ -109,6 +109,10 @@ test.describe("local martial arts graph", () => {
     await expect(page.getByRole("cell", { name: "DEVELOPED_BY" }).first()).toBeVisible();
     await page.getByRole("tab", { name: "Communities" }).click();
     await expect(page.getByRole("cell", { name: "PERSON" }).first()).toBeVisible();
+    // Community filter chips carry the community's title, not its id.
+    const communityFacet = page.getByLabel("Communities", { exact: true });
+    await expect(communityFacet.locator("option", { hasText: "PERSON" })).toHaveCount(1);
+    await expect(page.getByRole("button", { name: /^Community community_/ })).toHaveCount(0);
     await page.getByRole("tab", { name: "Consumption" }).click();
     await expect(page.getByText(/usd/i).first()).toBeVisible();
   });

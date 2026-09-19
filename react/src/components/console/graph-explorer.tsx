@@ -176,6 +176,13 @@ export function GraphExplorer({
     return node ? graphNodeLabel(node) : id;
   });
   const neighborhoodHints = dataset.communities ?? [];
+  const communityTitles = useMemo(
+    () =>
+      Object.fromEntries(
+        (dataset.communities ?? []).map((community) => [String(community.id ?? ""), String(community.title ?? community.id ?? "")]),
+      ),
+    [dataset.communities],
+  );
   const filtersActive =
     search.trim().length > 0 ||
     nodeTypes.length > 0 ||
@@ -433,6 +440,7 @@ export function GraphExplorer({
           <MultiSelect
             label="Communities"
             options={facets.communityIds}
+            labels={communityTitles}
             value={communityIds}
             onChange={setCommunityIds}
             visible={filtersOpen}
@@ -872,18 +880,24 @@ function ConsumptionPanel({
 function MultiSelect({
   label,
   options,
+  labels = {},
   value,
   onChange,
   visible = true,
 }: {
   label: string;
   options: string[];
+  /** Display names for options that are ids, such as community titles. */
+  labels?: Record<string, string>;
   value: string[];
   onChange: (value: string[]) => void;
   visible?: boolean;
 }) {
+  const labelOf = (option: string) => labels[option] ?? prettyLabel(option);
   return (
-    <div className={visible ? "grid gap-1.5 text-sm" : "sr-only"}>
+    // Content sits at the top of its column: the three facet columns share a
+    // row, and the tallest one must not stretch the others' chips.
+    <div className={visible ? "grid content-start gap-1.5 text-sm" : "sr-only"}>
       <span className="text-sm font-medium leading-none">{label}</span>
       <select
         multiple
@@ -895,12 +909,12 @@ function MultiSelect({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {labelOf(option)}
           </option>
         ))}
       </select>
       {visible ? (
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap content-start items-start gap-1.5">
         {options.length === 0 ? (
           <p className="text-xs text-muted-foreground">None on this graph.</p>
         ) : (
@@ -919,7 +933,7 @@ function MultiSelect({
                   onChange(selected ? value.filter((item) => item !== option) : [...value, option])
                 }
               >
-                {prettyLabel(option)}
+                {labelOf(option)}
               </button>
             );
           })
