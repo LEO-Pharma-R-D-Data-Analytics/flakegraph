@@ -1,0 +1,18 @@
+# Snowflake App Runtime project definition for the FlakeGraph console.
+#
+# `snow app deploy` uploads what `artifacts` names relative to the directory
+# it runs in, and `.next/standalone` only exists under `react/` after
+# `bun run build`. Copy this file and manifest.yml into `react/` and deploy
+# from there (see README.md beside this file); deploying from the repository
+# root would upload the Python processing tree instead.
+definition_version: 2
+entities:
+  pkg:
+    type: application package
+    identifier: flakegraph_control_plane
+    manifest: manifest.yml
+artifacts:
+  - src: .next/standalone
+    dest: server
+runtime: nodejs
+entrypoint: .next/standalone/server.js
