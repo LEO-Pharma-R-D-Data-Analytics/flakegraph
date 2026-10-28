@@ -68,10 +68,19 @@ describe("local worker lifecycle", () => {
     }
   }, 10_000);
 
-  it("refuses to signal a reused PID and leaves its run active", async () => {
+  it("never signals a reused PID and cancels the run whose worker has exited", async () => {
     const f = await fixture();
     try {
       await writeRunRecord(f.directory, { processBirth: "not this worker" });
+      expect((await Effect.runPromise(f.runtime.cancel("run"))).status).toBe("cancelled");
+      expect(pidIsRunning(f.child.pid)).toBe(true);
+    } finally { await cleanup(f.child, f.root); }
+  });
+
+  it("refuses to signal a worker whose identity was never recorded and leaves its run active", async () => {
+    const f = await fixture();
+    try {
+      await writeRunRecord(f.directory, { processBirth: null });
       await expect(Effect.runPromise(f.runtime.cancel("run"))).rejects.toThrow(/verify/);
       expect(pidIsRunning(f.child.pid)).toBe(true);
       expect((await Effect.runPromise(f.runtime.getRun("run"))).status).toBe("running");

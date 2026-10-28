@@ -93,14 +93,11 @@ export async function stopLocalWorker(record: CatalogRecord, child?: ChildProces
   if (!pid || !alive()) return;
   if (!Number.isInteger(pid) || pid <= 0) throw new Error("Invalid recorded worker PID");
   const birth = await processBirth(pid);
-  let verified = Boolean(birth && birth === record.processBirth);
-  if (!verified && birth && !record.processBirth && record.configPath && record.startedAt) {
-    // Legacy records require both the original start time and configuration argument.
-    const { stdout } = await runFile("ps", ["-p", String(pid), "-o", "args="], { timeout: 2_000 });
-    const elapsed = Math.abs(Date.parse(birth) - Date.parse(record.startedAt));
-    verified = elapsed < 5_000 && stdout.includes("--config") && stdout.includes(record.configPath);
+  if (!child) {
+    if (!birth || !record.processBirth) throw new Error("Cannot verify the recorded worker identity; cancellation was not completed.");
+    // Another process holds the recorded PID: the worker itself has exited.
+    if (birth !== record.processBirth) return;
   }
-  if (!child && !verified) throw new Error("Cannot verify the recorded worker identity; cancellation was not completed.");
   grouped = processGroupIsRunning(pid);
   const signal = (value: NodeJS.Signals) => {
     try {

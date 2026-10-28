@@ -428,7 +428,7 @@ export class LocalRuntime implements ControlPlane {
     const storageKind = record.storageKind ?? "local_files";
     let status = String(record.status || "unknown").toLowerCase();
     if (record.cancellationRequestedAt || status === "cancelled") {
-      status = pidIsRunning(record.pid) ? "cancelling" : "cancelled";
+      status = "cancelled";
     } else if (status === "failed") {
       status = "failed";
     } else if (status === "succeeded") {
