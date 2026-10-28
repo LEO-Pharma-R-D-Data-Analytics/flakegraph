@@ -77,7 +77,6 @@ function piiKey(viewer: { userName: string }, sourceKey: string): string {
   return `${viewer.userName.trim().toUpperCase()}:${sourceKey}`;
 }
 
-
 /** Serialize every workspace response through the viewer's graph and key access. */
 async function visibleWorkspace(ctx: TrpcContext, state: WorkspaceState) {
   const graphs = await runEffect(ctx.controlPlane.visibleGraphs());

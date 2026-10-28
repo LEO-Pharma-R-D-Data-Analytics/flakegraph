@@ -1,4 +1,3 @@
-import type { GraphLoadOptions } from "../protocol/runtime";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
@@ -43,7 +42,7 @@ import {
   notFound,
   notSupported,
 } from "../protocol/errors";
-import type { ControlPlane } from "../protocol/runtime";
+import type { ControlPlane, GraphLoadOptions } from "../protocol/runtime";
 import { listLocalObjects, listRemoteObjects, REMOTE_SUMMARY_LIMIT, summarizeListing, summarizeLocalObjects } from "../sources";
 import { pidIsRunning, processRegistry, processBirth, stopLocalWorker } from "./process-registry";
 import { stringify as stringifyYaml } from "yaml";

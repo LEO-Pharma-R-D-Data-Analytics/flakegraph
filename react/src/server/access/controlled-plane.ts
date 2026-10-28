@@ -1,10 +1,9 @@
-import type { GraphLoadOptions } from "../protocol/runtime";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
 import { canonicalPath, isWithin } from "../confine";
 import type { FleetProfile } from "../fleet";
-import type { ControlPlane, GraphAccessPlane, SnowflakePublishing } from "../protocol/runtime";
+import type { ControlPlane, GraphAccessPlane, GraphLoadOptions, SnowflakePublishing } from "../protocol/runtime";
 import { forbidden, fromCause, invalid, type ControlPlaneError } from "../protocol/errors";
 import {
   isActiveStatus,

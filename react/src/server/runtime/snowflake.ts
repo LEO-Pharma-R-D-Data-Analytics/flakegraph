@@ -1,4 +1,3 @@
-import type { GraphLoadOptions } from "../protocol/runtime";
 import path from "node:path";
 import { mkdir, rm } from "node:fs/promises";
 import { Effect } from "effect";
@@ -25,7 +24,7 @@ import {
   validateGraphName,
 } from "../protocol/schema";
 import { ControlPlaneError, fromCause, invalid, notFound, notSupported } from "../protocol/errors";
-import type { ControlPlane } from "../protocol/runtime";
+import type { ControlPlane, GraphLoadOptions } from "../protocol/runtime";
 import { listLocalObjects, REMOTE_SUMMARY_LIMIT, summarizeListing, summarizeLocalObjects } from "../sources";
 
 interface SnowflakeGraphRecord {

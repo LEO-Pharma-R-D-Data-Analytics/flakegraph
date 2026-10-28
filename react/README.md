@@ -234,6 +234,12 @@ Every variable the console reads. Booleans accept `1`, `true`, `yes`, `on`.
 | `FLAKEGRAPH_ASK_DISABLE_OLLAMA` | off | Never probe or use Ollama. |
 | `FLAKEGRAPH_ASK_STRUCTURED_REASONING` | `none` | `reasoning_effort` for planning, scoring, follow-ups and type suggestions: `none` … `high`, or `inherit`. |
 
+Ask searches the complete published graph on the server. Browser review limits
+only bound explorer payloads; they do not limit entity, relation, community or
+evidence retrieval for questions. Every Ask tool uses the selected document or
+perspective scope. Perspective quotes come from chunks that ground the retained
+entities and relations; a shared supporting chunk can contain neighboring text.
+
 ### Scripts and tests
 
 | Variable | Default | Role |
@@ -296,10 +302,3 @@ beside the score as baselines. Choosing a sample pack also makes its
 its gold is written in; a run keeps each term's aliases, endpoint types and
 evidence cues from the profile its terms were offered from, whatever the form
 edited.
-
-
-Ask searches the complete published graph on the server. Browser review limits
-only bound explorer payloads; they do not limit entity, relation, community or
-evidence retrieval for questions. Every Ask tool uses the selected document or
-perspective scope. Perspective quotes come from chunks that ground the retained
-entities and relations; a shared supporting chunk can contain neighboring text.

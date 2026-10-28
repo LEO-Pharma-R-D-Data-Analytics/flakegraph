@@ -1,9 +1,9 @@
-import type { GraphLoadOptions } from "./protocol/runtime";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { capGraph } from "./graph-filter";
 import { GRAPH_REVIEW_ROW_LIMITS, type GraphDataset } from "./protocol/schema";
+import type { GraphLoadOptions } from "./protocol/runtime";
 
 export async function loadLocalGraph(directory: string, options: GraphLoadOptions = {}): Promise<GraphDataset> {
   if (!existsSync(directory)) {

@@ -170,7 +170,6 @@ describe("safeUploadPath", () => {
   });
 });
 
-
 describe("ingestion boundaries", () => {
   it("uses the selected backend kind and rejects escaping glob patterns", () => {
     const confined = confineIngestionRequest(request({ source: { kind: "s3", path: "data/martial_arts/files" } }));

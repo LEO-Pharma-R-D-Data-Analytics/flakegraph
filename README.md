@@ -38,7 +38,7 @@ uv sync --extra local-embeddings
 # Build a graph from the bundled public corpus. Output lands in out/app.
 uv run flakegraph worker --config configs/app-defaults.yaml --progress rich
 
-# Explore the CLI-built graph (opens out/app/flakegraph-explorer.html).
+# Explore the CLI-built graph (writes out/app/flakegraph-explorer.html).
 uv run flakegraph inspect html --output out/app
 ```
 

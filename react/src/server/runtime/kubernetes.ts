@@ -1,4 +1,3 @@
-import type { GraphLoadOptions } from "../protocol/runtime";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -52,7 +51,7 @@ import {
   validateGraphName,
 } from "../protocol/schema";
 import { ControlPlaneError, fromCause, invalid, notFound, notSupported } from "../protocol/errors";
-import type { ControlPlane, SnowflakePublishTarget } from "../protocol/runtime";
+import type { ControlPlane, GraphLoadOptions, SnowflakePublishTarget } from "../protocol/runtime";
 import { LocalRuntime } from "./local";
 import { graphArtifactsExist, loadLocalGraph } from "../graph";
 import { readFleetProfile, type FleetProfile } from "../fleet";
