@@ -79,3 +79,13 @@ def test_local_source_deduplicates_overlapping_safe_globs(tmp_path: Path) -> Non
     assert [
         item.path.name for item in LocalFileSource(tmp_path, ["**/*", "*.txt"]).list_files()
     ] == ["a.txt", "alias.txt"]
+
+
+def test_local_source_ignores_unsupported_links_outside_its_root(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.txt").write_text("Public fixture")
+    outside = tmp_path / "tool.bin"
+    outside.write_bytes(b"\0")
+    (corpus / "tool.bin").symlink_to(outside)
+    assert [item.path.name for item in LocalFileSource(corpus).list_files()] == ["a.txt"]

@@ -59,10 +59,11 @@ class LocalFileSource:
                         candidates.add(path)
         root = (self.input_path if self.input_path.is_dir() else self.input_path.parent).resolve()
         for path in sorted(candidates):
+            if not is_supported_file(path):
+                continue
             if not path.resolve().is_relative_to(root):
                 raise ValueError(f"Local input resolves outside its source directory: {path}")
-            if is_supported_file(path):
-                yield path
+            yield path
 
     def iter_files(self) -> Iterator[InputFile]:
         """Yield sorted local inputs while constructing one rich record at a time.
