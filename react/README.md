@@ -111,10 +111,11 @@ What a request may name:
   descendant patterns without parent components; every matched file must resolve
   inside its source directory. These checks apply to browsing, preflight and ingestion.
 - Provider request options accept only data settings supported by that provider:
-  LLM timeout, temperature, output-token ceiling and reasoning effort; embedding
-  batch size (plus Sentence Transformers device or Azure API version); OCR
-  language, page range, timeout and provider-specific parsing settings. Unknown
-  options are refused. Local OCR executables remain operator configuration:
+  LLM timeout, context window and output-token ceiling; embedding batch size
+  (plus Sentence Transformers device and precision); the Azure OpenAI API
+  version; OCR language, page range, timeout and provider-specific parsing
+  settings. Unknown options are refused. Local OCR executables remain operator
+  configuration:
   `ocr.mineru_command`, `ocr.tesseract_command` and
   `ocr.tesseract_pdf_renderer_command` in an approved profile, or the pipeline's
   `KG_MINERU_COMMAND` / `KG_TESSERACT_COMMAND` environment overrides.

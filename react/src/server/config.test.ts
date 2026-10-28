@@ -175,7 +175,6 @@ describe("the owner a run records", () => {
   });
 });
 
-
 describe("caller provider options", () => {
   it("refuses executable and provider overrides while accepting data settings", async () => {
     for (const options of [{ tesseract_command: "untrusted" }, { mineru_command: "untrusted" }, { tesseract_pdf_renderer_command: "untrusted" }, { provider: "untrusted" }]) {
@@ -183,5 +182,11 @@ describe("caller provider options", () => {
     }
     const config = await buildRunConfig(request({ ocr: { ...request().ocr, options: { language: "en", timeout_seconds: 45 } } }));
     expect(config.ocr).toMatchObject({ language: "en", timeout_seconds: 45 });
+  });
+
+  it("offers only the LLM settings the pipeline declares", async () => {
+    await expect(buildRunConfig(request({ llm: { ...request().llm, options: { temperature: 0.2 } } }))).rejects.toThrow(/Unsupported llm option/);
+    const config = await buildRunConfig(request({ llm: { ...request().llm, options: { context_window_tokens: 16384, max_output_tokens: 2048 } } }));
+    expect(config.llm).toMatchObject({ context_window_tokens: 16384, max_output_tokens: 2048 });
   });
 });
