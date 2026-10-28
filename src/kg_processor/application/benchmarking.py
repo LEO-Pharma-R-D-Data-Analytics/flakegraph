@@ -74,9 +74,9 @@ def build_benchmark_report(
 ) -> dict[str, Any]:
     """Assemble a schema-version-2 extraction benchmark report.
 
-    ``runs`` remains an unabridged list of the CLI's per-run payloads.  All new
-    summary data is derived from that list and an explicit allowlist of resolved
-    settings.  Consequently endpoint URLs, credentials, environment variables,
+    ``runs`` contains the unabridged CLI per-run payloads. Summary data is
+    derived from that list and an explicit allowlist of resolved settings.
+    Endpoint URLs, credentials, environment variables,
     hostnames, usernames, and unrelated provider configuration cannot leak into
     the report through broad model serialization.
 

@@ -460,6 +460,19 @@ class RecordingPipeline:
             chunk_ids=[chunk.id for chunk in prepared.chunks],
         )
 
+    def begin_revalidation(
+        self, prepared: PreparedDocumentShard, observations: ExtractionObservations
+    ) -> tuple[DocumentRevalidationShard, list[RevalidationWindow]]:
+        raise AssertionError("Revalidation is not used by this stage-recording fixture")
+
+    def revalidate_entity_window(self, window: RevalidationWindowShard) -> EntityWindowShard:
+        raise AssertionError("Revalidation is not used by this stage-recording fixture")
+
+    def revalidate_relation_window(
+        self, window: RevalidationWindowShard, inventory: DocumentEntityInventoryShard
+    ) -> RevalidatedRelationWindowShard:
+        raise AssertionError("Revalidation is not used by this stage-recording fixture")
+
     def finalize_document_shards(
         self,
         shards: list[ExtractedDocumentShard],

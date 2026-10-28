@@ -1,8 +1,8 @@
 # Reference profile: a bare-metal fleet of NVIDIA DGX Spark (GB10) nodes on k3s.
 #
-# This is an EXAMPLE, not the chart's default. It carries everything a fleet
-# of unified-memory arm64 GPU nodes needs that the portable defaults no longer
-# assume: a Blackwell-only NVFP4 checkpoint, the arm64 engine image, a measured
+# This example profile supplies the hardware-specific settings for a fleet
+# of unified-memory arm64 GPU nodes: a Blackwell-only NVFP4 checkpoint,
+# the arm64 engine image, a measured
 # speculative drafter, GB10 memory sizing, the k3s `nvidia` RuntimeClass, the
 # node-class labels deploy/spark/bootstrap-node.sh applies, Traefik (k3s's
 # bundled ingress controller), and a kube-prometheus-stack release in the

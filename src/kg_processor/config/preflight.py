@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 import yaml
 from pydantic import BaseModel, Field
 
-from kg_processor.adapters.files.common import is_supported_file
+from kg_processor.adapters.files.local import LocalFileSource
 from kg_processor.adapters.files.manifest import manifest_candidate_paths
 from kg_processor.adapters.snowflake import validate_stage_location
 from kg_processor.application.ontology import load_ontology
@@ -533,15 +533,8 @@ def _local_or_manifest_candidate_paths(settings: Settings) -> list[Path]:
         )
     if settings.files.source != "local":
         return []
-    input_path = settings.files.input_path
-    if input_path.is_file():
-        return [input_path] if is_supported_file(input_path) else []
-    candidates: dict[Path, None] = {}
-    for pattern in settings.files.include_globs:
-        for path in input_path.glob(pattern):
-            if path.is_file() and is_supported_file(path):
-                candidates[path] = None
-    return sorted(candidates)
+    source = LocalFileSource(settings.files.input_path, settings.files.include_globs)
+    return list(source.candidate_paths())
 
 
 def _candidate_paths_or_error(
@@ -553,7 +546,10 @@ def _candidate_paths_or_error(
     try:
         return _local_or_manifest_candidate_paths(settings)
     except (OSError, TypeError, ValueError) as exc:
-        result.require(False, "Input manifest is valid", f"Input manifest is invalid: {exc}")
+        label = (
+            "Input manifest" if settings.files.source == "manifest" else "Local source selection"
+        )
+        result.require(False, f"{label} is valid", f"{label} is invalid: {exc}")
         return None
 
 

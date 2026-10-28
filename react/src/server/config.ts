@@ -25,9 +25,8 @@ const PARALLELISM_SETTINGS = [
 const ENVIRONMENT_NAME = /^[A-Z_][A-Z0-9_]*$/;
 /**
  * A key that holds a credential is masked in a preview by these substrings
- * of its name, spelled with either separator. The list errs wide: a preview
- * accepts any file under the checkout as its base configuration, and a
- * masked value that was not secret costs less than an unmasked one that was.
+ * of its name, spelled with either separator. Operator profiles and generated
+ * configurations can contain credentials; previews mask uncertain values.
  */
 const SENSITIVE_MARKERS = [
   "password",
@@ -137,7 +136,7 @@ export async function buildRunConfig(
   const config = await loadBaseConfig(request.baseConfigPath);
   inlineOntologyProfile(config, ontologyProfilePath(config, request.baseConfigPath));
   rejectLiteralSecrets(config, "base configuration");
-  const embedding = providerConfig(request.embedding);
+  const embedding = providerConfig(request.embedding, "embedding");
   embedding.dimension = embeddingDimension(
     request.embedding.provider,
     request.embedding.model,
@@ -153,7 +152,7 @@ export async function buildRunConfig(
     },
     files: { include_globs: request.includeGlobs },
     ocr: ocrProviderConfig(request.ocr),
-    llm: providerConfig(request.llm),
+    llm: providerConfig(request.llm, "llm"),
     embedding,
     writer: {
       provider: writerProvider(request.output.kind),
@@ -359,8 +358,22 @@ export function sourceSettings(
   throw new Error(`Unsupported source kind: ${sourceKind}`);
 }
 
-function providerConfig(selection: ProviderSelection): Record<string, unknown> {
-  const result: Record<string, unknown> = { provider: selection.provider, ...selection.options };
+/** Caller options contain data settings only; executable configuration belongs to the operator. */
+function providerConfig(selection: ProviderSelection, kind: "ocr" | "llm" | "embedding"): Record<string, unknown> {
+  const common = kind === "llm"
+    ? ["timeout_seconds", "temperature", "max_output_tokens", "reasoning_effort"]
+    : kind === "embedding" ? ["batch_size"] : ["language", "page_range", "timeout_seconds"];
+  const byProvider: Record<string, readonly string[]> = kind === "ocr" ? {
+    fallback: ["fallback_min_characters_per_page", "fallback_max_sparse_page_ratio", "fallback_max_unbroken_text_ratio", "fallback_max_fragmented_text_ratio", "fallback_max_interleaved_column_page_ratio"],
+    mineru_internal: ["mineru_method", "mineru_backend", "mineru_effort", "mineru_formula", "mineru_table", "mineru_image_analysis"],
+    tesseract_internal: ["tesseract_dpi"],
+    snowflake_cortex: ["snowflake_parse_mode", "snowflake_extract_images", "snowflake_page_split"],
+  } : { azure_openai: ["api_version"], sentence_transformers: ["device"] };
+  const allowed = new Set([...common, ...(byProvider[selection.provider] ?? [])]);
+  for (const key of Object.keys(selection.options)) {
+    if (!allowed.has(key)) throw new Error(`Unsupported ${kind} option: ${key}`);
+  }
+  const result: Record<string, unknown> = { ...selection.options, provider: selection.provider };
   if (selection.model) {
     result.model = selection.model;
   }
@@ -378,7 +391,7 @@ function providerConfig(selection: ProviderSelection): Record<string, unknown> {
 }
 
 function ocrProviderConfig(selection: ProviderSelection): Record<string, unknown> {
-  return providerConfig(selection);
+  return providerConfig(selection, "ocr");
 }
 
 function externalOcrConfig(selection: ProviderSelection): Record<string, unknown> {
@@ -415,12 +428,12 @@ function snowflakeOutputConfig(request: IngestionRequest): Record<string, unknow
 }
 
 function sanitizeProviderSections(config: Record<string, unknown>, request: IngestionRequest): void {
-  config.llm = providerSection(config.llm, providerConfig(request.llm), {
+  config.llm = providerSection(config.llm, providerConfig(request.llm, "llm"), {
     allowed: new Set(
       request.llm.provider === "azure_openai" ? ["timeout_seconds", "api_version"] : ["timeout_seconds"],
     ),
   });
-  const embedding = providerConfig(request.embedding);
+  const embedding = providerConfig(request.embedding, "embedding");
   embedding.dimension = embeddingDimension(
     request.embedding.provider,
     request.embedding.model,

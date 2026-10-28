@@ -8,6 +8,7 @@ import os
 import subprocess
 from importlib.util import find_spec
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -572,7 +573,7 @@ def test_provider_threads_change_no_published_row(tmp_path: Path) -> None:
         )
 
     settings = _settings(tmp_path, root, graph_id)
-    tables = {}
+    tables: dict[str, dict[str, Any]] = {}
     # Two execution slots: a concurrency of two is one thread per task, eight is four.
     for run_id, concurrency in (("one-thread", 2), ("four-threads", 8)):
         threaded = settings.model_copy(

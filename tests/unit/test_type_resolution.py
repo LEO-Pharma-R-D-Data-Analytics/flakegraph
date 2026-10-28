@@ -280,8 +280,8 @@ def test_held_relations_are_verified_apart_and_never_kept() -> None:
         _profile(),
         "fake",
         30,
-        relation_extractor=_HeldAndKeptExtractor(),  # type: ignore[arg-type]
-        relation_verifier=verifier,  # type: ignore[arg-type]
+        relation_extractor=_HeldAndKeptExtractor(),
+        relation_verifier=verifier,
     )
 
     assert verifier.batches == [["kept"], ["held-supported", "held-refused"]]

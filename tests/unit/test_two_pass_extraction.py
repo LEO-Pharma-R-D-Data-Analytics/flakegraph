@@ -1542,7 +1542,7 @@ def test_an_empty_answer_over_a_large_inventory_is_retried_once_with_another_see
     )
 
     relations = _primary_relations(  # noqa: SLF001
-        extractor,  # type: ignore[arg-type]
+        extractor,
         _window("text"),
         _mentions(8),
         load_ontology(None, [], None).profile,
@@ -1559,7 +1559,7 @@ def test_an_empty_answer_over_a_large_inventory_is_retried_once_with_another_see
     assert trace[-1]["empty_retry"] is True
     small = _ScriptedRelationExtractor([(0, 0)])
     _primary_relations(  # noqa: SLF001
-        small,  # type: ignore[arg-type]
+        small,
         _window("text"),
         _mentions(7),
         load_ontology(None, [], None).profile,
@@ -1580,7 +1580,7 @@ def test_a_call_that_fills_its_limit_is_continued_until_it_does_not() -> None:
     trace: list[dict[str, object]] = []
 
     relations = _primary_relations(  # noqa: SLF001
-        extractor,  # type: ignore[arg-type]
+        extractor,
         _window("text"),
         _mentions(3),
         load_ontology(None, [], None).profile,
@@ -1594,7 +1594,12 @@ def test_a_call_that_fills_its_limit_is_continued_until_it_does_not() -> None:
 
     assert len(relations) == 10
     assert len(extractor.calls) == 3
-    assert [len(call["previous_relations"] or []) for call in extractor.calls[1:]] == [4, 8]
+    previous_counts = []
+    for call in extractor.calls[1:]:
+        previous = call["previous_relations"]
+        assert isinstance(previous, list)
+        previous_counts.append(len(previous))
+    assert previous_counts == [4, 8]
     assert [event.get("continuation_pass") for event in trace] == [None, 1, 2]
 
 
@@ -1693,6 +1698,7 @@ def test_llm_grounding_keeps_nothing_the_chosen_lines_do_not_name() -> None:
     [relation] = reached.relations
     assert relation.quote.startswith("The nonionic formulation")
     assert reached.trace["record_actions"]["llm_grounding_extended"] == 1
+    point_at: list[int]
     for point_at, reason in (([], "llm_grounding_unsupported"),):
         outcome = LlmRelationExtractor(
             _PointingGroundingLlm(point_at), grounding_fallback=True

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from documents import chunk
@@ -19,7 +19,6 @@ from kg_processor.application.rejected_records import (
 from kg_processor.application.revalidation import (
     REVALIDATION_STAGE,
     RevalidationRequest,
-    StoredRelation,
     begin_revalidation,
     conclude_revalidation,
     relation_payload,
@@ -50,7 +49,7 @@ from kg_processor.domain.ontology import (
     RelationRewrite,
     RelationTypeDefinition,
 )
-from kg_processor.domain.stages import RevalidationWindowShard
+from kg_processor.domain.stages import RevalidationWindowShard, StoredRelation
 from kg_processor.ports.extraction import EntityExtractor, RelationExtractor
 from kg_processor.ports.llm import (
     LlmCapabilities,
@@ -629,7 +628,10 @@ def test_revalidation_refuses_extractors_it_cannot_replay() -> None:
     request = _request(_ValidationOnlyLlm(), _ScriptedVerifier(set()), _ontology())
     other = replace(
         request,
-        extractors=lambda provider: (OtherEntities(), LlmRelationExtractor(provider)),
+        extractors=lambda provider: (
+            cast(EntityExtractor, OtherEntities()),
+            LlmRelationExtractor(provider),
+        ),
     )
 
     with pytest.raises(ValueError, match="replays stored records through the LLM extractors"):

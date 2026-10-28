@@ -1,3 +1,4 @@
+import type { GraphLoadOptions } from "../protocol/runtime";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
@@ -44,7 +45,7 @@ import {
 } from "../protocol/errors";
 import type { ControlPlane } from "../protocol/runtime";
 import { listLocalObjects, listRemoteObjects, REMOTE_SUMMARY_LIMIT, summarizeListing, summarizeLocalObjects } from "../sources";
-import { pidIsRunning, processRegistry, terminateProcess } from "./process-registry";
+import { pidIsRunning, processRegistry, processBirth, stopLocalWorker } from "./process-registry";
 import { stringify as stringifyYaml } from "yaml";
 import { catalogWriterPrincipal } from "../workspace";
 
@@ -173,6 +174,7 @@ export class LocalRuntime implements ControlPlane {
               ? `${request.output.snowflake.database}.${request.output.snowflake.schema}`
               : request.output.workspacePath,
           pid: child.pid ?? null,
+          processBirth: await processBirth(child.pid),
           owner: await this.writerPrincipal(),
           ...cloneFieldsFromRequest(request),
         });
@@ -262,15 +264,15 @@ export class LocalRuntime implements ControlPlane {
       try: async () => {
         const directory = runDirectory(this.stateRoot, runId);
         const managed = processRegistry.get(runId);
-        if (managed) {
-          terminateProcess(managed.process);
-        }
         const record = await readRunRecord(directory);
         if (!record.runId) {
           throw notFound(`Unknown local run: ${runId}`);
         }
+        await stopLocalWorker(record, managed?.process);
         await writeRunRecord(directory, {
           status: "cancelled",
+          pid: null,
+          processBirth: null,
           cancellationRequestedAt: new Date().toISOString(),
         });
         return this.catalogSnapshot(directory, await readRunRecord(directory), true);
@@ -294,9 +296,9 @@ export class LocalRuntime implements ControlPlane {
     });
   }
 
-  loadGraph(location: string, _graphId?: string | null): Effect.Effect<GraphDataset, ControlPlaneError> {
+  loadGraph(location: string, _graphId?: string | null, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError> {
     return Effect.tryPromise({
-      try: () => loadLocalGraph(this.artifactDirectory(location)),
+      try: () => loadLocalGraph(this.artifactDirectory(location), options),
       catch: (cause) => fromCause(cause, "Unable to load graph"),
     });
   }
@@ -305,11 +307,11 @@ export class LocalRuntime implements ControlPlane {
     return snapshot.outputPath ? this.artifactDirectory(snapshot.outputPath) : null;
   }
 
-  loadRunGraph(snapshot: RunSnapshot): Effect.Effect<GraphDataset, ControlPlaneError> {
+  loadRunGraph(snapshot: RunSnapshot, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError> {
     if (!snapshot.outputPath) {
       return Effect.fail(invalid(`Run ${snapshot.runId} does not record an output directory`));
     }
-    return this.loadGraph(snapshot.outputPath, snapshot.graphId);
+    return this.loadGraph(snapshot.outputPath, snapshot.graphId, options);
   }
 
   cluster(_namespace: string): Effect.Effect<ClusterSnapshot | null, ControlPlaneError> {
@@ -361,9 +363,12 @@ export class LocalRuntime implements ControlPlane {
     const record = await readRunRecord(directory);
     const progress = await readLocalProgress(path.join(directory, "events.jsonl"));
     const returnCode = managed?.process.exitCode ?? null;
+    const signalCode = managed?.process.signalCode ?? null;
     let status = record.status;
     if (record.cancellationRequestedAt) {
-      status = "cancelled";
+      status = managed && returnCode === null && !signalCode ? "cancelling" : "cancelled";
+    } else if (signalCode) {
+      status = "failed";
     } else if (managed && returnCode === null) {
       status = "running";
     } else if (returnCode === 0) {
@@ -387,7 +392,7 @@ export class LocalRuntime implements ControlPlane {
       storageKind: managed?.storageKind ?? record.storageKind ?? "local_files",
       storageLocation: managed?.storageLocation ?? record.storageLocation ?? null,
       warnings: [],
-      error: status === "failed" ? failureSummary(progress.events, record.error ?? null) : record.error ?? null,
+      error: status === "failed" ? failureSummary(progress.events, signalCode ? `Worker terminated by ${signalCode}` : record.error ?? null) : record.error ?? null,
       listingWarning: null,
       raw: {
         config_path: managed?.configPath ?? record.configPath ?? null,
@@ -423,7 +428,7 @@ export class LocalRuntime implements ControlPlane {
     const storageKind = record.storageKind ?? "local_files";
     let status = String(record.status || "unknown").toLowerCase();
     if (record.cancellationRequestedAt || status === "cancelled") {
-      status = "cancelled";
+      status = pidIsRunning(record.pid) ? "cancelling" : "cancelled";
     } else if (status === "failed") {
       status = "failed";
     } else if (status === "succeeded") {

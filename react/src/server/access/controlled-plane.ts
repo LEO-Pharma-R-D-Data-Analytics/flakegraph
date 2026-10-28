@@ -1,7 +1,8 @@
+import type { GraphLoadOptions } from "../protocol/runtime";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
-import { isWithin } from "../confine";
+import { canonicalPath, isWithin } from "../confine";
 import type { FleetProfile } from "../fleet";
 import type { ControlPlane, GraphAccessPlane, SnowflakePublishing } from "../protocol/runtime";
 import { forbidden, fromCause, invalid, type ControlPlaneError } from "../protocol/errors";
@@ -280,7 +281,7 @@ class ControlledPlane implements GraphAccessPlane {
    * a location names a directory, and the graph id the access check is made
    * on has to be the graph that directory holds.
    */
-  loadGraph(location: string, graphId?: string | null): Effect.Effect<GraphDataset, ControlPlaneError> {
+  loadGraph(location: string, graphId?: string | null, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError> {
     if (!graphId) {
       return Effect.fail(forbidden("A stored graph is opened through its run, or with its graph id."));
     }
@@ -297,7 +298,7 @@ class ControlledPlane implements GraphAccessPlane {
             throw forbidden("That location is not where this graph is stored.");
           }
         }, "Unable to open graph"),
-        () => this.inner.loadGraph(location, graphId),
+        () => this.inner.loadGraph(location, graphId, options),
       ),
     );
   }
@@ -307,8 +308,8 @@ class ControlledPlane implements GraphAccessPlane {
     return this.inner.graphDirectory(snapshot);
   }
 
-  loadRunGraph(snapshot: RunSnapshot): Effect.Effect<GraphDataset, ControlPlaneError> {
-    return this.guardGraph(snapshot.graphId, "read", () => this.inner.loadRunGraph(snapshot), ownerHint(snapshot));
+  loadRunGraph(snapshot: RunSnapshot, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError> {
+    return this.guardGraph(snapshot.graphId, "read", () => this.inner.loadRunGraph(snapshot, options), ownerHint(snapshot));
   }
 
   // -------------------------------------------------------------- changes
@@ -475,7 +476,7 @@ class ControlledPlane implements GraphAccessPlane {
           throw invalid("That run id is already taken; start the run again for a new one.");
         }
       }, "Unable to check the run"),
-      () => (request.revision && !request.revision.addDocuments ? Effect.void : this.checkSource(request.source)),
+      () => (request.revision && !request.revision.addDocuments ? Effect.void : this.checkSource({ ...request.source, kind: request.sourceKind })),
     );
   }
 
@@ -495,8 +496,11 @@ class ControlledPlane implements GraphAccessPlane {
       if ((kind !== "local" && kind !== "upload" && kind !== "local_path") || !named) {
         return;
       }
-      const root = path.resolve(this.stateRoot);
-      const target = path.resolve(named);
+      const root = canonicalPath(this.stateRoot);
+      const target = canonicalPath(named);
+      if (isWithin(target, root)) {
+        throw forbidden("Documents come from a documents folder, not the console's own records or a parent containing them.");
+      }
       if (!isWithin(root, target)) {
         return;
       }

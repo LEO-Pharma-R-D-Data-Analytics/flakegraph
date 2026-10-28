@@ -20,13 +20,14 @@ Licensed under Apache-2.0, like the rest of the repository (see `../LICENSE`).
 - [Bun](https://bun.sh) 1.3 or newer. It is the one package manager and script
   runner here; `bun.lock` is the lockfile.
 - For real runs: the Python pipeline installed in the parent checkout
-  (`uv sync` at the repository root), so `uv run flakegraph` works. The
+  (`uv sync --extra local-embeddings` at the repository root), so `uv run flakegraph` works. The
   console's `FLAKEGRAPH_CLI` names that command.
 - For the default laptop providers: [Ollama](https://ollama.com) with a small
   model pulled (`ollama pull qwen3:4b` for extraction; Ask defaults to
   `qwen3:4b-instruct`, see the environment table). The embedding model
   (`Qwen/Qwen3-Embedding-0.6B`, sentence-transformers) downloads on first use.
-  OCR defaults to the pipeline's built-in text extraction, which needs no
+  Plain `uv sync` suffices when you select and configure a hosted embedding
+  provider instead. OCR defaults to the pipeline's built-in text extraction, which needs no
   engine; MinerU and Tesseract are opt-in.
 - For the e2e suite: Playwright's bundled Chromium
   (`bunx playwright install chromium`).
@@ -103,8 +104,20 @@ What a request may name:
   person who uploaded it, or by someone who can read a graph built from it.
   Only the uploader may add files to an upload folder.
 - A run writes only into its own graph's directory. Base configurations are
-  computed by the server; a request may only narrow them to somewhere under
-  the state root or the checkout.
+  computed by the server. An explicit base must be an operator-managed profile
+  under the checkout's `configs/` or a generated configuration under the state
+  root's `runs/`; uploaded YAML is not a base configuration.
+- Local source folders may not contain the console state root. Globs are relative
+  descendant patterns without parent components; every matched file must resolve
+  inside its source directory. These checks apply to browsing, preflight and ingestion.
+- Provider request options accept only data settings supported by that provider:
+  LLM timeout, temperature, output-token ceiling and reasoning effort; embedding
+  batch size (plus Sentence Transformers device or Azure API version); OCR
+  language, page range, timeout and provider-specific parsing settings. Unknown
+  options are refused. Local OCR executables remain operator configuration:
+  `ocr.mineru_command`, `ocr.tesseract_command` and
+  `ocr.tesseract_pdf_renderer_command` in an approved profile, or the pipeline's
+  `KG_MINERU_COMMAND` / `KG_TESSERACT_COMMAND` environment overrides.
 - A graph id is claimed by its first submitter; an id any runtime already
   knows cannot be claimed again through another.
 - A credential the request references is a name, never a value, and must be a
@@ -148,6 +161,9 @@ goes, and it cannot be undone: every run of it and everything stored for them
 anywhere, the console's run records, local copies, name, gold file and
 workspace items), and the upload folders no other graph was built from. A
 graph with a run still under way waits until that run is cancelled.
+
+File-backed state uses one console process per state root. Workspace changes
+are serialized across request handlers in that process.
 
 Ownership and grants are kept in `access/graphs.json` under the state root,
 along with who created each upload folder and the people who have signed in
@@ -279,3 +295,10 @@ beside the score as baselines. Choosing a sample pack also makes its
 its gold is written in; a run keeps each term's aliases, endpoint types and
 evidence cues from the profile its terms were offered from, whatever the form
 edited.
+
+
+Ask searches the complete published graph on the server. Browser review limits
+only bound explorer payloads; they do not limit entity, relation, community or
+evidence retrieval for questions. Every Ask tool uses the selected document or
+perspective scope. Perspective quotes come from chunks that ground the retained
+entities and relations; a shared supporting chunk can contain neighboring text.

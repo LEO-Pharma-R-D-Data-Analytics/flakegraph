@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from documents import chunk
 
 from kg_processor.application.content_kinds import (
@@ -38,7 +40,7 @@ def test_a_dataset_profile_decides_its_extraction_passes() -> None:
             "source": "subject",
         },
     ]
-    trace = [
+    trace: list[dict[str, Any]] = [
         {"stage": DATASET_PROFILE_STAGE, "document_id": "list", "kind": "catalogue"},
         {
             "stage": DATASET_PROFILE_STAGE,
@@ -63,7 +65,7 @@ def test_a_dataset_profile_decides_its_extraction_passes() -> None:
 def test_images_and_datasets_are_related_to_the_documents_beside_them() -> None:
     """Shared identifiers in file names relate files; a small folder relates them all."""
 
-    rows = [
+    rows: list[dict[str, Any]] = [
         {"file_id": "coa", "kind": "document", "source_uri": "file:///lot/LT2019-0420%20CoA.pdf"},
         {"file_id": "img", "kind": "image", "source_uri": "file:///lot/LT2019-0420%20photo.jpg"},
         {"file_id": "other", "kind": "document", "source_uri": "file:///lot/unrelated%20memo.pdf"},
@@ -81,11 +83,13 @@ def test_images_and_datasets_are_related_to_the_documents_beside_them() -> None:
 def test_documents_get_their_dataset_summary_and_related_files() -> None:
     """Annotation fills what extraction learnt without dropping other columns."""
 
-    rows = [
+    rows: list[dict[str, Any]] = [
         {"file_id": "sheet", "kind": "dataset", "source_uri": "file:///d/a.xlsx", "size_bytes": 3},
         {"file_id": "doc", "kind": "document", "source_uri": "file:///d/b.pdf", "summary": None},
     ]
-    trace = [{"stage": DATASET_PROFILE_STAGE, "document_id": "sheet", "summary": "Excipient list."}]
+    trace: list[dict[str, Any]] = [
+        {"stage": DATASET_PROFILE_STAGE, "document_id": "sheet", "summary": "Excipient list."}
+    ]
 
     annotated = {row["file_id"]: row for row in annotate_documents(rows, trace)}
 
@@ -107,7 +111,7 @@ def test_a_location_is_the_path_below_its_source_root() -> None:
 def test_an_image_in_its_own_subfolder_is_related_to_the_documents_above_it() -> None:
     """A Pictures folder with no documents belongs to its parent folder's documents."""
 
-    rows = [
+    rows: list[dict[str, Any]] = [
         {"file_id": "spec", "kind": "document", "folder": "Lab/Coater", "source_uri": "a"},
         {"file_id": "photo", "kind": "image", "folder": "Lab/Coater/Pictures", "source_uri": "b"},
         {"file_id": "far", "kind": "document", "folder": "Other", "source_uri": "c"},

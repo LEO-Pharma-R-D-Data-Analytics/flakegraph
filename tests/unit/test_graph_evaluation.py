@@ -82,7 +82,10 @@ def test_graph_evaluation_names_the_gold_relations_it_misses(tmp_path: Path) -> 
 
     output = tmp_path / "graph"
     gold = tmp_path / "gold.json"
-    gold.write_text(json.dumps(_gold_payload()), encoding="utf-8")
+    payload = _gold_payload()
+    for index, relation in enumerate(payload["relations"]):
+        relation["id"] = f"expected-relation-{index}"
+    gold.write_text(json.dumps(payload), encoding="utf-8")
     batch = _evaluation_batch()
     LocalArtifactsWriter(output).write(batch)
     assert evaluate_graph_artifacts(output, gold)["triples"]["missing_relation_ids"] == []
@@ -97,7 +100,9 @@ def test_graph_evaluation_names_the_gold_relations_it_misses(tmp_path: Path) -> 
         )
     )
     result = evaluate_graph_artifacts(without_edges, gold)
-    expected = sorted(relation.id for relation in load_gold_graph(gold).relations)
+    expected = sorted(
+        relation.id for relation in load_gold_graph(gold).relations if relation.id is not None
+    )
     assert expected and result["triples"]["missing_relation_ids"] == expected
 
 

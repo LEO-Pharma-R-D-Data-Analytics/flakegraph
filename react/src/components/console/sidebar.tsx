@@ -235,7 +235,7 @@ export function Sidebar(props: SidebarProps) {
             height={394}
             sizes="20rem"
             className="h-auto w-full object-contain"
-            priority
+            preload
           />
         </button>
         {props.showClose ? (

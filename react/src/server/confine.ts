@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { appEnv } from "./env";
@@ -33,6 +34,26 @@ export function isWithin(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+/** Resolve existing symlinks, retaining a nonexistent leaf for generated paths. */
+export function canonicalPath(value: string): string {
+  const resolved = path.resolve(value);
+  try {
+    return realpathSync(resolved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const parent = path.dirname(resolved);
+    return parent === resolved ? resolved : path.join(canonicalPath(parent), path.basename(resolved));
+  }
+}
+
+/** Relative globs may select descendants, never a parent or an absolute path. */
+export function assertSourceGlob(pattern: string): void {
+  const normalized = pattern.replaceAll("\\", "/");
+  if (!normalized || path.posix.isAbsolute(normalized) || /^[A-Za-z]:/.test(normalized) || normalized.split("/").includes("..")) {
+    throw invalid("includeGlobs must be relative patterns without parent-directory components");
+  }
+}
+
 /**
  * Resolve a path a request named and confine it to the roots this host
  * lets a request reach. A relative path is taken against `base`; the
@@ -47,7 +68,7 @@ export function confinedPath(
     throw invalid(`${options.label} is empty`);
   }
   const resolved = path.resolve(options.base, trimmed);
-  if (!options.roots.some((root) => isWithin(root, resolved))) {
+  if (!options.roots.some((root) => isWithin(canonicalPath(root), canonicalPath(resolved)))) {
     throw invalid(
       `${options.label} must be inside the checkout, the console's state root or FLAKEGRAPH_APP_SOURCE_ROOTS: ${trimmed}`,
     );
@@ -80,7 +101,7 @@ export function confinedBaseConfigPath(value: string | null): string {
   }
   const env = appEnv();
   return confinedPath(value, {
-    roots: [env.repositoryRoot, env.stateRoot],
+    roots: [path.join(env.repositoryRoot, "configs"), path.join(env.stateRoot, "runs")],
     base: env.repositoryRoot,
     label: "baseConfigPath",
   });
@@ -130,11 +151,13 @@ export function confineIngestionRequest(request: IngestionRequest): IngestionReq
     assertCredentialReference(selection.apiKeyEnvironmentVariable);
   }
   assertCredentialReference(request.output.snowflake?.credentialEnvironmentVariable ?? null);
-  const source = { ...request.source };
+  const source: Record<string, unknown> = { ...request.source };
   // A revision that adds nothing reads no source: the runtime names the
   // run's own directory in its place, so there is no path here to confine.
   const readsSource = !(request.revision && !request.revision.addDocuments);
+  if (readsSource) source.kind = request.sourceKind === "local_path" ? "local" : request.sourceKind;
   if (readsSource && localSourceKind(request.sourceKind, source)) {
+    for (const pattern of request.includeGlobs) assertSourceGlob(pattern);
     source.path = confinedPath(String(source.path ?? ""), {
       roots: sourceRoots(),
       base: env.repositoryRoot,

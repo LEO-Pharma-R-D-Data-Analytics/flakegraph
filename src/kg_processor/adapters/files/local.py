@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from kg_processor.adapters.files.common import build_local_input_file, is_supported_file
 from kg_processor.domain.documents import InputFile, SourceListing
@@ -17,6 +17,15 @@ class LocalFileSource:
     def __init__(self, input_path: Path, include_globs: list[str] | None = None) -> None:
         self.input_path = input_path
         self.include_globs = include_globs or ["**/*"]
+        for pattern in self.include_globs:
+            normalized = pattern.replace("\\", "/")
+            if (
+                not normalized
+                or PurePosixPath(normalized).is_absolute()
+                or PureWindowsPath(normalized).drive
+                or ".." in normalized.split("/")
+            ):
+                raise ValueError("Local include globs must be relative without parent components")
 
     def list_files(self) -> list[InputFile]:
         """Return supported local files as canonical input-file records."""
@@ -26,7 +35,7 @@ class LocalFileSource:
     def browse(self, limit: int) -> Iterator[SourceListing]:
         """Name up to ``limit`` supported files without hashing any of them."""
 
-        for index, path in enumerate(self._candidates()):
+        for index, path in enumerate(self.candidate_paths()):
             if index >= limit:
                 return
             stat = path.stat()
@@ -37,7 +46,7 @@ class LocalFileSource:
                 modified_at=datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
             )
 
-    def _candidates(self) -> Iterator[Path]:
+    def candidate_paths(self) -> Iterator[Path]:
         """Supported files under the input path, in path order."""
 
         candidates: set[Path] = set()
@@ -48,7 +57,10 @@ class LocalFileSource:
                 for path in self.input_path.glob(pattern):
                     if path.is_file():
                         candidates.add(path)
+        root = (self.input_path if self.input_path.is_dir() else self.input_path.parent).resolve()
         for path in sorted(candidates):
+            if not path.resolve().is_relative_to(root):
+                raise ValueError(f"Local input resolves outside its source directory: {path}")
             if is_supported_file(path):
                 yield path
 
@@ -61,7 +73,7 @@ class LocalFileSource:
         metadata before source staging can begin.
         """
 
-        for path in self._candidates():
+        for path in self.candidate_paths():
             identity_root = self.input_path if self.input_path.is_dir() else self.input_path.parent
             yield build_local_input_file(
                 path,

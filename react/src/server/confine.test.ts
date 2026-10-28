@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -167,5 +167,25 @@ describe("safeUploadPath", () => {
     expect(safeUploadPath("/abs/./x.pdf")).toBe("abs/x.pdf");
     expect(safeUploadPath("..")).toMatch(/^file-/);
     expect(safeUploadPath("a\0b.pdf")).toBe("a_b.pdf");
+  });
+});
+
+
+describe("ingestion boundaries", () => {
+  it("uses the selected backend kind and rejects escaping glob patterns", () => {
+    const confined = confineIngestionRequest(request({ source: { kind: "s3", path: "data/martial_arts/files" } }));
+    expect(confined.source.kind).toBe("local");
+    for (const pattern of ["../*.txt", "/tmp/*.txt", "C:/data/*.txt", "..\\*.txt"]) {
+      expect(() => confineIngestionRequest(request({ includeGlobs: [pattern] }))).toThrow(/includeGlobs/);
+    }
+  });
+
+  it("rejects uploaded base configurations and source-root symlink escapes", async () => {
+    expect(() => confineIngestionRequest(request({ baseConfigPath: path.join(stateRoot, "uploads", "job", "base.yaml") }))).toThrow(/baseConfigPath/);
+    const outside = await mkdtemp(path.join(tmpdir(), "fg-outside-"));
+    const corpus = path.join(stateRoot, "corpus");
+    await mkdir(corpus);
+    await symlink(outside, path.join(corpus, "outside"));
+    expect(() => confineSource({ kind: "local", path: path.join(corpus, "outside") })).toThrow(/source.path/);
   });
 });

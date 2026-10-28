@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from kg_processor.adapters.files.local import LocalFileSource
 
 
@@ -48,3 +50,32 @@ def test_local_file_source_browses_without_hashing(tmp_path: Path) -> None:
     # Browsing and listing agree on the corpus, so a count shown before a run
     # is the count the run will ingest.
     assert [file.path.name for file in source.list_files()] == ["a.txt", "b.md"]
+
+
+@pytest.mark.parametrize(
+    "pattern", ["../private/*.txt", "/tmp/*.txt", r"..\private\*.txt", r"C:\private\*.txt"]
+)
+def test_local_source_rejects_globs_outside_its_root(tmp_path: Path, pattern: str) -> None:
+    with pytest.raises(ValueError, match="relative without parent"):
+        LocalFileSource(tmp_path, [pattern])
+
+
+def test_local_source_rejects_symlinks_outside_its_root(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    outside = tmp_path / "private.txt"
+    outside.write_text("Synthetic private document")
+    (corpus / "link.txt").symlink_to(outside)
+    source = LocalFileSource(corpus)
+    with pytest.raises(ValueError, match="outside its source directory"):
+        source.list_files()
+    with pytest.raises(ValueError, match="outside its source directory"):
+        list(source.browse(10))
+
+
+def test_local_source_deduplicates_overlapping_safe_globs(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("Public fixture")
+    (tmp_path / "alias.txt").symlink_to(tmp_path / "a.txt")
+    assert [
+        item.path.name for item in LocalFileSource(tmp_path, ["**/*", "*.txt"]).list_files()
+    ] == ["a.txt", "alias.txt"]

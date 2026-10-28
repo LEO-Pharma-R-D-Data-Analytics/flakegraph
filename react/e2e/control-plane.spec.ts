@@ -1783,7 +1783,7 @@ test.describe("remaining report journeys", () => {
     await expect(quote).toContainText("and its member commissions.");
     await expect(evidence.getByRole("button", { name: "Less" })).toBeVisible();
     // The quote names the relation it grounds by its endpoints, not by id.
-    await expect(evidence.getByRole("row").nth(1).getByRole("cell").nth(2)).toContainText("GOVERNED_BY");
+    await expect(evidence.getByRole("row").nth(1).getByRole("cell").nth(3)).toContainText("GOVERNED_BY");
 
     // A graph filter narrows every tab, and each count line says what the
     // graph has in total so the narrowing is visible.
@@ -1793,7 +1793,7 @@ test.describe("remaining report journeys", () => {
     await page.getByRole("tab", { name: "Data" }).click();
     await page.getByRole("tab", { name: "Evidence" }).click();
     await expect(evidence.getByTestId("record-table-count")).toHaveText("1 evidence row (of 161 total)");
-    await expect(evidence.getByRole("row").nth(1).getByRole("cell").nth(2)).toContainText("Judo GOVERNED_BY International Judo Federation");
+    await expect(evidence.getByRole("row").nth(1).getByRole("cell").nth(3)).toContainText("Judo GOVERNED_BY International Judo Federation");
     await page.getByRole("tab", { name: "Neighborhoods" }).click();
     await expect(communities.getByTestId("record-table-count")).toHaveText(/^\d+ neighborhoods \(of 11 total\)$/);
     await expect(communities.getByRole("cell", { name: "MARTIAL_ART", exact: true })).toBeVisible();

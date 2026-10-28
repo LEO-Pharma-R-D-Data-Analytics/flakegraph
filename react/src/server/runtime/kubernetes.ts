@@ -1,3 +1,4 @@
+import type { GraphLoadOptions } from "../protocol/runtime";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -533,8 +534,8 @@ export class KubernetesRuntime implements ControlPlane {
     return this.local.renameGraph(graphId, displayName);
   }
 
-  loadGraph(location: string, graphId?: string | null): Effect.Effect<GraphDataset, ControlPlaneError> {
-    return this.local.loadGraph(location, graphId);
+  loadGraph(location: string, graphId?: string | null, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError> {
+    return this.local.loadGraph(location, graphId, options);
   }
 
   /** The fleet graph's local copy, which loading the run's graph writes first. */
@@ -542,7 +543,7 @@ export class KubernetesRuntime implements ControlPlane {
     return snapshot.outputPath ? this.materialisedGraphDirectory(snapshot.runId, snapshot.outputPath) : null;
   }
 
-  loadRunGraph(snapshot: RunSnapshot): Effect.Effect<GraphDataset, ControlPlaneError> {
+  loadRunGraph(snapshot: RunSnapshot, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError> {
     return Effect.tryPromise({
       try: async () => {
         if (!snapshot.outputPath) {
@@ -562,7 +563,7 @@ export class KubernetesRuntime implements ControlPlane {
           }
           await pending;
         }
-        return loadLocalGraph(directory);
+        return loadLocalGraph(directory, options);
       },
       catch: (cause) => fromCause(cause, "Unable to load fleet graph"),
     });

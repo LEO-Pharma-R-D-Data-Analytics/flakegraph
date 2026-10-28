@@ -59,3 +59,23 @@ def test_a_comparator_that_is_not_one_is_read_from_the_value_instead() -> None:
 def test_a_letter_written_before_a_digit_makes_a_code_not_a_value() -> None:
     assert not any(is_value_text(text) for text in ("S450", "U40", "Q7-2219", "MT50G2"))
     assert all(is_value_text(text) for text in ("≤ 0.5 %", "40 mg/kg", "0001271276", "20 s"))
+
+
+@pytest.mark.parametrize(
+    ("text", "low", "high"),
+    [
+        ("2-8 °C", 2, 8),
+        ("98.5-101.5 %", 98.5, 101.5),
+        ("-5--2 °C", -5, -2),
+        ("-5-2 °C", -5, 2),
+        ("2–8 °C", 2, 8),
+        ("2 - 8 °C", 2, 8),
+        ("1e-3-2e-3 g", 0.001, 0.002),
+    ],
+)
+def test_range_delimiters_are_distinct_from_endpoint_signs(
+    text: str, low: float, high: float
+) -> None:
+    value = parse_quantity(text)
+    assert (value.low, value.high) == (low, high)
+    assert value.text == text

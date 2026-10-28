@@ -1,3 +1,4 @@
+import type { GraphLoadOptions } from "../protocol/runtime";
 import path from "node:path";
 import { mkdir, rm } from "node:fs/promises";
 import { Effect } from "effect";
@@ -251,10 +252,10 @@ export class SnowflakeRuntime implements ControlPlane {
     });
   }
 
-  loadGraph(location: string, _graphId?: string | null): Effect.Effect<GraphDataset, ControlPlaneError> {
+  loadGraph(location: string, _graphId?: string | null, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError> {
     return Effect.tryPromise({
       try: async () => {
-        return loadLocalGraph(path.isAbsolute(location) ? location : path.resolve(this.repositoryRoot, location));
+        return loadLocalGraph(path.isAbsolute(location) ? location : path.resolve(this.repositoryRoot, location), options);
       },
       catch: (cause) => fromCause(cause, "Unable to load Snowflake graph"),
     });
@@ -267,11 +268,11 @@ export class SnowflakeRuntime implements ControlPlane {
     return path.isAbsolute(snapshot.outputPath) ? snapshot.outputPath : path.resolve(this.repositoryRoot, snapshot.outputPath);
   }
 
-  loadRunGraph(snapshot: RunSnapshot): Effect.Effect<GraphDataset, ControlPlaneError> {
+  loadRunGraph(snapshot: RunSnapshot, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError> {
     if (!snapshot.outputPath) {
       return Effect.fail(invalid(`Job ${snapshot.runId} does not record an output location`));
     }
-    return this.loadGraph(snapshot.outputPath, snapshot.graphId);
+    return this.loadGraph(snapshot.outputPath, snapshot.graphId, options);
   }
 
   cluster(_namespace: string): Effect.Effect<ClusterSnapshot | null, ControlPlaneError> {

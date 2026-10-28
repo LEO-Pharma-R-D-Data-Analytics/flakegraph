@@ -187,7 +187,14 @@ class OpenAICompatibleLlmProvider:
         messages: list[dict[str, str]],
     ) -> tuple[dict[str, object], TokenUsage]:
         return complete_json_object_with_retry(
-            lambda: self._chat_content(model, timeout_seconds, messages),
+            lambda: self._chat_content(
+                model,
+                timeout_seconds,
+                messages,
+                max_tokens=min(
+                    DEFAULT_CHAT_MAX_TOKENS, self._max_output_tokens or DEFAULT_CHAT_MAX_TOKENS
+                ),
+            ),
             model=model,
         )
 

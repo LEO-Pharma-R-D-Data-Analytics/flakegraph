@@ -1,8 +1,8 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { Menu } from "lucide-react";
-import { parseAsStringLiteral, useQueryState } from "nuqs";
+import { parseAsString, parseAsStringLiteral, useQueryStates } from "nuqs";
 import { AppProviders, trpc } from "@/components/providers";
 import { Sidebar } from "@/components/console/sidebar";
 import { IngestionForm } from "@/components/console/ingestion-form";
@@ -33,9 +33,13 @@ export function ConsoleApp() {
 }
 
 function ConsoleInner() {
-  const [runtime, setRuntime] = useQueryState("runtime", runtimeParser);
-  const [page, setPage] = useQueryState("page", pageParser.withDefault("new"));
-  const [runId, setRunId] = useQueryState("run");
+  const [{ runtime, page, run: runId }, setNavigation] = useQueryStates({
+    runtime: runtimeParser,
+    page: pageParser.withDefault("new"),
+    run: parseAsString,
+  });
+  const setPage = useCallback((value: typeof page) => setNavigation({ page: value }), [setNavigation]);
+  const navigateTo = (destination: typeof page, run: string | null) => setNavigation({ page: destination, run });
   const [navOpen, setNavOpen] = useState(false);
   const [jumpSearch, setJumpSearch] = useState("");
   const utils = trpc.useUtils();
@@ -89,17 +93,9 @@ function ConsoleInner() {
   }, [analyst, canCluster, page, role, session.data, setPage]);
 
   const onRuntimeChange = async (next: RuntimeMode) => {
-    const composing = page === "new";
-    await setRuntime(next);
-    await setRunId(null);
+    const nextPage = page === "fleet" && next === "kubernetes" ? "fleet" : "new";
     setJumpSearch("");
-    if (composing) {
-      await setPage("new");
-    } else if (page === "fleet") {
-      await setPage(next === "kubernetes" ? page : "new");
-    } else {
-      await setPage("new");
-    }
+    await setNavigation({ runtime: next, run: null, page: nextPage });
     await utils.invalidate();
   };
 
@@ -135,30 +131,24 @@ function ConsoleInner() {
         canFleet={canCluster && !analyst}
         onSelectRun={async (id) => {
           setJumpSearch("");
-          await setRunId(id);
-          await setPage("run");
+          await navigateTo("run", id);
         }}
         onJumpEntity={async (id, search) => {
           setJumpSearch(search);
-          await setRunId(id);
-          await setPage("run");
+          await navigateTo("run", id);
         }}
         onNewGraph={async () => {
           setJumpSearch("");
-          await setPage("new");
-          await setRunId(null);
+          await navigateTo("new", null);
         }}
         onFleet={async () => {
-          await setPage("fleet");
-          await setRunId(null);
+          await navigateTo("fleet", null);
         }}
         onStaff={async () => {
-          await setPage("staff");
-          await setRunId(null);
+          await navigateTo("staff", null);
         }}
         onKeys={async () => {
-          await setPage("keys");
-          await setRunId(null);
+          await navigateTo("keys", null);
         }}
       />
       {navOpen ? (
@@ -188,30 +178,24 @@ function ConsoleInner() {
         onRuntimeChange={onRuntimeChange}
         onNewGraph={async () => {
           setJumpSearch("");
-          await setPage("new");
-          await setRunId(null);
+          await navigateTo("new", null);
         }}
         onFleet={async () => {
-          await setPage("fleet");
-          await setRunId(null);
+          await navigateTo("fleet", null);
         }}
         onStaff={async () => {
-          await setPage("staff");
-          await setRunId(null);
+          await navigateTo("staff", null);
         }}
         onKeys={async () => {
-          await setPage("keys");
-          await setRunId(null);
+          await navigateTo("keys", null);
         }}
         onSelectRun={async (id) => {
           setJumpSearch("");
-          await setRunId(id);
-          await setPage("run");
+          await navigateTo("run", id);
         }}
         onDeleted={async (ids) => {
           if (runId && ids.includes(runId)) {
-            await setRunId(null);
-            await setPage("new");
+            await navigateTo("new", null);
           }
         }}
       />
@@ -243,8 +227,7 @@ function ConsoleInner() {
             currentRunId={page === "run" ? runId : null}
             analyst={analyst}
             onOpenRun={async (id) => {
-              await setRunId(id);
-              await setPage("run");
+              await navigateTo("run", id);
             }}
           />
         ) : null}
@@ -257,8 +240,7 @@ function ConsoleInner() {
             suggestionMode={session.data?.suggestionMode ?? "on-request"}
             onSubmitted={async (id) => {
               await utils.runs.list.invalidate();
-              await setRunId(id);
-              await setPage("run");
+              await navigateTo("run", id);
             }}
           />
           </div>
@@ -266,8 +248,7 @@ function ConsoleInner() {
         {page === "new" && analyst ? (
           <AnalystHome
             onOpenRun={async (id) => {
-              await setRunId(id);
-              await setPage("run");
+              await navigateTo("run", id);
             }}
           />
         ) : null}
@@ -283,19 +264,16 @@ function ConsoleInner() {
             onJumpConsumed={() => setJumpSearch("")}
             onNewGraph={async () => {
               setJumpSearch("");
-              await setPage("new");
-              await setRunId(null);
+              await navigateTo("new", null);
             }}
             onDeleted={async () => {
               await utils.runs.list.invalidate();
-              await setRunId(null);
-              await setPage("new");
+              await navigateTo("new", null);
             }}
             onOpenRun={async (id) => {
               setJumpSearch("");
               await utils.runs.list.invalidate();
-              await setPage("run");
-              await setRunId(id);
+              await navigateTo("run", id);
             }}
           />
         ) : null}
@@ -313,8 +291,7 @@ function ConsoleInner() {
             {analyst ? null : (
               <Button
                 onClick={async () => {
-                  await setPage("new");
-                  await setRunId(null);
+                  await navigateTo("new", null);
                 }}
               >
                 New graph

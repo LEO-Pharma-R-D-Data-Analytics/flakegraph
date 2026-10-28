@@ -1,10 +1,11 @@
+import type { GraphLoadOptions } from "./protocol/runtime";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { capGraph } from "./graph-filter";
 import { GRAPH_REVIEW_ROW_LIMITS, type GraphDataset } from "./protocol/schema";
 
-export async function loadLocalGraph(directory: string): Promise<GraphDataset> {
+export async function loadLocalGraph(directory: string, options: GraphLoadOptions = {}): Promise<GraphDataset> {
   if (!existsSync(directory)) {
     throw new Error(`No graph artifact directory exists at this location: ${directory}`);
   }
@@ -23,18 +24,23 @@ export async function loadLocalGraph(directory: string): Promise<GraphDataset> {
     (edge) => nodeIds.has(String(edge.source_node_id ?? edge.source ?? "")) &&
       nodeIds.has(String(edge.target_node_id ?? edge.target ?? "")),
   );
-  const sample = capGraph(allNodes, joinedEdges.length > 0 ? joinedEdges : allEdges, GRAPH_REVIEW_ROW_LIMITS.nodes);
+  const limits = options.purpose === "retrieval"
+    ? { nodes: Number.MAX_SAFE_INTEGER, edges: Number.MAX_SAFE_INTEGER, communities: Number.MAX_SAFE_INTEGER, evidence: Number.MAX_SAFE_INTEGER }
+    : GRAPH_REVIEW_ROW_LIMITS;
+  const sample = options.purpose === "retrieval"
+    ? { nodes: allNodes, edges: joinedEdges.length > 0 ? joinedEdges : allEdges }
+    : capGraph(allNodes, joinedEdges.length > 0 ? joinedEdges : allEdges, GRAPH_REVIEW_ROW_LIMITS.nodes);
   const nodes = sample.nodes;
-  const edges = sample.edges.slice(0, GRAPH_REVIEW_ROW_LIMITS.edges);
+  const edges = sample.edges.slice(0, limits.edges);
   const [communities, communityCount] = await readTable(
     directory,
     "communities",
-    GRAPH_REVIEW_ROW_LIMITS.communities,
+    limits.communities,
   );
   const [evidence, evidenceCount] = await readTable(
     directory,
     "evidence",
-    GRAPH_REVIEW_ROW_LIMITS.evidence,
+    limits.evidence,
   );
   const documents = await readOptionalTable(directory, "documents");
   // The values each relation states live on its observations; the review reads

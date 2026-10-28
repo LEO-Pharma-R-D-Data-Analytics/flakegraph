@@ -167,8 +167,8 @@ strict = true
 explicit_package_bases = true
 plugins = ["pydantic.mypy"]
 packages = ["kg_processor"]
-# tests/unit holds the shared chart-rendering helper the contract tests import.
-mypy_path = ["src", "tests/unit"]
+# Pytest imports shared helpers from these test directories as top-level modules.
+mypy_path = ["src", "tests/unit", "tests/integration"]
 
 [[tool.mypy.overrides]]
 # Spark remains optional and GraphFrames does not publish a PEP 561 marker, and

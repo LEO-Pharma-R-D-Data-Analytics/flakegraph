@@ -23,19 +23,31 @@ export function scopeDataset(dataset: GraphDataset, scope?: AskScope): GraphData
   });
   const nodeIds = new Set(filtered.nodes.map((node) => String(node.id ?? "")));
   const edgeIds = new Set(filtered.edges.map((edge) => String(edge.id ?? "")));
+  const nodes = next.nodes.filter((node) => nodeIds.has(String(node.id ?? "")));
+  const edges = next.edges.filter((edge) => edgeIds.has(String(edge.id ?? "")));
+  const chunkIds = new Set<string>();
+  for (const row of [...nodes, ...edges]) {
+    const ids = row.source_chunk_ids ?? row.sourceChunkIds;
+    if (Array.isArray(ids)) ids.forEach((id) => chunkIds.add(String(id)));
+  }
+  const evidence = next.evidence.filter((row) => {
+    const relationId = evidenceRelationId(row);
+    const entityId = evidenceEntityId(row);
+    return relationId ? edgeIds.has(relationId) : entityId ? nodeIds.has(entityId) : chunkIds.has(String(row.chunk_id ?? ""));
+  });
+  for (const row of evidence) if (row.chunk_id) chunkIds.add(String(row.chunk_id));
+  const chunks = next.chunks.filter((row) => {
+    const entityId = evidenceEntityId(row);
+    return chunkIds.has(String(row.id ?? row.chunk_id ?? "")) || Boolean(entityId && nodeIds.has(entityId));
+  });
+  const documentIds = new Set([...evidence, ...chunks].map(documentIdOf));
   return {
     ...next,
-    nodes: next.nodes.filter((node) => nodeIds.has(String(node.id ?? ""))),
-    edges: next.edges.filter((edge) => edgeIds.has(String(edge.id ?? ""))),
-    evidence: next.evidence.filter((row) => {
-      const relationId = evidenceRelationId(row) ?? "";
-      const entityId = evidenceEntityId(row) ?? "";
-      return (!relationId || edgeIds.has(relationId)) && (!entityId || nodeIds.has(entityId));
-    }),
-    chunks: next.chunks.filter((row) => {
-      const entityId = evidenceEntityId(row) ?? "";
-      return !entityId || nodeIds.has(entityId);
-    }),
+    nodes,
+    edges,
+    evidence,
+    chunks,
+    documents: next.documents.filter((row) => [row.id, row.document_id, row.file_id].some((id) => id != null && documentIds.has(String(id)))),
     communities: scope.communityIds?.length
       ? next.communities.filter((community) => scope.communityIds!.includes(String(community.id ?? "")))
       : next.communities.filter((community) => {

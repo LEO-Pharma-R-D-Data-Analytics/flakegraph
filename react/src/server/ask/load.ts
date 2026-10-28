@@ -43,7 +43,7 @@ export async function loadAskRunGraph(args: {
     );
   }
   try {
-    const dataset = await runEffect(ctx.controlPlane.loadRunGraph(snapshot));
+    const dataset = await runEffect(ctx.controlPlane.loadRunGraph(snapshot, { purpose: "retrieval" }));
     return { dataset, snapshot };
   } catch (error) {
     throw new AskHttpError(

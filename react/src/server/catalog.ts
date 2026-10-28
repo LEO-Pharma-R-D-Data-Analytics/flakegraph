@@ -27,6 +27,7 @@ export interface CatalogRecord {
   storageLocation?: string | null;
   error?: string | null;
   pid?: number | null;
+  processBirth?: string | null;
   cancellationRequestedAt?: string | null;
   documentsTotal?: number | null;
   documentsCompleted?: number | null;

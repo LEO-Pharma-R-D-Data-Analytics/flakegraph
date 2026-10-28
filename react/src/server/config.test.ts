@@ -174,3 +174,14 @@ describe("the owner a run records", () => {
     expect((unowned.job as Record<string, unknown>).owner).toBeUndefined();
   });
 });
+
+
+describe("caller provider options", () => {
+  it("refuses executable and provider overrides while accepting data settings", async () => {
+    for (const options of [{ tesseract_command: "untrusted" }, { mineru_command: "untrusted" }, { tesseract_pdf_renderer_command: "untrusted" }, { provider: "untrusted" }]) {
+      await expect(buildRunConfig(request({ ocr: { ...request().ocr, options } }))).rejects.toThrow(/Unsupported ocr option/);
+    }
+    const config = await buildRunConfig(request({ ocr: { ...request().ocr, options: { language: "en", timeout_seconds: 45 } } }));
+    expect(config.ocr).toMatchObject({ language: "en", timeout_seconds: 45 });
+  });
+});

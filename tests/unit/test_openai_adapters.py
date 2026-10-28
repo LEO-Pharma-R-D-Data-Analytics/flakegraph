@@ -11,6 +11,7 @@ from http_fakes import Handler, ScriptedClient
 from kg_processor.adapters.embeddings.azure_openai import AzureOpenAIEmbeddingProvider
 from kg_processor.adapters.embeddings.openai_compatible import OpenAICompatibleEmbeddingProvider
 from kg_processor.adapters.llm.azure_openai import AzureOpenAILlmProvider
+from kg_processor.adapters.llm.ollama import OllamaLlmProvider
 from kg_processor.adapters.llm.openai_common import ChatCompletion, coerce_string_list
 from kg_processor.adapters.llm.openai_compatible import OpenAICompatibleLlmProvider
 from kg_processor.adapters.llm.vllm_local import VllmLocalLlmProvider
@@ -471,3 +472,71 @@ def test_generic_embedding_omits_dimensions_for_unknown_model(
     assert vectors == [[0.1, 0.2, 0.3]]
     assert client.payloads == [{"model": "custom-model", "input": ["Alice"]}]
     provider.close()
+
+
+@pytest.mark.parametrize("name", ["compatible", "azure", "vllm", "ollama"])
+def test_output_ceiling_applies_to_enrichment_and_structured_calls(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    response = {
+        "description": "Alice works at Acme.",
+        "title": "Acme",
+        "summary": "Acme community",
+        "rating": 1,
+        "rating_explanation": "Fixture",
+        "findings": [],
+        "suggested_questions": [],
+    }
+
+    def answer(url: str, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
+        limit = payload.get("max_tokens", payload.get("max_completion_tokens"))
+        if name == "ollama":
+            limit = payload["options"]["num_predict"]
+        assert limit == 512
+        content = json.dumps(response)
+        return httpx.Response(
+            200,
+            json={
+                "message": {"content": content},
+                "choices": [{"message": {"content": content}}],
+                "done": True,
+            },
+        )
+
+    client = ScriptedClient(answer)
+    monkeypatch.setattr(httpx, "Client", client.open)
+    provider: OpenAICompatibleLlmProvider
+    if name == "azure":
+        provider = AzureOpenAILlmProvider(
+            "https://example.test", "fixture", "2024-12-01-preview", "m", max_output_tokens=512
+        )
+    elif name == "vllm":
+        provider = VllmLocalLlmProvider("http://example.test/v1", model="m", max_output_tokens=512)
+    elif name == "ollama":
+        provider = OllamaLlmProvider("http://example.test", "m", max_output_tokens=512)
+    else:
+        provider = OpenAICompatibleLlmProvider(
+            "http://example.test/v1", "fixture", model="m", max_output_tokens=512
+        )
+    provider.merge_entity_description(
+        DescriptionMergeRequest(
+            entity_name="Alice",
+            entity_type="PERSON",
+            descriptions=["Alice is present", "Alice works at Acme"],
+            evidence=[],
+        )
+    )
+    provider.summarize_community(
+        CommunitySummaryRequest(title_seed="Acme", members=["Alice"], relations=[])
+    )
+    provider.complete_structured(
+        StructuredCompletionRequest(
+            task_name="fixture",
+            model="m",
+            system="Fixture",
+            user="Fixture",
+            json_schema={"type": "object"},
+            max_tokens=8192,
+        )
+    )
+    assert len(client.requests) == 3

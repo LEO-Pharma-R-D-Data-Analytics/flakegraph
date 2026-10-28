@@ -3,15 +3,15 @@
   "description": "Repeated grounded relation observations across chunks merge into one canonical edge with evidence from both chunks.",
   "input": {
     "filename": "golden.txt",
-    "text": "Alice Smith works at Acme Corp. Alice Smith works at Acme Corp.\n"
+    "text": "Alice Smith works at Acme Corp. Alice Smith works for Acme Corp.\n"
   },
   "settings": {
     "chunk_token_size": 6,
     "chunk_token_overlap": 0
   },
   "expected": {
-    "run_id": "run_f40fcf7a218d021e3854baabc48df8e7",
-    "ordered_chunk_hash": "15e787b69c0b0103f35fbf756ac31be23090cac3e3dc012186b86f43c6357e5a",
+    "run_id": "run_fc2eedfe3baf4c27d4a50b985ef041b0",
+    "ordered_chunk_hash": "ce47bf096a90e0c655132566bcf577c1d905fafe18bb98b25f18cf5f54cb66e3",
     "counts": {
       "chunks_created": 2,
       "blocks_created": 1,
@@ -51,7 +51,8 @@
       "quotes": [
         "Acme Corp",
         "Alice Smith",
-        "Alice Smith works at Acme Corp."
+        "Alice Smith works at Acme Corp.",
+        "Alice Smith works for Acme Corp."
       ]
     },
     "merge_decision_actions": {

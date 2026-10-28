@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from documents import chunk, window
 
@@ -70,7 +71,9 @@ def _entity(name: str, entity_type: str, quote: str) -> dict[str, object]:
     }
 
 
-def _extract_entities(content: str, records: list[dict[str, object]]) -> tuple[list, dict]:
+def _extract_entities(
+    content: str, records: list[dict[str, object]]
+) -> tuple[list[EntityMention], dict[str, Any]]:
     outcome = LlmEntityExtractor(_PayloadLlm("entities", records)).extract(
         _window(content), _profile(), model="fake", timeout_seconds=30, max_entities=10
     )
@@ -119,7 +122,9 @@ def test_text_that_grounds_as_written_keeps_its_method_and_a_miss_is_still_rejec
     ]
 
 
-def _extract_subject(content: str, name: str, quote: str) -> tuple[list, dict]:
+def _extract_subject(
+    content: str, name: str, quote: str
+) -> tuple[list[EntityMention], dict[str, Any]]:
     outcome = LlmEntityExtractor(
         _PayloadLlm("entities", [_entity(name, "PRODUCT", quote)])
     ).extract_document_context_entities(

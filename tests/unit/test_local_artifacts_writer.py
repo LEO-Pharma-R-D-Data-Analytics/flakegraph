@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
@@ -217,7 +218,7 @@ def test_local_artifacts_writer_exports_a_dataset_as_the_batch_it_reads_as(
         files = []
         for index, row in enumerate(getattr(source, name)):
             buffer = BytesIO()
-            pq.write_table(
+            cast(Callable[..., None], pq.write_table)(
                 pa.Table.from_pylist([row if isinstance(row, dict) else row.model_dump()]),
                 buffer,
             )

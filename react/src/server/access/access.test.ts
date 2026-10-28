@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Effect } from "effect";
@@ -308,6 +308,35 @@ describe("controlledPlane against the ways around it", () => {
     await expect(run$(as("mallory@example.com").submit(request({ source })))).rejects.toThrow(/belongs to someone else/);
     await run$(as("alice@example.com").shareGraph("graph_a", "carol@example.com", "read"));
     await run$(as("carol@example.com").summarizeSource(source));
+  });
+
+  it("checks private local inputs using sourceKind for every ingestion operation", async () => {
+    const root = await stateRoot();
+    const folder = path.join(root, "uploads", "alice");
+    await mkdir(folder, { recursive: true });
+    await claimUploadFolder(root, "alice", person("alice@example.com"));
+    const mallory = plane(fakeRuntime([]), person("mallory@example.com"), root, strict);
+    for (const sourceKind of ["local_path", "upload"] as const) {
+      const input = request({ sourceKind, source: { kind: "s3", path: folder } });
+      await expect(run$(mallory.submit(input))).rejects.toThrow(/belongs to someone else/);
+      await expect(run$(mallory.preflight(input))).rejects.toThrow(/belongs to someone else/);
+      await expect(run$(mallory.previewConfig(input))).rejects.toThrow(/belongs to someone else/);
+    }
+  });
+
+  it("refuses ancestor sources and symlinks to protected console state", async () => {
+    const parent = await stateRoot();
+    const root = path.join(parent, ".flakegraph", "app");
+    await mkdir(root, { recursive: true });
+    const mallory = plane(fakeRuntime([]), person("mallory@example.com"), root, strict);
+    await expect(run$(mallory.listSourceObjects({ kind: "local", path: parent }))).rejects.toThrow(/own records/);
+    const privateFolder = path.join(root, "uploads", "alice");
+    await mkdir(privateFolder, { recursive: true });
+    await claimUploadFolder(root, "alice", person("alice@example.com"));
+    const alias = path.join(parent, "alias");
+    await symlink(privateFolder, alias);
+    await expect(run$(mallory.listSourceObjects({ kind: "local", path: alias }))).rejects.toThrow(/belongs to someone else/);
+    await expect(run$(mallory.submit(request({ sourceKind: "local_path", source: { kind: "local", path: parent } })))).rejects.toThrow(/own records/);
   });
 
   it("never reads the console's own records as documents", async () => {

@@ -25,7 +25,8 @@ def test_readme_keeps_quick_start_paths_current_and_direct() -> None:
         "ollama pull qwen3:8b",
         "uv sync --extra local-embeddings",
         "uv run flakegraph worker --config configs/app-defaults.yaml",
-        "cd react && bun install && bun run dev",
+        "uv run flakegraph inspect html --output out/app",
+        "cd react && bun install && FLAKEGRAPH_DEMO_IDENTITIES=1 bun run dev",
     ]
     positions = [readme.index(step) for step in quick_start]
     assert positions == sorted(positions)

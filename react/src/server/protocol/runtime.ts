@@ -36,6 +36,11 @@ export type SnowflakePublishing = (
   target: SnowflakePublishTarget,
 ) => Promise<{ nodes: number; edges: number }>;
 
+/** Browser review is bounded; server retrieval searches the complete published graph. */
+export interface GraphLoadOptions {
+  purpose?: "review" | "retrieval";
+}
+
 export interface ControlPlane {
   readonly runtime: RuntimeMode;
   readonly capabilities: ReadonlySet<Capability>;
@@ -58,8 +63,8 @@ export interface ControlPlane {
   retry(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError>;
   recover(runId: string): Effect.Effect<string, ControlPlaneError>;
   renameGraph(graphId: string, displayName: string): Effect.Effect<string, ControlPlaneError>;
-  loadGraph(location: string, graphId?: string | null): Effect.Effect<GraphDataset, ControlPlaneError>;
-  loadRunGraph(snapshot: RunSnapshot): Effect.Effect<GraphDataset, ControlPlaneError>;
+  loadGraph(location: string, graphId?: string | null, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError>;
+  loadRunGraph(snapshot: RunSnapshot, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError>;
   /** Where a loaded run's graph files are on this host, for tools that read them; null where none are. */
   graphDirectory(snapshot: RunSnapshot): string | null;
   cluster(namespace: string): Effect.Effect<ClusterSnapshot | null, ControlPlaneError>;

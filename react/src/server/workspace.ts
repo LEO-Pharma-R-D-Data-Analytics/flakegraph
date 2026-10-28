@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { canonicalPath } from "./confine";
 import { hashApiSecret } from "./api-keys";
 import { appEnv } from "./env";
 import { atomicWriteJson, listRunRecords, readJsonFile } from "./catalog";
@@ -173,13 +174,27 @@ export async function saveWorkspace(state: WorkspaceState, stateRoot = appEnv().
   return state;
 }
 
+const workspaceWrites = new Map<string, Promise<unknown>>();
+
+/** Serialize each complete read-modify-write transaction, including async patches. */
 export async function patchWorkspace(
   patch: (current: WorkspaceState) => WorkspaceState | Promise<WorkspaceState>,
   stateRoot = appEnv().stateRoot,
 ): Promise<WorkspaceState> {
-  const current = await loadWorkspace(stateRoot);
-  const next = await patch(current);
-  return saveWorkspace(next, stateRoot);
+  const file = canonicalPath(path.join(stateRoot, FILE));
+  const previous = workspaceWrites.get(file) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(async () => {
+    const current = await loadWorkspace(stateRoot);
+    return saveWorkspace(await patch(current), stateRoot);
+  });
+  workspaceWrites.set(file, next);
+  try {
+    return await next;
+  } finally {
+    if (workspaceWrites.get(file) === next) {
+      workspaceWrites.delete(file);
+    }
+  }
 }
 
 /** Drop everything the workspace keeps about a deleted graph and its runs. */

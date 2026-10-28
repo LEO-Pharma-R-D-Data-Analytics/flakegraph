@@ -36,10 +36,11 @@ flowchart LR
 
 ## Available Datasets
 
-| Dataset | Documents | Gold Graph | License |
-| --- | ---: | ---: | --- |
-| [Martial Arts History](martial_arts/README.md) | 10 | 74 entities / 104 relations | CC0-1.0 |
-| [Famous Deep Learning Papers](deep_learning_papers/README.md) | 49 | 659 entities / 742 relations | Source-specific |
+| Dataset | Documents | Gold version | Evaluation scope | Gold graph | License |
+| --- | ---: | --- | --- | ---: | --- |
+| [Martial Arts History](martial_arts/README.md) | 10 | 2.1.0 | Exhaustive | 119 entities / 148 relations | CC0-1.0 |
+| [Famous Deep Learning Papers](deep_learning_papers/README.md) | 49 | 1.0.1 | Reference | 657 entities / 742 relations | Source-specific |
+| [Atopic Dermatitis](atopic_dermatitis/README.md) | 50 | 1.1.0 | Exhaustive | 3,462 entities / 5,762 relations | CC BY / CC0 |
 
 ## Benchmark Protocol
 

@@ -1,10 +1,35 @@
 import path from "node:path";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { edgeStatedTypes, loadLocalGraph } from "./graph";
+import { LocalRuntime } from "./runtime/local";
+import { Effect } from "effect";
+import { snapshotFromRecord } from "./catalog";
 
 const FIXTURE = path.join(import.meta.dirname, "__fixtures__", "graph");
 
 describe("loadLocalGraph", () => {
+  it("keeps browser limits out of server retrieval", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "fg-retrieval-"));
+    try {
+      const rows = {
+        nodes: Array.from({ length: 10_001 }, (_, i) => ({ id: `n${i}`, name: `Node ${i}` })),
+        edges: Array.from({ length: 25_001 }, (_, i) => ({ id: `e${i}`, source_node_id: "n0", target_node_id: "n1" })),
+        communities: Array.from({ length: 2_001 }, (_, i) => ({ id: `c${i}` })),
+        evidence: Array.from({ length: 10_001 }, (_, i) => ({ id: `q${i}` })),
+      };
+      await Promise.all(Object.entries(rows).map(([name, data]) => writeFile(path.join(directory, `${name}.json`), JSON.stringify(data))));
+      const review = await loadLocalGraph(directory);
+      expect([review.nodes.length, review.edges.length, review.communities.length, review.evidence.length]).toEqual([10_000, 25_000, 2_000, 10_000]);
+      const runtime = new LocalRuntime(directory, directory);
+      const snapshot = snapshotFromRecord({ runId: "r", graphId: "g", runtime: "local", status: "succeeded", outputPath: directory });
+      const full = await Effect.runPromise(runtime.loadRunGraph(snapshot, { purpose: "retrieval" }));
+      expect([full.nodes.length, full.edges.length, full.communities.length, full.evidence.length]).toEqual([10_001, 25_001, 2_001, 10_001]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
   it("reads parquet artifacts without their vector columns", async () => {
     const dataset = await loadLocalGraph(FIXTURE);
     expect(dataset.graphId).toBe("fixture-graph");

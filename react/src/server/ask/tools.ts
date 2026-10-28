@@ -24,7 +24,7 @@ import {
   searchEvidence,
   searchRelations,
 } from "./retrieve";
-import { intersectIds } from "./scope";
+import { intersectIds, scopeDataset } from "./scope";
 import type { AskScope, QueryMode, SearchProgressUpdate } from "./types";
 
 export interface AskToolSession {
@@ -51,7 +51,8 @@ export const ASK_TOOL_NAMES = [
   "getRelationEvidence",
 ] as const;
 
-export function createAskTools(session: AskToolSession) {
+export function createAskTools(input: AskToolSession) {
+  const session = { ...input, dataset: scopeDataset(input.dataset, input.scope) };
   const documentNames = documentNameIndex(session.dataset.documents);
   const entityDocuments = entityDocumentIndex(session.dataset);
   // A citation names its document by file; one quoting an entity's own

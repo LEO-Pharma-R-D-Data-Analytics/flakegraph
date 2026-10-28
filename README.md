@@ -38,15 +38,22 @@ uv sync --extra local-embeddings
 # Build a graph from the bundled public corpus. Output lands in out/app.
 uv run flakegraph worker --config configs/app-defaults.yaml --progress rich
 
-# Open it in the console.
-cd react && bun install && bun run dev
+# Explore the CLI-built graph (opens out/app/flakegraph-explorer.html).
+uv run flakegraph inspect html --output out/app
 ```
 
-Open http://localhost:3000. Completed graphs open the entity, relation,
-community and evidence explorer, and take questions; from the console you can
-also upload your own documents or point at a directory, run preflight, and
-start a new ingestion. Submitted graphs appear in the sidebar like a
-conversation history. Graph views contain source text and evidence, so handle
+For console-managed runs, start the laptop console separately:
+
+```bash
+cd react && bun install && FLAKEGRAPH_DEMO_IDENTITIES=1 bun run dev
+```
+
+Open http://localhost:3000, choose **Sample pack → Martial arts**, and start a
+run. The console registers runs submitted through its UI or API; it does not
+import the CLI's `out/app` directory. Use the offline explorer above for that
+graph. Completed console runs open the entity, relation, community and evidence
+explorer and take questions. You can also upload documents or choose a folder,
+run preflight, and start ingestion. See [console setup and deployed identity](react/README.md#security). Graph views contain source text and evidence, so handle
 them with the same care as the input documents. The CLI remains available for
 headless and automated runs; `uv run flakegraph --help` lists its commands.
 

@@ -146,7 +146,7 @@ def _worker(
         cast(TaskStore, store),
         cast(ArtifactStore, object()),
     )
-    worker._execute = execute  # type: ignore[method-assign]
+    worker._execute = execute  # type: ignore[method-assign, assignment]
     return worker
 
 

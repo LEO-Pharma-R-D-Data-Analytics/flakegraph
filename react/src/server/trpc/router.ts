@@ -77,6 +77,35 @@ function piiKey(viewer: { userName: string }, sourceKey: string): string {
   return `${viewer.userName.trim().toUpperCase()}:${sourceKey}`;
 }
 
+
+/** Serialize every workspace response through the viewer's graph and key access. */
+async function visibleWorkspace(ctx: TrpcContext, state: WorkspaceState) {
+  const graphs = await runEffect(ctx.controlPlane.visibleGraphs());
+  const runs = new Set((await runEffect(ctx.controlPlane.listRuns(500))).map((run) => run.runId));
+  const byGraph = <T extends { graphId: string }>(items: readonly T[]) => items.filter((item) => graphs.has(item.graphId));
+  const byRun = <T,>(record: Record<string, T>) =>
+    Object.fromEntries(Object.entries(record).filter(([runId]) => runs.has(runId)));
+  const me = ctx.viewer.userName.trim().toUpperCase();
+  // What the console keeps for everyone - other people's upload paths in
+  // the last config digests, their PII acknowledgements - is not sent;
+  // keys are the viewer's own (and, on a console without sign-in, the
+  // ones minted before keys had owners).
+  const { lastConfigDigest: _digests, piiAcknowledged: _acknowledged, ...shared } = state;
+  return {
+    ...shared,
+    perspectives: byGraph(state.perspectives),
+    versions: byGraph(state.versions),
+    pins: byGraph(state.pins),
+    reviews: byGraph(state.reviews),
+    watches: byGraph(state.watches),
+    skippedFiles: byRun(state.skippedFiles),
+    estimates: byRun(state.estimates),
+    apiKeys: publicApiKeys(
+      state.apiKeys.filter((key) => (key.owner ? key.owner === me && Boolean(me) : !appEnv().requireSignIn)),
+    ),
+  };
+}
+
 export const appRouter = router({
   auth: router({
     session: publicProcedure.query(async ({ ctx }) => {
@@ -97,7 +126,6 @@ export const appRouter = router({
         role: workspace.role,
         suggestionMode: workspace.suggestionMode,
         lastSuccessRuntime: workspace.lastSuccessRuntime,
-        lastConfigDigest: workspace.lastConfigDigest[ctx.runtimeName] ?? null,
         grants: workspace.grants,
       };
     }),
@@ -112,7 +140,7 @@ export const appRouter = router({
           role: z.enum(["operator", "analyst", "staff"]),
         }),
       )
-      .mutation(({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         if (appEnv().trustIdentityHeaders) {
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -125,11 +153,11 @@ export const appRouter = router({
             message: "Demo identities are off. Set FLAKEGRAPH_DEMO_IDENTITIES=1 on a laptop console, or put a sign-in gate in front.",
           });
         }
-        return assumeIdentity(input);
+        return visibleWorkspace(ctx, await assumeIdentity(input));
       }),
     setSuggestions: protectedProcedure
       .input(z.object({ mode: z.enum(["off", "on-request", "auto-fill"]) }))
-      .mutation(({ input }) => setSuggestionMode(input.mode)),
+      .mutation(async ({ ctx, input }) => visibleWorkspace(ctx, await setSuggestionMode(input.mode))),
   }),
   runs: router({
     list: publicProcedure
@@ -163,7 +191,7 @@ export const appRouter = router({
       .input(z.object({ runId: safeId, fileId: z.string().min(1).max(500) }))
       .mutation(async ({ ctx, input }) => {
         await runEffect(ctx.controlPlane.requireRun(input.runId, "write"));
-        return skipFile(input.runId, input.fileId);
+        return visibleWorkspace(ctx, await skipFile(input.runId, input.fileId));
       }),
     // The vocabulary a run was built with, for a revision to keep.
     ontology: publicProcedure.input(runIdInput).query(async ({ ctx, input }) => {
@@ -230,7 +258,7 @@ export const appRouter = router({
       }),
     acknowledgePii: protectedProcedure
       .input(z.object({ sourceKey: z.string() }))
-      .mutation(({ ctx, input }) => acknowledgePii(piiKey(ctx.viewer, input.sourceKey))),
+      .mutation(async ({ ctx, input }) => visibleWorkspace(ctx, await acknowledgePii(piiKey(ctx.viewer, input.sourceKey)))),
     // What a run extracts unless the form changes it: on a fleet, the profile
     // its workers mount; elsewhere, the base configuration's profile file.
     defaultOntology: protectedProcedure
@@ -417,7 +445,7 @@ export const appRouter = router({
             message: `Graph ${input.runId} is ${snapshot.status}. Ask requires a finished graph.`,
           });
         }
-        const dataset = await runEffect(ctx.controlPlane.loadRunGraph(snapshot));
+        const dataset = await runEffect(ctx.controlPlane.loadRunGraph(snapshot, { purpose: "retrieval" }));
         try {
           const scope = await perspectiveScope(input.perspectiveId, snapshot.graphId);
           return await completeAsk({
@@ -448,43 +476,19 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         await runEffect(ctx.controlPlane.requireGraph(input.graphId, "write"));
-        return pinTarget(input);
+        return visibleWorkspace(ctx, await pinTarget(input));
       }),
     sampleReviews: protectedProcedure.input(runIdInput).mutation(async ({ ctx, input }) => {
       await runEffect(ctx.controlPlane.requireRun(input.runId, "write"));
       const snapshot = await runEffect(ctx.controlPlane.getRun(input.runId));
       const dataset = await runEffect(ctx.controlPlane.loadRunGraph(snapshot));
-      return enqueueReviews(sampleHighConfidenceReviews(snapshot.graphId, dataset.edges, dataset.nodes));
+      return visibleWorkspace(ctx, await enqueueReviews(sampleHighConfidenceReviews(snapshot.graphId, dataset.edges, dataset.nodes)));
     }),
   }),
   workspace: router({
     // Everything kept per graph or per run is limited to what the viewer can see.
     get: publicProcedure.query(async ({ ctx }) => {
-      const state = await loadWorkspace();
-      const graphs = await runEffect(ctx.controlPlane.visibleGraphs());
-      const runs = new Set((await runEffect(ctx.controlPlane.listRuns(500))).map((run) => run.runId));
-      const byGraph = <T extends { graphId: string }>(items: readonly T[]) => items.filter((item) => graphs.has(item.graphId));
-      const byRun = <T,>(record: Record<string, T>) =>
-        Object.fromEntries(Object.entries(record).filter(([runId]) => runs.has(runId)));
-      const me = ctx.viewer.userName.trim().toUpperCase();
-      // What the console keeps for everyone - other people's upload paths in
-      // the last config digests, their PII acknowledgements - is not sent;
-      // keys are the viewer's own (and, on a console without sign-in, the
-      // ones minted before keys had owners).
-      const { lastConfigDigest: _digests, piiAcknowledged: _acknowledged, ...shared } = state;
-      return {
-        ...shared,
-        perspectives: byGraph(state.perspectives),
-        versions: byGraph(state.versions),
-        pins: byGraph(state.pins),
-        reviews: byGraph(state.reviews),
-        watches: byGraph(state.watches),
-        skippedFiles: byRun(state.skippedFiles),
-        estimates: byRun(state.estimates),
-        apiKeys: publicApiKeys(
-          state.apiKeys.filter((key) => (key.owner ? key.owner === me && Boolean(me) : !appEnv().requireSignIn)),
-        ),
-      };
+      return visibleWorkspace(ctx, await loadWorkspace());
     }),
     perspective: protectedProcedure
       .input(
@@ -508,13 +512,13 @@ export const appRouter = router({
             throw new TRPCError({ code: "FORBIDDEN", message: "That perspective belongs to another graph." });
           }
         }
-        return upsertPerspective(input);
+        return visibleWorkspace(ctx, await upsertPerspective(input));
       }),
     promotePerspective: protectedProcedure
       .input(z.object({ id: z.string(), lifecycle: z.enum(["draft", "candidate", "production"]) }))
       .mutation(async ({ ctx, input }) => {
         await requireItemGraph(ctx, (state) => state.perspectives.find((item) => item.id === input.id));
-        return promotePerspective(input.id, input.lifecycle);
+        return visibleWorkspace(ctx, await promotePerspective(input.id, input.lifecycle));
       }),
     review: protectedProcedure
       .input(
@@ -530,36 +534,39 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         await requireItemGraph(ctx, (state) => state.reviews.find((item) => item.id === input.id));
-        return decideReview(input.id, input.decision);
+        return visibleWorkspace(ctx, await decideReview(input.id, input.decision));
       }),
     publish: protectedProcedure
       .input(z.object({ graphId: z.string(), note: z.string() }))
       .mutation(async ({ ctx, input }) => {
         await runEffect(ctx.controlPlane.requireGraph(input.graphId, "write"));
-        return publishVersion(input.graphId, input.note);
+        return visibleWorkspace(ctx, await publishVersion(input.graphId, input.note));
       }),
     toggleWatch: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
       await requireItemGraph(ctx, (state) => state.watches.find((item) => item.id === input.id));
-      return toggleWatch(input.id);
+      return visibleWorkspace(ctx, await toggleWatch(input.id));
     }),
     applyWatch: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
       await requireItemGraph(ctx, (state) => state.watches.find((item) => item.id === input.id));
-      return applyIncremental(input.id);
+      return visibleWorkspace(ctx, await applyIncremental(input.id));
     }),
     createWatch: protectedProcedure
       .input(z.object({ graphId: z.string(), prefix: z.string().min(1) }))
       .mutation(async ({ ctx, input }) => {
         await runEffect(ctx.controlPlane.requireGraph(input.graphId, "write"));
-        return createWatch(input);
+        return visibleWorkspace(ctx, await createWatch(input));
       }),
     // A key acts as whoever minted it, so minting and revoking need a name
     // to bind it to.
     createKey: identifiedProcedure
       .input(z.object({ name: z.string().min(1).max(200) }))
-      .mutation(({ ctx, input }) => createApiKey(input.name, ctx.viewer.userName)),
+      .mutation(async ({ ctx, input }) => {
+        const { secret, state } = await createApiKey(input.name, ctx.viewer.userName);
+        return { secret, state: await visibleWorkspace(ctx, state) };
+      }),
     revokeKey: identifiedProcedure.input(z.object({ id: z.string().min(1) })).mutation(async ({ ctx, input }) => {
       try {
-        return await revokeApiKey(input.id, ctx.viewer.userName);
+        return visibleWorkspace(ctx, await revokeApiKey(input.id, ctx.viewer.userName));
       } catch (error) {
         throw new TRPCError({ code: "FORBIDDEN", message: error instanceof Error ? error.message : String(error) });
       }
@@ -573,10 +580,10 @@ export const appRouter = router({
           grants: z.string(),
         }),
       )
-      .mutation(({ input }) => recordIdentityIncident(input)),
+      .mutation(async ({ ctx, input }) => visibleWorkspace(ctx, await recordIdentityIncident(input))),
     markGrant: protectedProcedure
       .input(z.object({ object: z.string(), ok: z.boolean() }))
-      .mutation(({ input }) => markGrant(input.object, input.ok)),
+      .mutation(async ({ ctx, input }) => visibleWorkspace(ctx, await markGrant(input.object, input.ok))),
     incident: publicProcedure.query(async ({ ctx }) => staffIncident(await runEffect(ctx.controlPlane.visibleGraphs()))),
   }),
   fleet: router({

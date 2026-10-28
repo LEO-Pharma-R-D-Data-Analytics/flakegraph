@@ -1,5 +1,9 @@
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
+import type { CatalogRecord } from "../catalog";
 
 export interface ManagedProcess {
   runId: string;
@@ -19,7 +23,7 @@ class ProcessRegistry {
 
   start(managed: ManagedProcess): ManagedProcess {
     const existing = this.processes.get(managed.runId);
-    if (existing && existing.process.exitCode === null && !existing.process.killed) {
+    if (existing && existing.process.exitCode === null && existing.process.signalCode === null && !existing.process.killed) {
       throw new Error(`Run is already active: ${managed.runId}`);
     }
     this.processes.set(managed.runId, managed);
@@ -51,7 +55,7 @@ class ProcessRegistry {
 export const processRegistry = new ProcessRegistry();
 
 export function terminateProcess(process: ChildProcess): void {
-  if (process.exitCode !== null || process.killed) {
+  if (process.exitCode !== null || process.signalCode !== null || process.killed) {
     return;
   }
   try {
@@ -60,6 +64,70 @@ export function terminateProcess(process: ChildProcess): void {
     }
   } catch {
     // The child may have already exited between the poll and the signal.
+  }
+}
+
+const runFile = promisify(execFile);
+
+/** OS process birth time identifies a recorded worker even after a console restart. */
+export async function processBirth(pid: number | undefined): Promise<string | null> {
+  if (!pid) return null;
+  try {
+    const { stdout } = await runFile("ps", ["-p", String(pid), "-o", "lstart="], {
+      timeout: 2_000,
+      env: { ...process.env, LC_ALL: "C" },
+    });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Stop a verified worker group and wait for exit before allowing graph deletion. */
+export async function stopLocalWorker(record: CatalogRecord, child?: ChildProcess): Promise<void> {
+  const pid = child?.pid ?? record.pid;
+  let grouped = false;
+  const alive = () => grouped && pid
+    ? processGroupIsRunning(pid)
+    : child ? child.exitCode === null && child.signalCode === null : pidIsRunning(pid);
+  if (!pid || !alive()) return;
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("Invalid recorded worker PID");
+  const birth = await processBirth(pid);
+  let verified = Boolean(birth && birth === record.processBirth);
+  if (!verified && birth && !record.processBirth && record.configPath && record.startedAt) {
+    // Legacy records require both the original start time and configuration argument.
+    const { stdout } = await runFile("ps", ["-p", String(pid), "-o", "args="], { timeout: 2_000 });
+    const elapsed = Math.abs(Date.parse(birth) - Date.parse(record.startedAt));
+    verified = elapsed < 5_000 && stdout.includes("--config") && stdout.includes(record.configPath);
+  }
+  if (!child && !verified) throw new Error("Cannot verify the recorded worker identity; cancellation was not completed.");
+  grouped = processGroupIsRunning(pid);
+  const signal = (value: NodeJS.Signals) => {
+    try {
+      process.kill(grouped ? -pid : pid, value);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
+  for (const value of ["SIGTERM", "SIGKILL"] as const) {
+    if (!alive()) return;
+    if (!child) {
+      const currentBirth = await processBirth(pid);
+      if (currentBirth !== birth && (currentBirth || !grouped)) return;
+    }
+    signal(value);
+    const deadline = Date.now() + 2_000;
+    while (alive() && Date.now() < deadline) await delay(25);
+  }
+  if (alive()) throw new Error("The worker is still active; cancellation was not completed.");
+}
+
+function processGroupIsRunning(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

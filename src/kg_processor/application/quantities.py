@@ -7,7 +7,6 @@ import re
 
 from kg_processor.domain.graph import Quantity
 
-_RANGE_BOUNDS = 2
 _UPPER_BOUND_COMPARATORS = {"<", "<=", "≤", "nmt", "not more than", "max", "maximum", "up to"}
 _LOWER_BOUND_COMPARATORS = {">", ">=", "≥", "nlt", "not less than", "min", "minimum", "at least"}
 _NUMBER_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?")
@@ -16,7 +15,10 @@ _COMPARATOR_RE = re.compile(
     r"|\bmin(?:imum)?\b|\bup to\b|\bat least\b)",
     re.IGNORECASE,
 )
-_RANGE_RE = re.compile(r"\d\s*(?:-|–|—|to|\.\.)\s*[-+]?\d", re.IGNORECASE)
+_RANGE_RE = re.compile(
+    rf"({_NUMBER_RE.pattern})\s*(?:-|–|—|to|\.\.)\s*({_NUMBER_RE.pattern})",
+    re.IGNORECASE,
+)
 _UNIT_SYMBOL_RE = re.compile(r"[%‰°µμ]")
 # A letter written straight before a digit: a model, part or project code.
 _CODE_RE = re.compile(r"[^\W\d_]\d")
@@ -65,10 +67,11 @@ def parse_quantity(
     symbol = found.group(1).lower() if found else None
     low: float | None = None
     high: float | None = None
-    if numbers:
-        if len(numbers) >= _RANGE_BOUNDS and _RANGE_RE.search(text):
-            low, high = min(numbers[:2]), max(numbers[:2])
-        elif symbol and symbol.strip() in _UPPER_BOUND_COMPARATORS:
+    interval = _RANGE_RE.search(text)
+    if interval:
+        low, high = sorted(float(bound.replace(",", ".")) for bound in interval.groups())
+    elif numbers:
+        if symbol and symbol.strip() in _UPPER_BOUND_COMPARATORS:
             high = numbers[0]
         elif symbol and symbol.strip() in _LOWER_BOUND_COMPARATORS:
             low = numbers[0]
