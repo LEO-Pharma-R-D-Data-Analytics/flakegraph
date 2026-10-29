@@ -6,7 +6,7 @@ import pytest
 from documents import chunk
 
 from kg_processor.application.cache_keys import build_extraction_cache_key, build_ocr_cache_key
-from kg_processor.config.settings import ExtractorSettings, GraphSettings
+from kg_processor.config.settings import ExtractorSettings, GraphSettings, LlmSettings
 from kg_processor.domain.documents import InputFile
 from kg_processor.ports.ocr import OcrOptions
 
@@ -220,4 +220,43 @@ def _input_file() -> InputFile:
         checksum="abc123",
         mime_type="text/plain",
         size_bytes=42,
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "field", "value", "changes_key"),
+    [
+        ("ollama", "context_window_tokens", 65536, True),
+        ("openai_compatible", "context_window_tokens", 65536, False),
+        ("openai_compatible", "api_version", "another-version", False),
+        ("fake", "endpoint", "https://unused.example", False),
+        ("snowflake_cortex", "max_output_tokens", 1000, False),
+    ],
+)
+def test_extraction_cache_tracks_only_provider_effective_options(
+    provider: str, field: str, value: object, changes_key: bool
+) -> None:
+    settings = LlmSettings(provider=provider, endpoint="https://service.example")
+    changed = settings.model_copy(update={field: value})
+    first = build_extraction_cache_key(
+        "graph", _CHUNKS, provider, "model", GraphSettings(), 120, llm_settings=settings
+    )
+    second = build_extraction_cache_key(
+        "graph", _CHUNKS, provider, "model", GraphSettings(), 120, llm_settings=changed
+    )
+    assert (first.id != second.id) is changes_key
+
+
+def test_extraction_cache_ignores_endpoint_credentials_and_equivalent_ollama_urls() -> None:
+    first = LlmSettings(provider="ollama", endpoint="https://user:password@service.example/v1/")
+    changed = first.model_copy(
+        update={"api_key": "rotated", "endpoint": "https://other:rotated@service.example"}
+    )
+    assert (
+        build_extraction_cache_key(
+            "graph", _CHUNKS, "ollama", "model", GraphSettings(), 120, llm_settings=first
+        ).id
+        == build_extraction_cache_key(
+            "graph", _CHUNKS, "ollama", "model", GraphSettings(), 120, llm_settings=changed
+        ).id
     )

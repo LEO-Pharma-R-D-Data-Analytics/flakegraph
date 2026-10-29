@@ -17,20 +17,25 @@ def dedupe_extraction_result(result: ExtractionResult) -> ExtractionResult:
     seen_entities: set[tuple[str, str, str]] = set()
     entities: list[ExtractedEntity] = []
     for entity in result.entities:
-        entity_key = (_normalize(entity.name), entity.type, entity.source_chunk_id)
+        entity_key = (
+            entity.resolved_component_id or _normalize(entity.name),
+            entity.type,
+            entity.source_chunk_id,
+        )
         if entity_key in seen_entities:
             continue
         seen_entities.add(entity_key)
         entities.append(entity)
 
-    seen_relations: set[tuple[str, str, str, str]] = set()
+    seen_relations: set[tuple[str, str, str, str, bool]] = set()
     relations: list[ExtractedRelation] = []
     for relation in result.relations:
         relation_key = (
-            _normalize(relation.source_name),
-            _normalize(relation.target_name),
+            relation.source_component_id or _normalize(relation.source_name),
+            relation.target_component_id or _normalize(relation.target_name),
             relation.relation_type.strip().lower(),
             relation.source_chunk_id,
+            relation.source_self_loop,
         )
         if relation_key in seen_relations:
             continue

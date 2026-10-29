@@ -385,7 +385,12 @@ def resolve_extraction_observations(
         seed=graph_settings.deterministic_seed,
     )
     extraction = _to_extraction_result(
-        mentions, relations, resolution.canonical_name_by_mention_id, held_relations
+        mentions,
+        relations,
+        resolution.canonical_name_by_mention_id,
+        held_relations,
+        component_ids=resolution.component_by_mention_id,
+        ontology=ontology,
     )
     extraction.provider_metadata = {
         "schema_revision": TWO_PASS_PROMPT_REVISION,
@@ -1860,9 +1865,13 @@ def _to_extraction_result(
     relations: list[RelationObservation],
     canonical_names: dict[str, str],
     held_relations: list[RelationObservation] | None = None,
+    *,
+    component_ids: dict[str, str] | None = None,
+    ontology: OntologyProfile | None = None,
 ) -> ExtractionResult:
     """Translate grounded mention observations into the established graph contract.
 
+    Resolution component IDs carry identity independently of display names.
     Resolution-selected names are applied to entities and relation endpoints while
     exact quotes, offsets, confidence, and non-canonical spellings remain available
     for downstream evidence and alias assembly. Held relations are translated the
@@ -1873,6 +1882,7 @@ def _to_extraction_result(
     entities = [
         ExtractedEntity(
             name=canonical_names[mention.id],
+            resolved_component_id=(component_ids or {}).get(mention.id),
             type=mention.type,
             description=mention.description,
             source_chunk_id=mention.source_chunk_id,
@@ -1887,8 +1897,12 @@ def _to_extraction_result(
     ]
     return ExtractionResult(
         entities=entities,
-        relations=_extracted_relations(relations, mentions_by_id, canonical_names),
-        held_relations=_extracted_relations(held_relations or [], mentions_by_id, canonical_names),
+        relations=_extracted_relations(
+            relations, mentions_by_id, canonical_names, component_ids, ontology
+        ),
+        held_relations=_extracted_relations(
+            held_relations or [], mentions_by_id, canonical_names, component_ids, ontology
+        ),
     )
 
 
@@ -1896,9 +1910,20 @@ def _extracted_relations(
     relations: list[RelationObservation],
     mentions_by_id: dict[str, EntityMention],
     canonical_names: dict[str, str],
+    component_ids: dict[str, str] | None,
+    ontology: OntologyProfile | None,
 ) -> list[ExtractedRelation]:
-    """Name each relation's endpoints by the canonical names resolution chose."""
+    """Carry endpoint components and preserve only ontology-approved source loops."""
 
+    allowed_self_loops = (
+        {
+            normalize_ontology_label(item.name)
+            for item in ontology.relation_types
+            if item.allow_self_loop
+        }
+        if ontology is not None
+        else set()
+    )
     extracted_relations: list[ExtractedRelation] = []
     for relation in relations:
         source = mentions_by_id.get(relation.source_entity_id)
@@ -1907,12 +1932,19 @@ def _extracted_relations(
             continue
         source_name = canonical_names[source.id]
         target_name = canonical_names[target.id]
-        if source.id == target.id:
+        source_self_loop = source.id == target.id
+        if (
+            source_self_loop
+            and normalize_ontology_label(relation.relation_type) not in allowed_self_loops
+        ):
             continue
         extracted_relations.append(
             ExtractedRelation(
                 source_name=source_name,
                 target_name=target_name,
+                source_component_id=(component_ids or {}).get(source.id),
+                target_component_id=(component_ids or {}).get(target.id),
+                source_self_loop=source_self_loop,
                 source_surface=relation.source_surface,
                 target_surface=relation.target_surface,
                 source_type=source.type,

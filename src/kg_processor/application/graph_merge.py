@@ -27,7 +27,7 @@ from kg_processor.domain.graph import (
     Quantity,
 )
 from kg_processor.domain.ids import stable_id
-from kg_processor.domain.ontology import normalize_ontology_label
+from kg_processor.domain.ontology import OntologyProfile, normalize_ontology_label
 
 # Persisted relation labels stay within a bounded identifier length so canonical
 # predicates remain usable as Snowflake identifiers and stable join keys.
@@ -126,6 +126,7 @@ class EntityAssembly:
 
     nodes: list[GraphNode]
     node_by_name_and_type: dict[tuple[str, str], GraphNode]
+    node_by_component_id: dict[str, GraphNode]
     evidence: list[Evidence]
     entity_sources: list[EntitySource]
     decisions: list[MergeDecision]
@@ -192,9 +193,10 @@ def prune_isolated_entities(assembly: GraphAssemblyResult) -> GraphAssemblyResul
 def normalize_entity_name(name: str) -> str:
     """Normalize entity names into stable keys used for merging.
 
-    This is the single canonical-name identity rule. Node IDs are hashed from its
-    result, so every engine that assembles graph rows must call this function
-    rather than reimplement it: NFC composition and full case folding have no
+    Node IDs use this normalized name, with a component disambiguator when
+    separate resolved identities share a name and type. Every engine that
+    assembles graph rows must call this function rather than reimplement it: NFC
+    composition and full case folding have no
     equivalent expression in SQL dialects, and any approximation mints different
     IDs for the same entity and breaks idempotent merges into shared tables.
     """
@@ -224,6 +226,8 @@ def assemble_graph(
     entities: list[ExtractedEntity],
     relations: list[ExtractedRelation],
     relation_weight_max: float,
+    *,
+    ontology: OntologyProfile | None = None,
 ) -> tuple[list[GraphNode], list[GraphEdge], list[Evidence], list[EntitySource]]:
     """Assemble canonical graph rows without returning merge decisions."""
 
@@ -233,6 +237,7 @@ def assemble_graph(
         entities,
         relations,
         relation_weight_max,
+        ontology=ontology,
     )
     return result.nodes, result.edges, result.evidence, result.entity_sources
 
@@ -246,22 +251,28 @@ def assemble_graph_with_decisions(
     *,
     held_relations: Sequence[ExtractedRelation] = (),
     type_resolution: TypeResolution | None = None,
+    ontology: OntologyProfile | None = None,
 ) -> GraphAssemblyResult:
     """Merge grounded observations into canonical graph rows and audit decisions.
 
-    Entity grouping runs first to establish endpoint identity. Relation assembly
+    Resolved components retain identity even when their display names coincide;
+    legacy observations group by normalized name and type. Relation assembly
     then consolidates repeated triples while retaining per-source assertions,
     exact evidence, bounded weights, and reasons for every dropped observation.
     With ``type_resolution``, held relations the entity nodes admit join the
-    relations as ``type_resolved`` observations.
+    relations as ``type_resolved`` observations. An explicit source self-loop
+    survives only when ``ontology`` allows its predicate; merged-endpoint loops
+    are discarded regardless of that allowance.
     """
 
     # Entities are grouped before relation assembly so endpoint resolution can
     # use the same canonical node map that will be persisted.
     chunks_by_id = {chunk.id: chunk for chunk in chunks}
-    grouped_entities: dict[tuple[str, str], list[ExtractedEntity]] = defaultdict(list)
+    grouped_entities: dict[tuple[str, str, str], list[ExtractedEntity]] = defaultdict(list)
     for entity in entities:
-        grouped_entities[(normalize_entity_name(entity.name), entity.type)].append(entity)
+        grouped_entities[
+            (normalize_entity_name(entity.name), entity.type, entity.resolved_component_id or "")
+        ].append(entity)
 
     entity_assembly = _assemble_entities(graph_id, chunks_by_id, grouped_entities)
     admitted: list[ExtractedRelation] = []
@@ -276,6 +287,8 @@ def assemble_graph_with_decisions(
         entity_assembly.node_by_name_and_type,
         [*relations, *admitted],
         relation_weight_max,
+        entity_assembly.node_by_component_id,
+        ontology,
     )
     nodes = sorted(entity_assembly.nodes, key=lambda node: node.id)
     edges = relation_assembly.edges
@@ -329,8 +342,12 @@ def _admitted_held_relations(
     for node in entity_assembly.nodes:
         by_name[node.normalized_name].append(node)
 
-    def candidates(name: str, entity_type: str) -> list[tuple[int, GraphNode]]:
-        own = _relation_endpoint_node(node_index, name, entity_type)
+    def candidates(
+        name: str, entity_type: str, component_id: str | None
+    ) -> list[tuple[int, GraphNode]]:
+        own = _relation_endpoint_node(
+            node_index, name, entity_type, component_id, entity_assembly.node_by_component_id
+        )
         if own is None:
             return []
         return [
@@ -338,10 +355,14 @@ def _admitted_held_relations(
             *(
                 (1, node)
                 for node in by_name[own.normalized_name]
-                if node.id != own.id and documents[node.id] >= type_resolution.min_documents
+                if node.primary_type != own.primary_type
+                and documents[node.id] >= type_resolution.min_documents
             ),
         ]
 
+    component_by_node = {
+        node.id: component for component, node in entity_assembly.node_by_component_id.items()
+    }
     # Each choice with the edge and chunk it would support.
     chosen: list[tuple[tuple[str, str, str, str], ExtractedRelation]] = []
     keys: list[str] = []
@@ -361,8 +382,12 @@ def _admitted_held_relations(
                 target,
                 rule,
             )
-            for source_moved, source in candidates(relation.source_name, relation.source_type)
-            for target_moved, target in candidates(relation.target_name, relation.target_type)
+            for source_moved, source in candidates(
+                relation.source_name, relation.source_type, relation.source_component_id
+            )
+            for target_moved, target in candidates(
+                relation.target_name, relation.target_type, relation.target_component_id
+            )
             if source_moved + target_moved
             and source.id != target.id
             and (
@@ -383,8 +408,10 @@ def _admitted_held_relations(
                 relation.model_copy(
                     update={
                         "source_name": source.name,
+                        "source_component_id": component_by_node.get(source.id),
                         "source_type": source.primary_type,
                         "target_name": target.name,
+                        "target_component_id": component_by_node.get(target.id),
                         "target_type": target.primary_type,
                         "relation_type": kept,
                         "proposed_relation_type": stated or relation.proposed_relation_type,
@@ -396,8 +423,20 @@ def _admitted_held_relations(
 
     covered: set[tuple[str, str, str, str]] = set()
     for relation in relations:
-        start = _relation_endpoint_node(node_index, relation.source_name, relation.source_type)
-        end = _relation_endpoint_node(node_index, relation.target_name, relation.target_type)
+        start = _relation_endpoint_node(
+            node_index,
+            relation.source_name,
+            relation.source_type,
+            relation.source_component_id,
+            entity_assembly.node_by_component_id,
+        )
+        end = _relation_endpoint_node(
+            node_index,
+            relation.target_name,
+            relation.target_type,
+            relation.target_component_id,
+            entity_assembly.node_by_component_id,
+        )
         if start is not None and end is not None:
             covered.add(
                 (
@@ -426,15 +465,24 @@ def _admitted_held_relations(
 def _assemble_entities(
     graph_id: str,
     chunks_by_id: dict[str, Chunk],
-    grouped_entities: dict[tuple[str, str], list[ExtractedEntity]],
+    grouped_entities: dict[tuple[str, str, str], list[ExtractedEntity]],
 ) -> EntityAssembly:
     nodes: list[GraphNode] = []
-    node_by_name_and_type: dict[tuple[str, str], GraphNode] = {}
+    node_by_component_id: dict[str, GraphNode] = {}
     evidence: list[Evidence] = []
     entity_sources: list[EntitySource] = []
     decisions: list[MergeDecision] = []
 
-    for (normalized_name, grouped_type), observed in sorted(grouped_entities.items()):
+    # Match the distributed engine: the best-attested component keeps the plain
+    # name/type id, while other homonyms add their stable component root.
+    identity_winners: dict[tuple[str, str], str] = {}
+    for name, entity_type, component in sorted(
+        grouped_entities,
+        key=lambda key: (-len({item.source_chunk_id for item in grouped_entities[key]}), key),
+    ):
+        identity_winners.setdefault((name, entity_type), component)
+
+    for (normalized_name, grouped_type, component), observed in sorted(grouped_entities.items()):
         primary_type = _primary_type(observed)
         display_name = _best_display_name([entity.name for entity in observed])
         description = _best_description([entity.description for entity in observed])
@@ -448,8 +496,11 @@ def _assemble_entities(
                 current
             ):
                 observations_by_chunk[observation.source_chunk_id] = observation
+        identity = [graph_id, normalized_name, primary_type]
+        if component != identity_winners[(normalized_name, grouped_type)]:
+            identity.append(component)
         node = GraphNode(
-            id=stable_id("node", graph_id, normalized_name, primary_type),
+            id=stable_id("node", *identity),
             graph_id=graph_id,
             normalized_name=normalized_name,
             name=display_name,
@@ -460,7 +511,8 @@ def _assemble_entities(
             source_chunk_ids=source_chunk_ids,
         )
         nodes.append(node)
-        node_by_name_and_type[(normalized_name, grouped_type)] = node
+        if component:
+            node_by_component_id[component] = node
         decisions.append(
             MergeDecision(
                 kind="entity",
@@ -513,12 +565,22 @@ def _assemble_entities(
                     file_id=file_id,
                     per_file_description=_best_description(file_descriptions),
                     mention_count=count,
+                    aliases=_node_aliases(
+                        [
+                            item
+                            for item in observed
+                            if item.source_chunk_id in chunks_by_id
+                            and chunks_by_id[item.source_chunk_id].file_id == file_id
+                        ],
+                        "",
+                    ),
                 )
             )
 
     return EntityAssembly(
         nodes=nodes,
-        node_by_name_and_type=_with_unique_alias_endpoints(node_by_name_and_type, nodes),
+        node_by_name_and_type=_with_unique_alias_endpoints(nodes),
+        node_by_component_id=node_by_component_id,
         evidence=evidence,
         entity_sources=entity_sources,
         decisions=decisions,
@@ -526,7 +588,6 @@ def _assemble_entities(
 
 
 def _with_unique_alias_endpoints(
-    canonical_nodes: dict[tuple[str, str], GraphNode],
     nodes: list[GraphNode],
 ) -> dict[tuple[str, str], GraphNode]:
     """Extend the endpoint index with aliases that identify one canonical node.
@@ -538,7 +599,15 @@ def _with_unique_alias_endpoints(
     a relation to an arbitrary same-typed entity.
     """
 
-    endpoint_nodes = dict(canonical_nodes)
+    canonical_candidates: dict[tuple[str, str], dict[str, GraphNode]] = defaultdict(dict)
+    for node in nodes:
+        for node_type in node.types:
+            canonical_candidates[(node.normalized_name, node_type)][node.id] = node
+    endpoint_nodes = {
+        key: next(iter(candidates.values()))
+        for key, candidates in canonical_candidates.items()
+        if len(candidates) == 1
+    }
     alias_candidates: dict[tuple[str, str], dict[str, GraphNode]] = defaultdict(dict)
     for node in nodes:
         for alias in node.aliases:
@@ -546,7 +615,7 @@ def _with_unique_alias_endpoints(
             for node_type in node.types:
                 alias_candidates[(normalized_alias, node_type)][node.id] = node
     for key, candidates in alias_candidates.items():
-        if key not in endpoint_nodes and len(candidates) == 1:
+        if key not in canonical_candidates and len(candidates) == 1:
             endpoint_nodes[key] = next(iter(candidates.values()))
     return endpoint_nodes
 
@@ -585,6 +654,8 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
     node_by_name_and_type: dict[tuple[str, str], GraphNode],
     relations: list[ExtractedRelation],
     relation_weight_max: float,
+    node_by_component_id: dict[str, GraphNode],
+    ontology: OntologyProfile | None,
 ) -> RelationAssembly:
     """Assemble grounded relation observations into canonical directed edges.
 
@@ -593,6 +664,15 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
     preserved independently for provenance and reindexing.
     """
 
+    allowed_self_loops = (
+        {
+            normalize_relation_type(item.name)
+            for item in ontology.relation_types
+            if item.allow_self_loop
+        }
+        if ontology is not None
+        else set()
+    )
     edges_by_key: dict[tuple[str, str, str], GraphEdge] = {}
     edge_chunk_ids: dict[str, set[str]] = {}
     edge_observations: list[EdgeObservation] = []
@@ -603,11 +683,15 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
             node_by_name_and_type,
             relation.source_name,
             relation.source_type,
+            relation.source_component_id,
+            node_by_component_id,
         )
         target = _relation_endpoint_node(
             node_by_name_and_type,
             relation.target_name,
             relation.target_type,
+            relation.target_component_id,
+            node_by_component_id,
         )
         chunk = chunks_by_id.get(relation.source_chunk_id)
         if not source:
@@ -619,7 +703,10 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
         if not chunk:
             decisions.append(_dropped_relation_decision(graph_id, relation, "source_chunk_missing"))
             continue
-        if source.id == target.id:
+        relation_type = normalize_relation_type(relation.relation_type)
+        if source.id == target.id and not (
+            relation.source_self_loop and relation_type in allowed_self_loops
+        ):
             # Distinct extracted spellings can resolve to the same canonical node
             # after punctuation and alias normalization. Such a relation was not a
             # source-level self-loop and therefore could not be rejected earlier.
@@ -627,7 +714,6 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
                 _dropped_relation_decision(graph_id, relation, "self_loop_after_entity_merge")
             )
             continue
-        relation_type = normalize_relation_type(relation.relation_type)
         key = (source.id, target.id, relation_type)
         weight = min(max(relation.weight, 0.0), relation_weight_max)
         prior = edges_by_key.get(key)
@@ -780,9 +866,13 @@ def _relation_endpoint_node(
     nodes: dict[tuple[str, str], GraphNode],
     name: str,
     entity_type: str,
+    component_id: str | None = None,
+    component_nodes: dict[str, GraphNode] | None = None,
 ) -> GraphNode | None:
     """Resolve a relation endpoint without conflating same-named typed entities."""
 
+    if component_id is not None:
+        return (component_nodes or {}).get(component_id)
     return nodes.get((normalize_entity_name(name), entity_type))
 
 

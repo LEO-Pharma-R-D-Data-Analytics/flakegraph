@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
@@ -901,6 +903,12 @@ class RecordingWriter:
 
     def write(self, batch: GraphWriteBatch) -> None:
         self.batch = batch
+
+    @contextmanager
+    def stage_publication(
+        self, batch: GraphWriteBatch, *, publication_id: str, generation: int
+    ) -> Iterator[Callable[[], None]]:
+        yield lambda: self.write(batch)
 
 
 class RecordingProgressSink:

@@ -67,7 +67,15 @@ def synthesize_entity_descriptions(
     sources_by_node_id = _sources_by_node_id(entity_sources)
     requests: list[tuple[GraphNode, list[str], list[str], DescriptionMergeRequest]] = []
     for node in nodes:
-        descriptions = descriptions_by_key.get((node.normalized_name, node.primary_type), [])
+        descriptions = list(
+            dict.fromkeys(
+                description
+                for chunk_id in node.source_chunk_ids
+                for description in descriptions_by_key.get(
+                    (node.normalized_name, node.primary_type, chunk_id), []
+                )
+            )
+        )
         if len(descriptions) < min_observations:
             continue
         descriptions_used = descriptions[:max_descriptions]
@@ -162,13 +170,17 @@ def _trace_event(
 
 def _descriptions_by_node_key(
     observations: list[ExtractedEntity],
-) -> dict[tuple[str, str], list[str]]:
-    grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
+) -> dict[tuple[str, str, str], list[str]]:
+    grouped: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for observation in observations:
         description = observation.description.strip()
         if not description:
             continue
-        key = (normalize_entity_name(observation.name), observation.type)
+        key = (
+            normalize_entity_name(observation.name),
+            observation.type,
+            observation.source_chunk_id,
+        )
         if description not in grouped[key]:
             grouped[key].append(description)
     return dict(grouped)

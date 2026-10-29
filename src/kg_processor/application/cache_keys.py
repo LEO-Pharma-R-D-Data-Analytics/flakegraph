@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from kg_processor.application.chunking import compute_ordered_chunk_hash
 from kg_processor.application.extraction_contracts import extraction_contract_fingerprint
 from kg_processor.application.prompt_registry import two_pass_prompt_fingerprints
-from kg_processor.application.redaction import is_sensitive_key
-from kg_processor.config.settings import EmbeddingSettings, ExtractorSettings, GraphSettings
+from kg_processor.application.redaction import is_sensitive_key, redact_sensitive_data
+from kg_processor.config.settings import (
+    EmbeddingSettings,
+    ExtractorSettings,
+    GraphSettings,
+    LlmSettings,
+)
 from kg_processor.domain.documents import InputFile
 from kg_processor.domain.graph import Chunk
 from kg_processor.domain.ids import sha256_hex, stable_id
@@ -108,6 +114,7 @@ def build_extraction_cache_key(
     ontology_checksum: str = "",
     extractor_settings: ExtractorSettings | None = None,
     embedding_settings: EmbeddingSettings | None = None,
+    llm_settings: LlmSettings | None = None,
 ) -> ExtractionCacheKey:
     """Build an extraction cache key from content and every semantic input.
 
@@ -130,6 +137,7 @@ def build_extraction_cache_key(
                 mode="json",
                 exclude={"api_key"},
             ),
+            "llm_settings": _effective_llm_options(provider, llm_settings),
             "extraction_contracts": extraction_contract_fingerprint(),
             "two_pass_prompts": two_pass_prompt_fingerprints(),
             "ontology_checksum": ontology_checksum,
@@ -144,6 +152,30 @@ def build_extraction_cache_key(
         model=model,
         options_hash=options_hash,
     )
+
+
+def _effective_llm_options(provider: str, settings: LlmSettings | None) -> dict[str, Any]:
+    """Select the non-secret options consumed by the selected LLM adapter.
+
+    Unused settings stay cache-neutral, as do credentials and endpoint secrets.
+    Endpoint normalization follows the adapters' accepted URL forms.
+    """
+
+    settings = settings or LlmSettings()
+    options: dict[str, Any] = {}
+    if provider in {"openai_compatible", "azure_openai", "ollama", "vllm_local"}:
+        endpoint = (settings.endpoint or "").rstrip("/")
+        if provider == "ollama" and endpoint.endswith("/v1"):
+            endpoint = endpoint[:-3]
+        parsed = urlsplit(endpoint)
+        endpoint = urlunsplit(parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[-1]))
+        options["endpoint"] = redact_sensitive_data(endpoint)
+        options["max_output_tokens"] = settings.max_output_tokens
+    if provider == "azure_openai":
+        options["api_version"] = settings.api_version
+    if provider == "ollama":
+        options["context_window_tokens"] = settings.context_window_tokens
+    return options
 
 
 def _provider_ocr_options(provider: str, options: OcrOptions) -> dict[str, Any]:

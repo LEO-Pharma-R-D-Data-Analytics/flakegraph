@@ -147,3 +147,50 @@ def _evidence(subject_id: str, quote: str) -> Evidence:
         end_offset=len(quote),
         quote=quote,
     )
+
+
+def test_description_synthesis_keeps_same_named_component_sources_separate() -> None:
+    """Same display names must not combine descriptions from different components."""
+
+    first = _node("first", "SAR", "CONCEPT")
+    first.source_chunk_ids = ["first-chunk"]
+    second = _node("second", "SAR", "CONCEPT")
+    second.source_chunk_ids = ["second-chunk"]
+    provider = _RecordingLlm("A synthesized description.")
+    observations = [
+        ExtractedEntity(
+            name="SAR",
+            type="CONCEPT",
+            description=description,
+            source_chunk_id=chunk_id,
+            resolved_component_id=component,
+        )
+        for chunk_id, component, descriptions in [
+            (
+                "first-chunk",
+                "first",
+                ["Structure activity relationship.", "A chemical relationship."],
+            ),
+            (
+                "second-chunk",
+                "second",
+                ["Specific absorption rate.", "A measured absorption rate."],
+            ),
+        ]
+        for description in descriptions
+    ]
+    result = synthesize_entity_descriptions(
+        [first, second],
+        [],
+        observations,
+        [],
+        provider,
+        min_observations=2,
+        max_descriptions=8,
+        max_evidence=5,
+    )
+    assert result.merged_count == 2
+    assert [request.descriptions for request in provider.requests] == [
+        ["Structure activity relationship.", "A chemical relationship."],
+        ["Specific absorption rate.", "A measured absorption rate."],
+    ]

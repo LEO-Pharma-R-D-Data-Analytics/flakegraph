@@ -7,7 +7,7 @@ import math
 import re
 import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from itertools import batched
 
@@ -37,15 +37,16 @@ ResolutionProgressCallback = Callable[[int, int, int, int], None]
 
 @dataclass(frozen=True)
 class EntityResolutionResult:
-    """Return canonical mention names together with an auditable decision trail.
+    """Return component identities, display names, and an auditable decision trail.
 
-    The mapping feeds graph assembly, while explicit merge and non-merge records
+    The mappings feed graph assembly, while explicit merge and non-merge records
     explain how deterministic rules and optional LLM adjudication affected identity.
     """
 
     canonical_name_by_mention_id: dict[str, str]
     decisions: list[ResolutionDecision]
     trace: dict[str, object]
+    component_by_mention_id: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -284,6 +285,7 @@ def resolve_entity_mentions(  # noqa: PLR0912,PLR0915 - branches record distinct
     }
     return EntityResolutionResult(
         canonical_name_by_mention_id=canonical_name_by_id,
+        component_by_mention_id={mention.id: union_find.find(mention.id) for mention in mentions},
         decisions=decisions,
         trace={
             "stage": "entity_resolution",
@@ -296,7 +298,7 @@ def resolve_entity_mentions(  # noqa: PLR0912,PLR0915 - branches record distinct
             "llm_adjudications": len(uncertain),
             "failed_adjudication_batches": failed_adjudication_batches,
             "merged_pairs": sum(decision.same_entity for decision in decisions),
-            "canonical_entities": len(set(canonical_name_by_id.values())),
+            "canonical_entities": len(groups),
             **adjudication_metadata,
         },
     )

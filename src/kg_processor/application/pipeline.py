@@ -10,7 +10,8 @@ writer persistence remains one provider-independent implementation.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -1119,6 +1120,22 @@ class KgProcessorPipeline:
             held_relations=held_filter.kept,
         )
 
+    def stage_graph_publication(
+        self,
+        batch: GraphWriteBatch,
+        publication_id: str,
+        generation: int,
+    ) -> AbstractContextManager[Callable[[], None]]:
+        """Prepare a graph snapshot and expose its short fenced publication step.
+
+        Distributed orchestration validates the active publication lease while
+        invoking the commit callback; expensive writer staging happens beforehand.
+        """
+
+        return self.writer.stage_publication(
+            batch, publication_id=publication_id, generation=generation
+        )
+
     def _assemble_and_describe_graph(
         self,
         chunks: list[Chunk],
@@ -1141,6 +1158,7 @@ class KgProcessorPipeline:
             relations,
             self.settings.graph.relation_weight_max,
             held_relations=held_relations,
+            ontology=self._ontology().profile,
             type_resolution=(
                 TypeResolution(
                     type_resolution_rules(self._ontology().profile),
@@ -1592,10 +1610,11 @@ class KgProcessorPipeline:
             ontology.checksum,
             self.settings.extractors,
             self.settings.embedding,
+            self.settings.llm,
         )
         cached = self.cache.get_extraction_result(cache_key) if self.cache is not None else None
-        if cached is not None:
-            return cached, cache_key.id, True, []
+        if cached is not None and not _extraction_degraded(cached):
+            return cached, cache_key.id, True, _cached_document_context_trace(cached)
         document_context_entities, context_trace = self._extract_document_context_entities(
             chunks, documents
         )
@@ -1648,7 +1667,7 @@ class KgProcessorPipeline:
         context_degraded = any(
             str(event.get("stage", "")).endswith("_error") for event in context_trace
         )
-        if self.cache is not None and not context_degraded:
+        if self.cache is not None and not context_degraded and not _extraction_degraded(extraction):
             self.cache.put_extraction_result(cache_key, extraction)
         return extraction, cache_key.id, False, context_trace
 
@@ -2093,6 +2112,33 @@ def _require_one_window(window_count: int, phase: str) -> None:
         )
 
 
+def _extraction_degraded(extraction: ExtractionResult) -> bool:
+    """Keep provider failures retryable, including entries written by older runs.
+
+    Successful responses whose records fail validation are complete decisions,
+    so their discarded-window events remain eligible for caching.
+    """
+
+    return any(
+        isinstance(event, dict) and str(event.get("stage", "")).endswith("_error")
+        for event in extraction.provider_metadata.get("trace", [])
+    )
+
+
+def _cached_document_context_trace(extraction: ExtractionResult) -> list[dict[str, Any]]:
+    """Replay document annotations retained inside a complete cached extraction."""
+
+    return [
+        dict(event)
+        for event in extraction.provider_metadata.get("trace", [])
+        if isinstance(event, dict)
+        and (
+            str(event.get("stage", "")).startswith("document_context")
+            or event.get("stage") == "dataset_profile"
+        )
+    ]
+
+
 def _note_discarded_windows(
     trace: Sequence[Mapping[str, Any]],
     file_ids: Sequence[str],
@@ -2105,12 +2151,10 @@ def _note_discarded_windows(
     them is not ordinary: the work happened, was paid for, and was thrown away,
     and what that text says is now absent from the graph.
 
-    This used to fail the window's task, which made a persistent rejection
-    loud at the price of the whole run: one brochure title slide with a single
-    ungrounded quote stopped a corpus of five hundred documents. The gap is
-    instead carried in the trace, where both finalizers turn it into a
-    ``discarded_windows`` row the console reports per document, and the run
-    goes on. The log line keeps it visible to whoever watches the workers.
+    Validation rejection is a completed extraction outcome: the task succeeds
+    and its trace supplies a ``discarded_windows`` row for per-document reporting
+    in both finalizers. Provider exceptions remain failed work and are distinct
+    from this outcome. Logging keeps the validation gap visible to operators.
     """
 
     for event in trace:

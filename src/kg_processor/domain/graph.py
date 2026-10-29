@@ -52,6 +52,7 @@ class ExtractedEntity(BaseModel):
     type: str
     description: str
     source_chunk_id: str
+    resolved_component_id: str | None = None
     quote: str | None = None
     start_offset: int | None = Field(default=None, ge=0)
     end_offset: int | None = Field(default=None, ge=0)
@@ -78,13 +79,18 @@ class Quantity(BaseModel):
 class ExtractedRelation(BaseModel):
     """One grounded relationship observation before canonical graph assembly.
 
-    Canonical endpoint names determine graph identity. The optional endpoint
+    Resolved component IDs determine identity when present; legacy observations
+    use canonical endpoint names and types. The optional endpoint
     surfaces preserve the exact aliases, abbreviations, or document-context
     phrases that were verified in this observation's evidence.
     """
 
     source_name: str
     target_name: str
+    source_component_id: str | None = None
+    target_component_id: str | None = None
+    # True only when the accepted source assertion referenced one mention twice.
+    source_self_loop: bool = False
     source_surface: str | None = None
     target_surface: str | None = None
     source_type: str
@@ -210,7 +216,11 @@ class Evidence(BaseModel):
 
 
 class EntitySource(BaseModel):
-    """Per-file explanation of why a merged entity appears in the graph."""
+    """Per-file explanation and accepted surfaces supporting a merged entity.
+
+    Surfaces include the batch display spelling so incremental reconciliation can
+    rebuild aliases against an already-persisted node's display name.
+    """
 
     id: str
     graph_id: str
@@ -218,6 +228,7 @@ class EntitySource(BaseModel):
     file_id: str
     per_file_description: str
     mention_count: int
+    aliases: list[str] = Field(default_factory=list)
 
 
 class Community(BaseModel):
