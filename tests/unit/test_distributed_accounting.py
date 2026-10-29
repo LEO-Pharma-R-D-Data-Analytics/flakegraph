@@ -22,7 +22,14 @@ from kg_processor.domain.consumption import ConsumptionEvent, TokenUsage
 from kg_processor.domain.distributed import RunDefinition, TaskStage
 from kg_processor.domain.graph import ExtractionResult, GraphWriteBatch
 from kg_processor.factories import build_distributed_pipeline
-from kg_processor.ports.llm import StructuredCompletionRequest, StructuredCompletionResult
+from kg_processor.ports.llm import (
+    CommunitySummaryRequest,
+    CommunitySummaryResult,
+    DescriptionMergeRequest,
+    DescriptionMergeResult,
+    StructuredCompletionRequest,
+    StructuredCompletionResult,
+)
 
 
 class UsageProvider(FakeLlmProvider):
@@ -243,3 +250,39 @@ def test_billed_failure_is_durable_before_retry(tmp_path: Path) -> None:
     assert [event.task_attempt for event in events] == [1, 2]
     assert sum(event.usage.total_tokens for event in events) == 130
     assert len({event.event_id for event in events}) == 2
+
+
+@pytest.mark.parametrize(
+    ("call", "stage"),
+    [
+        ("merge_entity_description", "description_merge"),
+        ("summarize_community", "community_report"),
+    ],
+)
+def test_billed_enrichment_failure_is_recorded(call: str, stage: str) -> None:
+    """Finalization calls that fail after billing keep their usage too."""
+
+    error = ValueError("synthetic billed failure")
+    error.usage = TokenUsage(prompt_tokens=11, completion_tokens=2)  # type: ignore[attr-defined]
+
+    class FailingProvider(UsageProvider):
+        """Fail every enrichment call after reporting what it consumed."""
+
+        def merge_entity_description(
+            self, request: DescriptionMergeRequest
+        ) -> DescriptionMergeResult:
+            """Fail without network or external provider work."""
+
+            raise error
+
+        def summarize_community(self, request: CommunitySummaryRequest) -> CommunitySummaryResult:
+            """Fail without network or external provider work."""
+
+            raise error
+
+    collector = ConsumptionCollector("graph", job_id="run", run_id="run")
+    provider = MeteredLlmProvider(FailingProvider(), collector, provider="fake", model="fake")
+    with pytest.raises(ValueError, match="synthetic billed failure"):
+        getattr(provider, call)(None)
+    [event] = collector.events
+    assert (event.stage, event.usage.total_tokens) == (stage, 13)

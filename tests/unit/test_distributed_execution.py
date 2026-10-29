@@ -2267,6 +2267,7 @@ def _lease(
         task=task,
         worker_id="worker-1",
         attempt=1,
+        claim_token="claim-1",
         lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
         dependency_outputs=dependency_outputs or {},
     )

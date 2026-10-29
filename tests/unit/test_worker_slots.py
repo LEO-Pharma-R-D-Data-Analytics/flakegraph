@@ -79,6 +79,7 @@ class _SlotStore:
                 task=task,
                 worker_id=worker_id,
                 attempt=1,
+                claim_token="claim-1",
                 lease_expires_at=datetime.now(UTC) + lease_duration,
             )
 

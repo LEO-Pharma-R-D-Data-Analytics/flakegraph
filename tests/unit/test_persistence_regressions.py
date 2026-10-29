@@ -159,6 +159,7 @@ def test_worker_materializes_requested_graph_with_real_pipeline(
             task=task,
             worker_id="worker",
             attempt=1,
+            claim_token="claim-1",
             lease_expires_at=datetime.now(UTC) + timedelta(minutes=1),
         )
         result = worker.process_one()
@@ -353,6 +354,7 @@ def test_cancelled_real_local_finalizer_never_invokes_destination_writer(tmp_pat
         task=final,
         worker_id="worker",
         attempt=1,
+        claim_token="claim-1",
         lease_expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )
     base_embedding = pipeline.embeddings

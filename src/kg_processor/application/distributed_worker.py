@@ -669,14 +669,12 @@ class DistributedWorker:
             cached = self._run_contexts.get(run_id)
             if cached is not None:
                 return cached
+            # Only finalization reads the other workers' usage, and it merges
+            # the run's ledger itself, so a worker never loads it here.
             collector = getattr(pipeline, "consumption", None)
             record = getattr(self.task_store, "record_consumption", None)
-            read = getattr(self.task_store, "consumption_events", None)
-            if isinstance(collector, ConsumptionCollector):
-                if record is not None:
-                    collector.bind_sink(lambda event: record(run_id, event))
-                if read is not None:
-                    collector.merge(read(run_id))
+            if isinstance(collector, ConsumptionCollector) and record is not None:
+                collector.bind_sink(lambda event: record(run_id, event))
             context = _RunContext(settings=run_settings, pipeline=pipeline)
             if len(self._run_contexts) >= _RUN_CONTEXT_CACHE_SIZE:
                 self._run_contexts.pop(next(iter(self._run_contexts)))

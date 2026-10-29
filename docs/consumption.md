@@ -122,8 +122,8 @@ complete totals and groupings in the manifest metrics. Event detail in a Spark
 manifest is capped at 100 entries, with `event_count`, `events_truncated`, and
 ledger references identifying the complete audit data. Event IDs make rereads
 idempotent while preserving separately billed calls during retries. The driver
-currently merges the accounting ledger in memory; its memory use therefore
-scales with provider call count even though graph tables stay partitioned.
+merges the accounting ledger in memory, so its memory use scales with provider
+call count even though graph tables stay partitioned.
 
 Reports use the durable run ID as `job_id`; the content-derived local report
 `run_id` remains a separate artifact identity. Revisions account for the provider
