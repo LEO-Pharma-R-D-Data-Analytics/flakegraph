@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 
 from kg_processor.adapters.ocr.fallback import FallbackOcrProvider
@@ -167,6 +168,23 @@ def test_fallback_keeps_the_primary_text_when_the_secondary_refuses_the_file(
     assert routing["secondary_error_type"] == "RuntimeError"
     assert "private" not in str(routing)
     assert [page.raw_text for page in result.pages] == ["Certificate of Analysis"]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_fallback_raises_a_secondary_authentication_failure_despite_primary_text(
+    tmp_path: Path, status: int
+) -> None:
+    """Rejected credentials fail every file, so primary text cannot mask them."""
+
+    request = httpx.Request("POST", "https://ocr.invalid/parse")
+    response = httpx.Response(status, request=request)
+    primary = _StubOcr(_document("Certificate of Analysis", provider="builtin_text"))
+    secondary = _StubOcr(
+        error=httpx.HTTPStatusError("rejected", request=request, response=response)
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _provider(primary, secondary, minimum=80).parse(_file(tmp_path), OcrOptions())
 
 
 def test_fallback_still_fails_when_the_secondary_errs_and_the_primary_read_nothing(

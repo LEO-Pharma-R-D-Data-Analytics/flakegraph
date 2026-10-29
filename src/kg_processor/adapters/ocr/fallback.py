@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from kg_processor.application.window_errors import is_systemic_provider_error
 from kg_processor.domain.documents import InputFile, ParsedDocument
 from kg_processor.ports.ocr import NoTextReadError, OcrOptions, OcrProvider
 
@@ -178,7 +179,8 @@ class FallbackOcrProvider:
             # parsing service that rejects the file's type or fails on it. The
             # primary's text is kept, so the document is read with what there
             # is instead of being lost; the refusal stays in the provenance.
-            if character_count == 0:
+            # Rejected credentials refuse every file and so fail the run.
+            if character_count == 0 or is_systemic_provider_error(error):
                 raise
             return self._with_selection(
                 primary,
