@@ -75,3 +75,7 @@ workers:
 # Fixed replica counts above; set true once KEDA is installed.
 autoscaling:
   enabled: false
+
+# The console needs a protected gate, or an explicitly isolated operator address.
+controlPlane:
+  enabled: false

@@ -284,6 +284,7 @@ ingress:
       clientId: replace-with-your-client-id
 
 controlPlane:
+  enabled: true
   auth:
     required: true
   # Behind the gate the console trusts the identity headers; only Traefik in

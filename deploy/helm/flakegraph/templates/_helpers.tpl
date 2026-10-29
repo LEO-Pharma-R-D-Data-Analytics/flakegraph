@@ -694,3 +694,21 @@ than a silently wrong reservation.
 {{- fail (printf "modelServing.resources.requests.memory: %q is not a memory quantity this chart can charge a device reservation against; use Gi, Mi, G, M or bytes" $value) -}}
 {{- end -}}
 {{- end -}}
+
+{{/* Preserve the driver's actual provider Secret references for Spark executors. */}}
+{{- define "flakegraph.sparkProviderSecretRefs" -}}
+{{- $refs := dict -}}
+{{- if .Values.providerSecret.name -}}
+{{- range $mapping := .Values.providerSecret.env -}}
+{{- $_ := set $refs $mapping.name (printf "%s:%s" $.Values.providerSecret.name $mapping.key) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.gateway.enabled -}}
+{{- $gatewayKey := printf "%s:%s" .Values.gateway.litellm.virtualKeySecret.name .Values.gateway.litellm.virtualKeySecret.batchKey -}}
+{{- $_ := set $refs "KG_LLM_API_KEY" $gatewayKey -}}
+{{- if .Values.embeddingServing.enabled -}}
+{{- $_ := set $refs "KG_EMBEDDING_API_KEY" $gatewayKey -}}
+{{- end -}}
+{{- end -}}
+{{- $refs | toJson -}}
+{{- end -}}

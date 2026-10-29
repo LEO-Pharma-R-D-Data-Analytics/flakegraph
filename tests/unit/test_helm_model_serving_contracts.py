@@ -43,7 +43,9 @@ _SPARK = (*_SERVING, "spark.enabled=true")
 # Queue-driven scaling is opt-in too: it renders KEDA objects.
 _AUTOSCALING = ("autoscaling.enabled=true",)
 # The gate on a Traefik cluster, which is where every one of its objects lives.
+_ISOLATED = ("controlPlane.enabled=true", "controlPlane.auth.singleOperator=operator@example.test")
 _GATED = (
+    "controlPlane.enabled=true",
     "ingress.enabled=true",
     "ingress.domain=example.test",
     "ingress.controller=traefik",
@@ -597,7 +599,9 @@ def test_the_console_runs_the_fleet_the_way_the_workers_do() -> None:
     }
 
     ungated = _env(
-        _container(_pod(_one(_render(()), "Deployment", f"{_FULLNAME}-app")), "control-plane")
+        _container(
+            _pod(_one(_render(_ISOLATED), "Deployment", f"{_FULLNAME}-app")), "control-plane"
+        )
     )
     assert "FLAKEGRAPH_TRUST_IDENTITY_HEADERS" not in ungated
     assert "FLAKEGRAPH_ASK_BASE_URL" not in ungated
@@ -606,7 +610,7 @@ def test_the_console_runs_the_fleet_the_way_the_workers_do() -> None:
 def test_the_control_plane_can_see_what_preflight_asks_about() -> None:
     """A pool scaled to zero on purpose is told apart by its ScaledObject."""
 
-    role = _one(_render(()), "Role", f"{_FULLNAME}-app")
+    role = _one(_render(_ISOLATED), "Role", f"{_FULLNAME}-app")
     granted = {
         (group, resource)
         for rule in role["rules"]
@@ -820,10 +824,9 @@ def test_spark_executor_spreading_degrades_gracefully() -> None:
 def test_the_pipeline_is_a_metered_consumer_like_any_other() -> None:
     """Send batch traffic through the same gateway, holding a batch virtual key.
 
-    The exception that used to exist here — workers addressing an engine
-    directly — made "what is consuming this fleet" a question with a partial
-    answer, and pinned a node's workers to the GPU beside them so an idle pool
-    left that GPU idle too.
+    Routing workers through the gateway keeps fleet consumption visible and
+    lets the endpoint picker distribute work across engines independently of
+    worker placement.
     """
 
     values = _values()
@@ -934,7 +937,7 @@ def test_provider_secret_import_is_an_explicit_credential_allowlist() -> None:
     """Prevent unrelated Secret keys from silently replacing reviewed provider settings."""
 
     values = _values()
-    rendered = _render(("providerSecret.name=provider",))
+    rendered = _render((*_ISOLATED, "providerSecret.name=provider"))
 
     assert values["providerSecret"]["env"] == [
         {"name": "KG_LLM_API_KEY", "key": "KG_LLM_API_KEY", "optional": True},
@@ -1371,26 +1374,20 @@ def test_the_extraction_ceiling_oversubscribes_the_model_sequences_it_feeds() ->
     assert {t["metadata"]["targetQueryValue"] for t in extract["spec"]["triggers"]} == {"8"}
 
 
-def test_each_pool_scales_on_each_priority_band_independently() -> None:
-    """Let a small urgent run raise a drained pool without a bulk backlog.
-
-    With one combined trigger, demand from an urgent run is indistinguishable
-    from demand from a queue of a hundred thousand bulk tasks.
-    """
+def test_each_pool_scales_on_total_demand_across_priority_bands() -> None:
+    """Size shared capacity from all tasks; claim ordering selects urgent work."""
 
     rendered = _render(_AUTOSCALING)
-
     for pool in _WORKER_POOLS:
         triggers = _one(rendered, "ScaledObject", f"{_FULLNAME}-{pool}")["spec"]["triggers"]
-        assert [trigger["name"] for trigger in triggers] == [
-            f"{pool}-interactive",
-            f"{pool}-bulk",
-        ]
-        for band, trigger in zip(("interactive", "bulk"), triggers, strict=True):
-            query = " ".join(trigger["metadata"]["query"].split())
-            assert f"WHERE priority_band = '{band}'" in query
-            # The cap stays inside each band, so one band cannot spend the other's.
-            assert query.index("SUM(LEAST(") < query.index("WHERE priority_band")
+        assert len(triggers) == 1
+        (trigger,) = triggers
+        assert trigger["name"] == f"{pool}-total"
+        query = " ".join(trigger["metadata"]["query"].split())
+        assert "SUM(LEAST(" in query
+        assert "priority_band =" not in query
+        assert "WHERE stage IN" in query
+        assert trigger["metadata"]["targetQueryValue"] == str(_values()["workers"][pool]["slots"])
 
 
 def test_database_schema_is_bootstrapped_before_a_helm_release_is_ready() -> None:
@@ -2410,7 +2407,7 @@ def test_the_console_can_move_without_restarting_the_pipeline() -> None:
     follows the shared tag, which is right when both move together.
     """
 
-    settings = (*_SERVING, "spark.enabled=true", "image.tag=1.2.3")
+    settings = (*_ISOLATED, *_SERVING, "spark.enabled=true", "image.tag=1.2.3")
     together = _render(settings)
     console = _container(_pod(_one(together, "Deployment", f"{_FULLNAME}-app")), "control-plane")
     assert console["image"].endswith(":1.2.3")
@@ -2509,3 +2506,27 @@ def test_the_database_image_can_be_pinned_apart_from_the_operator() -> None:
         "example.com/postgresql:17.11"
     )
     assert "imageName" not in _one(_render(settings), "Cluster", "flakegraph-postgres")["spec"]
+
+
+def test_console_admission_requires_gate_or_explicit_isolated_operator() -> None:
+    """A fresh console has an initial named principal without trusting direct headers."""
+
+    assert _values()["controlPlane"]["enabled"] is False
+    assert _values()["controlPlane"]["auth"]["singleOperator"] == ""
+    assert "requires a protected" in _fails(("controlPlane.enabled=true",))
+    for setting in ("ingress.enabled=true", "controlPlane.auth.required=true"):
+        assert "requires ingress.enabled=false" in _fails((*_ISOLATED, setting))
+    isolated = _env(
+        _container(
+            _pod(_one(_render(_ISOLATED), "Deployment", f"{_FULLNAME}-app")), "control-plane"
+        )
+    )
+    assert isolated["FLAKEGRAPH_SINGLE_OPERATOR"]["value"] == "operator@example.test"
+    assert "FLAKEGRAPH_DEMO_IDENTITIES" not in isolated
+    assert "FLAKEGRAPH_TRUST_IDENTITY_HEADERS" not in isolated
+    for profile in (_MINIMAL_EXAMPLE, _EXTERNAL_EXAMPLE):
+        assert not [
+            doc
+            for doc in _render(values=(profile,))
+            if doc["kind"] == "Deployment" and doc["metadata"]["name"] == f"{_FULLNAME}-app"
+        ]

@@ -73,7 +73,7 @@ RUN /opt/spark/bin/spark-submit \
     && cp /root/.ivy2.5.2/jars/*.jar /opt/spark/jars/ \
     && rm -rf /root/.ivy2.5.2 /tmp/spark-dependency-resolution.log
 
-COPY README.md /app/README.md
+COPY README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md /app/
 COPY src /app/src
 COPY configs /app/configs
 # Only the lightweight project install depends on application source. Dependency,
@@ -81,6 +81,7 @@ COPY configs /app/configs
 RUN set -- --extra local-embeddings \
     && if [ "$KG_INSTALL_LEIDEN" = "true" ]; then set -- "$@" --extra leiden; fi \
     && uv sync --locked --no-dev --no-editable --inexact "$@" \
+    && chmod a+r /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md \
     && chown -R spark:spark /app
 
 # The official Spark entrypoint uses UID 185 for native executors. FlakeGraph's

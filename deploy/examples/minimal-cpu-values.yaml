@@ -111,6 +111,8 @@ scheduling:
     enabled: true
 
 controlPlane:
+  # Enable only with a gate or an explicitly isolated singleOperator address.
+  enabled: false
   resources:
     requests:
       cpu: 100m

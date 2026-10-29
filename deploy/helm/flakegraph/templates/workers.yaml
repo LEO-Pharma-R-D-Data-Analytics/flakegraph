@@ -219,6 +219,8 @@ spec:
               value: {{ include "flakegraph.sparkServiceAccountName" $root | quote }}
             - name: KG_DISTRIBUTED_SPARK_EXECUTOR_POD_TEMPLATE
               value: /etc/flakegraph-spark/executor-pod-template.yaml
+            - name: KG_DISTRIBUTED_SPARK_PROVIDER_SECRET_REFS
+              value: {{ include "flakegraph.sparkProviderSecretRefs" $root | quote }}
             - name: KG_DISTRIBUTED_SPARK_EXECUTOR_INSTANCES
               value: {{ $root.Values.spark.executorInstances | quote }}
             - name: KG_DISTRIBUTED_SPARK_EXECUTOR_CORES

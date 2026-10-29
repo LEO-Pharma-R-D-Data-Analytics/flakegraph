@@ -622,7 +622,7 @@ def test_a_reserved_engine_admits_no_batch_until_it_is_released() -> None:
         app = _gated_app(upstream)
         async with _serve(app) as client:
             gate = app.state.gate
-            gate.set_batch_cap(0)
+            await gate.set_batch_cap(0)
             batch = asyncio.create_task(_post(client, "sk-pipeline", "batch"))
             await asyncio.sleep(0.1)
             assert upstream.started == []
@@ -631,7 +631,7 @@ def test_a_reserved_engine_admits_no_batch_until_it_is_released() -> None:
             assert upstream.started == ["chat"]
             scrape = await client.get("/metrics")
             assert samples(scrape.text, "flakegraph_sidecar_batch_cap")[()] == 0
-            gate.set_batch_cap(None)
+            await gate.set_batch_cap(None)
             assert (await batch).status_code == 200
             assert upstream.started == ["chat", "batch"]
             scrape = await client.get("/metrics")
@@ -645,7 +645,7 @@ def test_a_cap_lets_a_bounded_number_of_batch_requests_run() -> None:
         upstream = _SlowUpstream()
         app = _gated_app(upstream)
         async with _serve(app) as client:
-            app.state.gate.set_batch_cap(2)
+            await app.state.gate.set_batch_cap(2)
             running = [asyncio.create_task(_post(client, "sk-pipeline", f"b{i}")) for i in range(4)]
             await asyncio.sleep(0.15)
             assert len(upstream.started) == 2
@@ -664,7 +664,7 @@ def test_a_cap_lapses_when_the_balancer_stops_calling() -> None:
         upstream.release.set()
         app = _gated_app(upstream, cap_ttl_seconds=0.2)
         async with _serve(app) as client:
-            app.state.gate.set_batch_cap(0)
+            await app.state.gate.set_batch_cap(0)
             assert app.state.gate.batch_cap == 0
             await asyncio.sleep(0.3)
             assert app.state.gate.batch_cap is None
@@ -721,7 +721,7 @@ def test_invalid_utf8_cannot_retain_admission_or_in_flight_metrics(key: str, con
         upstream = _SlowUpstream()
         upstream.release.set()
         app = _gated_app(upstream)
-        app.state.gate.set_batch_cap(1)
+        await app.state.gate.set_batch_cap(1)
         async with _serve(app) as client:
             malformed = await client.post(
                 "/v1/chat/completions",
@@ -745,3 +745,69 @@ def test_invalid_utf8_cannot_retain_admission_or_in_flight_metrics(key: str, con
             assert upstream.started == ["batch-after-bad"]
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("key,band", [("sk-chat", 0), ("sk-tool", 10), ("sk-pipeline", 100)])
+def test_messages_uses_trusted_header_priority(key: str, band: int) -> None:
+    """The pinned Anthropic adapter reads priority from the vLLM header."""
+
+    upstream = RecordingUpstream()
+    with _client(upstream) as client:
+        response = client.post(
+            "/v1/messages",
+            headers={"Authorization": f"Bearer {key}", "X-Vllm-Priority": "-100"},
+            json={"model": "m", "messages": [], "priority": -100},
+        )
+    assert response.status_code == 200
+    assert upstream.requests[-1].headers["x-vllm-priority"] == str(band)
+    assert "priority" not in upstream.last_body
+
+
+def test_messages_participates_in_both_admission_classes() -> None:
+    """Every enabled generation route shares the batch/protected policy."""
+
+    app = _gated_app(_SlowUpstream())
+    gate = app.state.gate
+    assert gate.holds("batch", "/v1/messages")
+    assert gate.protects("interactive", "/v1/messages")
+    assert not gate.holds("batch", "/v1/embeddings")
+
+
+def test_releasing_idle_cap_wakes_an_existing_admission() -> None:
+    """An administrative release wakes queued work without another inference call."""
+
+    async def scenario() -> None:
+        upstream = _SlowUpstream()
+        upstream.release.set()
+        app = _gated_app(upstream)
+        async with _serve(app) as client:
+            headers = {"Authorization": "Bearer sk-chat"}
+            await client.post("/flakegraph/admission", headers=headers, json={"batch_cap": 0})
+            queued = asyncio.create_task(_post(client, "sk-pipeline", "queued"))
+            await asyncio.sleep(0.05)
+            assert upstream.started == []
+            released = await client.post(
+                "/flakegraph/admission", headers=headers, json={"batch_cap": None}
+            )
+            assert released.status_code == 200
+            assert (await asyncio.wait_for(queued, timeout=1)).status_code == 200
+            assert upstream.started == ["queued"]
+
+    asyncio.run(scenario())
+
+
+def test_expiring_idle_cap_wakes_an_existing_admission() -> None:
+    """The cap's own deadline releases a waiter while the engine stays idle."""
+
+    async def scenario() -> None:
+        upstream = _SlowUpstream()
+        upstream.release.set()
+        app = _gated_app(upstream, cap_ttl_seconds=0.15)
+        async with _serve(app) as client:
+            await app.state.gate.set_batch_cap(0)
+            assert (
+                await asyncio.wait_for(_post(client, "sk-pipeline", "expiry"), timeout=1)
+            ).status_code == 200
+            assert upstream.started == ["expiry"]
+
+    asyncio.run(scenario())

@@ -26,6 +26,8 @@ export interface AppEnv {
    * served. Production never sets this.
    */
   demoIdentities: boolean;
+  /** Fixed principal for an explicitly isolated, single-operator server. */
+  singleOperator: string | null;
   /** Serve read-only catalog queries to a caller nobody identified. Closed by default. */
   anonymousRead: boolean;
   /**
@@ -52,6 +54,12 @@ export function loadEnv(overrides: Partial<NodeJS.ProcessEnv> = process.env): Ap
     overrides.FLAKEGRAPH_REPOSITORY_ROOT ?? cwd,
   );
   const configuredState = overrides.FLAKEGRAPH_APP_STATE_ROOT?.trim();
+  const singleOperator = overrides.FLAKEGRAPH_SINGLE_OPERATOR?.trim().toUpperCase() || null;
+  if (singleOperator && (!/^[^\s@]+@[^\s@]+$/.test(singleOperator) ||
+      [overrides.FLAKEGRAPH_TRUST_IDENTITY_HEADERS, overrides.FLAKEGRAPH_APP_REQUIRE_SIGN_IN,
+        overrides.FLAKEGRAPH_SNOWFLAKE_HOSTED, overrides.FLAKEGRAPH_DEMO_IDENTITIES].some(isTruthy))) {
+    throw new Error("FLAKEGRAPH_SINGLE_OPERATOR requires an isolated server, a valid operator address, and no identity gate or demo identities.");
+  }
   return {
     repositoryRoot,
     stateRoot: path.resolve(
@@ -69,6 +77,7 @@ export function loadEnv(overrides: Partial<NodeJS.ProcessEnv> = process.env): Ap
     snowflakeHosted: isTruthy(overrides.FLAKEGRAPH_SNOWFLAKE_HOSTED),
     requireSignIn: isTruthy(overrides.FLAKEGRAPH_APP_REQUIRE_SIGN_IN),
     demoIdentities: isTruthy(overrides.FLAKEGRAPH_DEMO_IDENTITIES),
+    singleOperator,
     anonymousRead: isTruthy(overrides.FLAKEGRAPH_APP_ANONYMOUS_READ),
     sourceRoots: parsePathList(overrides.FLAKEGRAPH_APP_SOURCE_ROOTS),
   };

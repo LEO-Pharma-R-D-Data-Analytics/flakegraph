@@ -113,3 +113,20 @@ def test_image_bases_are_digest_pinned_and_quiet() -> None:
                 continue
             assert "@sha256:" in line, (path, line)
         assert "HF_HUB_DISABLE_TELEMETRY=1" in dockerfile, path
+
+
+def test_container_project_installs_include_declared_license_materials() -> None:
+    """Project wheels and runtime trees carry the declared notices in both images."""
+
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    for image in ("Dockerfile", "Dockerfile.spark"):
+        dockerfile = Path(image).read_text(encoding="utf-8")
+        installed_at = dockerfile.rindex("uv sync --locked")
+        for license_file in metadata["project"]["license-files"]:
+            copies = [
+                line
+                for line in dockerfile[:installed_at].splitlines()
+                if line.startswith("COPY ") and license_file in line.split()
+            ]
+            assert copies, (image, license_file)
+            assert f"/app/{license_file}" in dockerfile[dockerfile.index("chmod") :]

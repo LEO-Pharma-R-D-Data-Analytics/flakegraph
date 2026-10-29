@@ -459,8 +459,9 @@ modelServing:
     # batch prefill takes seconds during which the person's stream gets
     # nothing. So, while any request of a class not listed here is in flight
     # on an engine, new generation requests of the listed classes wait in the
-    # sidecar (already running batch keeps decoding, which is cheap). They are
-    # released together when the reply has fully left; past holdSeconds one
+    # sidecar. Held calls still awaiting upstream response headers are cancelled
+    # and receive 503 with Retry-After: 0; callers retry within their retry budget.
+    # Waiting calls are released when the reply has fully left; past holdSeconds one
     # is let through every trickleSeconds so a long agentic session keeps
     # its engine mostly to itself without stopping batch there outright.
     # An empty list disables the gate.
@@ -816,7 +817,8 @@ controlPlane:
   # Empty follows image.tag. Set it to ship a console-only change without
   # restarting the workers and the finalizer, which share image.tag.
   imageTag: ""
-  enabled: true
+  # Enable with the protected sign-in gate, or an explicitly isolated operator.
+  enabled: false
   service:
     port: 3000
   # The control plane owns state of its own: its run catalog, uploads awaiting
@@ -856,12 +858,12 @@ controlPlane:
           matchLabels:
             app.kubernetes.io/name: traefik
   auth:
-    # Refuse to serve an anonymous viewer. Off by default so a local or
-    # single-operator deployment works without a gate; turn it on wherever
-    # the application is reachable by more than the person who installed it.
-    # Identity comes from the gate in front of the ingress (ingress.authProxy),
-    # never from the application itself.
+    # A shared console requires ingress.authProxy and its NetworkPolicy.
+    # An isolated port-forwarded console can instead pin one operator address.
+    # Everyone able to reach that console acts as this operator; no identity
+    # can be assumed from the UI, and public ingress is refused in this mode.
     required: false
+    singleOperator: ""
   # Questions asked over a finished graph go to the gateway as an interactive
   # consumer. The Secret holds a LiteLLM virtual key scoped to the alias named
   # here; with no Secret the console still serves graphs, but not questions.
@@ -1338,11 +1340,11 @@ workers:
       # call - it also reads its window, grounds the reply and stores the
       # result, and the pool runs the call-free compaction stages too - so one
       # slot per sequence leaves engines idle. At 1.5 the engines run at their
-      # sequence limit with a short waiting queue behind them. An interactive
-      # request goes to the head of that queue by priority, but a running batch
-      # request is never evicted, so it waits for the next sequence to free.
-      # Lower this toward 1 to keep sequences free for people at the cost of
-      # idle engine time.
+      # sequence limit with a short waiting queue behind them. With the
+      # interactive-first gate disabled, native priority takes the next free
+      # sequence without evicting running batch work. With the gate enabled,
+      # held calls awaiting upstream headers may be cancelled and retried.
+      # Lower this toward 1 to keep free capacity at the cost of idle engine time.
       sequenceOversubscription: 1.5
       # The requests an external provider serves this fleet at once, which the
       # chart cannot see. Read only when modelServing is off and maxReplicas is

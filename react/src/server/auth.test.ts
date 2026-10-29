@@ -18,6 +18,7 @@ async function console_(flags: Record<string, string>) {
   delete process.env.FLAKEGRAPH_TRUST_IDENTITY_HEADERS;
   delete process.env.FLAKEGRAPH_APP_REQUIRE_SIGN_IN;
   delete process.env.FLAKEGRAPH_DEMO_IDENTITIES;
+  delete process.env.FLAKEGRAPH_SINGLE_OPERATOR;
   delete process.env.FLAKEGRAPH_APP_ANONYMOUS_READ;
   Object.assign(process.env, flags);
   resetAppEnv();
@@ -31,6 +32,24 @@ describe("authorizeRequest", () => {
     await expect(authorizeRequest(new Headers({ "x-auth-request-email": "mallory@example.test" }))).rejects.toThrow(
       /Sign in/,
     );
+  });
+
+  it("pins an explicitly isolated console to the configured operator", async () => {
+    await console_({ FLAKEGRAPH_SINGLE_OPERATOR: "operator@example.test" });
+    await assumeIdentity({ userName: "someone-else", roles: [], role: "operator" });
+    const authorized = await authorizeRequest(new Headers({ "x-auth-request-email": "mallory@example.test" }));
+    expect(authorized.mode).toBe("operator");
+    expect(authorized.viewer.userName).toBe("OPERATOR@EXAMPLE.TEST");
+    expect(authorized.assumed).toBe(false);
+    const { secret } = await createApiKey("initial-key", authorized.viewer.userName);
+    expect((await authorizeRequest(new Headers({ authorization: `Bearer ${secret}` }))).mode).toBe("machine");
+  });
+
+  it("refuses isolated operator configuration mixed with trusted identity or required sign-in", async () => {
+    for (const name of ["FLAKEGRAPH_TRUST_IDENTITY_HEADERS", "FLAKEGRAPH_APP_REQUIRE_SIGN_IN", "FLAKEGRAPH_DEMO_IDENTITIES"]) {
+      await console_({ FLAKEGRAPH_SINGLE_OPERATOR: "operator@example.test", [name]: "1" });
+      await expect(authorizeRequest(new Headers())).rejects.toThrow(/isolated server/);
+    }
   });
 
   it("serves the gate's viewer, and refuses a caller the gate never saw", async () => {

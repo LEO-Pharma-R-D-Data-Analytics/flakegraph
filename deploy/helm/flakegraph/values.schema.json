@@ -1096,6 +1096,10 @@
           "properties": {
             "required": {
               "type": "boolean"
+            },
+            "singleOperator": {
+              "type": "string",
+              "pattern": "^$|^[^\\s@]+@[^\\s@]+$"
             }
           }
         },

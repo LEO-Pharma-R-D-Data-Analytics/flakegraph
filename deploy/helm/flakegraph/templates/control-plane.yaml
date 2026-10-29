@@ -1,5 +1,13 @@
 {{- if .Values.controlPlane.enabled }}
 {{- $controlPlane := .Values.controlPlane }}
+{{- $gated := and .Values.ingress.enabled .Values.ingress.authProxy.enabled }}
+{{- $operator := $controlPlane.auth.singleOperator }}
+{{- if and $operator (or .Values.ingress.enabled $controlPlane.auth.required) }}
+{{- fail "controlPlane.auth.singleOperator requires ingress.enabled=false and auth.required=false; isolate the Service and use a local port-forward" }}
+{{- end }}
+{{- if not (or $gated $operator) }}
+{{- fail "controlPlane.enabled requires a protected ingress.authProxy gate or an explicit isolated controlPlane.auth.singleOperator address" }}
+{{- end }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -194,7 +202,11 @@ spec:
               value: kubernetes
             - name: FLAKEGRAPH_APP_REQUIRE_SIGN_IN
               value: {{ $controlPlane.auth.required | quote }}
-            {{- if and .Values.ingress.enabled .Values.ingress.authProxy.enabled }}
+            {{- if $operator }}
+            - name: FLAKEGRAPH_SINGLE_OPERATOR
+              value: {{ $operator | quote }}
+            {{- end }}
+            {{- if $gated }}
             # A gate already authenticated this request, so the console reads
             # who the viewer is from its headers instead of signing them in a
             # second time. Sound only because the NetworkPolicy the gate

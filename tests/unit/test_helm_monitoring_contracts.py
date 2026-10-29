@@ -285,7 +285,7 @@ def test_the_database_exposes_its_queues_through_a_kept_read_only_role() -> None
 def test_grafana_shares_the_fleets_front_door() -> None:
     """Publish Grafana behind the same gate, and let only the edge talk to it."""
 
-    rendered = _render(_ENABLED_SETTINGS)
+    rendered = _render((*_ENABLED_SETTINGS, "controlPlane.enabled=true"))
     values = _values()
     grafana_host = f"{values['monitoring']['grafana']['host']}.example.test"
     middleware = "traefik.ingress.kubernetes.io/router.middlewares"
@@ -338,8 +338,11 @@ def test_grafana_shares_the_fleets_front_door() -> None:
         _container(_pod(_one(rendered, "Deployment", f"{_FULLNAME}-app")), "control-plane")
     )
     assert console["FLAKEGRAPH_APP_GRAFANA_URL"]["value"] == f"https://{grafana_host}"
+    isolated = _render(
+        ("controlPlane.enabled=true", "controlPlane.auth.singleOperator=operator@example.test")
+    )
     without = _env(
-        _container(_pod(_one(_render(()), "Deployment", f"{_FULLNAME}-app")), "control-plane")
+        _container(_pod(_one(isolated, "Deployment", f"{_FULLNAME}-app")), "control-plane")
     )
     assert "FLAKEGRAPH_APP_GRAFANA_URL" not in without
 

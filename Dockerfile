@@ -164,7 +164,7 @@ COPY --from=kubectl /bin/kubectl /usr/local/bin/kubectl
 # an unprivileged user - could not read, and the image failed at runtime with a
 # permission error rather than at build. What the image contains should not
 # depend on the umask of whoever last copied the tree onto the builder.
-COPY --chown=kgprocessor:kgprocessor README.md /app/README.md
+COPY --chown=kgprocessor:kgprocessor README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md /app/
 COPY --chown=kgprocessor:kgprocessor src /app/src
 
 # Installed environments are self-contained. Removing uv's wheel and source
@@ -205,7 +205,7 @@ COPY --from=console-build --chown=kgprocessor:kgprocessor /console/public /app/r
 
 # Normalise read bits for the same reason: ownership alone still leaves a 0600
 # file unreadable to anything but its owner, and these are read-only inputs.
-RUN chmod -R a+rX /app/README.md /app/src /app/configs /app/react
+RUN chmod -R a+rX /app/README.md /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md /app/src /app/configs /app/react
 
 USER kgprocessor
 

@@ -1,6 +1,6 @@
 # FlakeGraph Helm chart
 
-Deploys the FlakeGraph worker pools, the console, the LiteLLM gateway, the
+Deploys the FlakeGraph worker pools, the optional console, the LiteLLM gateway, the
 document-parsing plane and, optionally, an in-cluster vLLM serving plane with
 priority-aware placement, on any Kubernetes 1.28 or newer. The full guide is
 [docs/kubernetes-fleet.md](../../../docs/kubernetes-fleet.md); this file is the
@@ -30,6 +30,8 @@ Nothing beyond Kubernetes itself. With the shipped `values.yaml`:
   `models` list to forward every alias to an OpenAI-compatible provider
   instead; the engines, the placement router and the sidecar keys are then
   not rendered.
+- The console is disabled until its protected gate or isolated fixed-principal
+  admission mode is configured.
 - The ingress is a plain `networking.k8s.io/v1` Ingress with no gate and no
   edge compression (`ingress.controller: none`).
 - Every pod runs non-root with a read-only root filesystem, the LiteLLM
@@ -87,6 +89,32 @@ after install. Which ones are needed depends on the features enabled.
 
 The console's Role may `get` exactly these Secrets by name and nothing else;
 it never lists the namespace.
+
+Spark finalizers receive `KG_DISTRIBUTED_SPARK_PROVIDER_SECRET_REFS` as a JSON
+map from environment variable names to `Secret-name:key` references. The chart
+derives it from the driver's provider mappings and gateway virtual key so
+executors use those same bindings. Standalone Spark installations must set
+`distributed.spark_provider_secret_refs` explicitly; `spark_provider_secret`
+alone is retained for configuration compatibility and does not infer key names.
+Credentials are never copied into literal executor environment values.
+
+## Console admission
+
+The console is disabled by default. Enable `controlPlane.enabled` with the
+protected `ingress.authProxy` gate and its ingress-only NetworkPolicy for a
+shared installation; the DGX profile configures this path. Initial admission
+comes from the gate, so a signed-in viewer can mint console API keys.
+
+For an isolated single-operator installation, leave `ingress.enabled=false`
+and explicitly set `controlPlane.auth.singleOperator` to the operator's
+address alongside `controlPlane.enabled=true`. Reach it with an operator-owned
+local port-forward and restrict access to its ClusterIP Service to trusted
+workloads. Everyone able to reach this console acts as that fixed principal;
+there is no sign-in challenge. This mode accepts neither caller identity
+headers nor UI identity switching and cannot be combined with ingress,
+`auth.required`, or demo identities. An initial browser session already has
+the named principal and can create its first API key. The application otherwise
+remains closed to unidentified callers.
 
 ## Ingress controllers and the sign-in gate
 

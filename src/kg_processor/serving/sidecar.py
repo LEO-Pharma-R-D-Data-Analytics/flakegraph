@@ -94,6 +94,10 @@ STAMPED_PATHS = frozenset(
     }
 )
 
+# Every enabled generation route participates in admission. Anthropic messages
+# uses vLLM's trusted priority header rather than a JSON priority field.
+GENERATION_PATHS = STAMPED_PATHS | {"/v1/messages"}
+
 # The balancer's own route. vLLM serves nothing here, so the sidecar can own
 # it without shadowing an engine path.
 ADMISSION_ROUTE = "/flakegraph/admission"
@@ -350,7 +354,7 @@ class AdmissionGate:
 
         return bool(self._held_classes)
 
-    def set_batch_cap(self, cap: int | None) -> None:
+    async def set_batch_cap(self, cap: int | None) -> None:
         """Set how many held-class requests may run here, or ``None`` for no cap.
 
         The setting carries a time to live. A balancer that stops calling -
@@ -359,9 +363,12 @@ class AdmissionGate:
         ordinary behaviour on its own.
         """
 
-        self._batch_cap = cap
-        self._cap_expires_at = None if cap is None else time.monotonic() + self._cap_ttl_seconds
-        self._metrics.batch_cap.set(-1 if cap is None else cap)
+        condition = self._cond()
+        async with condition:
+            self._batch_cap = cap
+            self._cap_expires_at = None if cap is None else time.monotonic() + self._cap_ttl_seconds
+            self._metrics.batch_cap.set(-1 if cap is None else cap)
+            condition.notify_all()
 
     @property
     def batch_cap(self) -> int | None:
@@ -392,12 +399,14 @@ class AdmissionGate:
     def holds(self, consumer_class: str, route: str) -> bool:
         """Whether a request of this class on this route is subject to the gate."""
 
-        return self.enabled and route in STAMPED_PATHS and consumer_class in self._held_classes
+        return self.enabled and route in GENERATION_PATHS and consumer_class in self._held_classes
 
     def protects(self, consumer_class: str, route: str) -> bool:
         """Whether a request of this class on this route holds the gate shut."""
 
-        return self.enabled and route in STAMPED_PATHS and consumer_class not in self._held_classes
+        return (
+            self.enabled and route in GENERATION_PATHS and consumer_class not in self._held_classes
+        )
 
     def _cond(self) -> asyncio.Condition:
         if self._condition is None:
@@ -461,6 +470,8 @@ class AdmissionGate:
                         wait = self._trickle_seconds - (now - self._last_trickle)
                     else:
                         wait = deadline - now
+                    if self._cap_expires_at is not None:
+                        wait = min(wait, max(0.0, self._cap_expires_at - now))
                     try:
                         await asyncio.wait_for(condition.wait(), timeout=max(wait, 0.01))
                     except TimeoutError:
@@ -675,7 +686,14 @@ def create_app(
             request.method,
             route,
             params=request.query_params,
-            headers=_forwarded_headers(request.headers),
+            headers=_forwarded_headers(
+                request.headers,
+                priority=(
+                    resolved.priority_for(accounting.consumer_class)
+                    if route == "/v1/messages" and accounting is not None
+                    else None
+                ),
+            ),
             content=body,
         )
         try:
@@ -846,7 +864,7 @@ async def _admission(
         return JSONResponse({"error": "batch_cap must be an integer or null"}, status_code=400)
     if cap is not None and cap < 0:
         return JSONResponse({"error": "batch_cap must not be negative"}, status_code=400)
-    gate.set_batch_cap(cap)
+    await gate.set_batch_cap(cap)
     return JSONResponse(gate.state())
 
 
@@ -898,18 +916,22 @@ def _stamped_body(
         return body, None
     payload.pop(PRIORITY_FIELD, None)
     priority: int | None = None
-    if route in STAMPED_PATHS:
+    if route in GENERATION_PATHS:
         priority = keyring.priority_for(consumer_class)
-        payload[PRIORITY_FIELD] = priority
+        if route in STAMPED_PATHS:
+            payload[PRIORITY_FIELD] = priority
     return json.dumps(payload).encode("utf-8"), priority
 
 
-def _forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:
+def _forwarded_headers(
+    headers: Mapping[str, str], *, priority: int | None = None
+) -> dict[str, str]:
     """Drop connection-scoped headers, the caller's credential, and priority hints.
 
     The engine has no authentication of its own, so relaying the client's key
     would only write it into another process's logs. Length is dropped because
     stamping changes it, and httpx recomputes it from the body it is given.
+    A trusted server priority is added only for routes using vLLM's header.
     """
 
     forwarded: dict[str, str] = {}
@@ -920,6 +942,8 @@ def _forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:
         if lowered in {"host", "content-length", "authorization"}:
             continue
         forwarded[name] = value
+    if priority is not None:
+        forwarded["X-Vllm-Priority"] = str(priority)
     return forwarded
 
 

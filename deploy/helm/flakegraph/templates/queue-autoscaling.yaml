@@ -47,15 +47,12 @@ spec:
             - type: Percent
               value: {{ $root.Values.autoscaling.scaleDown.percentPerPeriod }}
               periodSeconds: {{ $root.Values.autoscaling.scaleDown.periodSeconds }}
-  # One trigger per priority band. KEDA takes the largest replica count any
-  # trigger asks for, so a small urgent run can scale a drained pool up on its
-  # own instead of waiting for a bulk backlog to justify the capacity. Workers
-  # then claim by priority, which is what actually serves the urgent run first.
-  # A pod runs `slots` tasks, so each trigger asks for one pod per that many.
+  # Both priority bands use this pool. Sum demand before dividing by slots so
+  # urgent arrivals can add capacity even while bulk tasks occupy existing pods.
+  # Task claiming still gives interactive work priority.
   triggers:
-  {{- range $band := list "interactive" "bulk" }}
     - type: postgresql
-      name: {{ printf "%s-%s" $poolName $band }}
+      name: {{ printf "%s-total" $poolName }}
       metricType: AverageValue
       metadata:
         {{- if $root.Values.database.cloudNativePG.enabled }}
@@ -74,12 +71,10 @@ spec:
             {{ mul $maxReplicas $pool.slots }}
           )), 0)
           FROM flakegraph_worker_demand
-          WHERE priority_band = '{{ $band }}'
-          AND stage IN (
+          WHERE stage IN (
               {{- range $index, $stage := $pool.stages }}{{ if $index }}, {{ end }}'{{ $stage }}'{{- end }}
           )
         targetQueryValue: {{ $pool.slots | quote }}
-  {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

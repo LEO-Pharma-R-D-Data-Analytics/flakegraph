@@ -94,6 +94,7 @@ pinned and installed with `helm upgrade --install` so a re-run converges:
 Then install the chart from a copy of the example values:
 
 ```bash
+mkdir -p deploy/private
 cp deploy/examples/dgx-spark-k3s-values.yaml deploy/private/fleet-values.yaml
 cp configs/app-defaults.yaml deploy/private/fleet-config.yaml
 # point draftModelSeed.image at your registry, or set providedExternally

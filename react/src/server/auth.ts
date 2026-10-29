@@ -14,12 +14,13 @@ export class RequestRefused extends Error {
  *
  * - `machine`: it presented an API key the workspace holds.
  * - `gate`: a trusted sign-in gate wrote who the viewer is.
+ * - `operator`: an isolated deployment pins one operator in server configuration.
  * - `demo`: the console runs with demo identities, a laptop or rehearsal
  *   device with no gate; the viewer is whoever was assumed, or nobody.
  * - `anonymous`: nobody vouched for the caller; only read-only queries are
  *   served, and only where the deployment opened them.
  */
-export type AuthorizationMode = "machine" | "gate" | "demo" | "anonymous";
+export type AuthorizationMode = "machine" | "gate" | "operator" | "demo" | "anonymous";
 
 export interface Authorized {
   viewer: Viewer;
@@ -65,6 +66,12 @@ export async function authorizeRequest(headers: Headers, workspace?: WorkspaceSt
   }
   if (env.requireSignIn) {
     throw new RequestRefused(SIGN_IN_HINT);
+  }
+  if (env.singleOperator) {
+    return {
+      viewer: { userName: env.singleOperator, email: env.singleOperator, roles: [] },
+      mode: "operator", machine: null, assumed: false,
+    };
   }
   // A gate that is trusted outranks the workspace's own answer: an assumed
   // identity is a rehearsal device, never an override of the gate.

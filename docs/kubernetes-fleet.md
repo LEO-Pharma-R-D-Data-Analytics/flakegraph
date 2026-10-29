@@ -246,6 +246,21 @@ both the worker and Spark images. Back up PostgreSQL and object storage as one
 system: PostgreSQL contains task/version metadata and object storage contains
 the referenced payloads.
 
+### Coordination Schema And Worker Upgrades
+
+The coordination schema includes per-claim task tokens, a durable consumption
+ledger, and graph-deletion reservations. Initialization migrates supported schema
+versions before workers claim tasks. Stop workers and the console before a schema
+upgrade, run the database-bootstrap Job with the target image, and restart every
+worker with that same image. Task mutations require the opaque token returned by
+their claim; workers from a different image must not share the upgraded queue.
+
+Graph deletion reserves a terminal graph before removing external objects. New
+submissions and retries for that graph are refused until deletion finishes. A
+failed deletion keeps its reservation; repeat the graph deletion command to
+finish cleanup. Only one deletion executor can remove a graph at a time, and
+live sibling task or publication leases must finish before removal begins.
+
 ### Capacity Sizing
 
 Size PostgreSQL for durable coordination records, indexes, retries, and retained
@@ -276,10 +291,19 @@ outside Git under the ignored `deploy/private/` directory:
 | Profile | Start here when |
 | --- | --- |
 | `deploy/examples/minimal-cpu-values.yaml` | There is no GPU and no operator: an Ollama or OpenAI-compatible endpoint, built-in text extraction, fixed replicas. Runs on kind. |
-| `deploy/examples/external-provider-values.yaml` | Inference is a hosted or remote provider; the cluster runs the workers, the console, the gateway and the parsing pool. |
+| `deploy/examples/external-provider-values.yaml` | Inference is a hosted or remote provider; the cluster runs workers, the gateway and parsing. Enable the console only after choosing its admission mode. |
 | `deploy/examples/dgx-spark-k3s-values.yaml` | A bare-metal GPU fleet like the [reference](reference-dgx-spark-fleet.md). |
 
+The ungated defaults and CPU/external-provider profiles leave the console
+disabled. For a shared console, enable `controlPlane.enabled` together with
+the protected sign-in gate and its NetworkPolicy. An isolated operator can
+instead set `controlPlane.auth.singleOperator` to their address, leave ingress
+off, and use a local port-forward; every caller reaching that Service acts as
+that operator. Restrict Service access to trusted workloads. See the chart's
+[console admission contract](../deploy/helm/flakegraph/README.md#console-admission).
+
 ```bash
+mkdir -p deploy/private
 cp deploy/examples/external-provider-values.yaml deploy/private/fleet-values.yaml
 cp configs/app-defaults.yaml deploy/private/fleet-config.yaml
 
@@ -411,9 +435,10 @@ and a hardware-specific profile lives in an example file rather than here.
 
 #### Queue-jump, never evict
 
-Interactive work waits for a running batch request to finish, then goes first. A
-running request is never preempted and a sequence slot is never held empty, so
-compute already paid for is never discarded.
+With `modelServing.sidecar.interactiveFirst.heldClasses: []`, native engine
+scheduling lets interactive work take the next free sequence slot. Priority
+alone does not preempt a running request. The enabled interactive-first gate
+adds the cancellation and retry policy described below.
 
 `--scheduling-policy priority` orders the *waiting* queue on `(priority,
 arrival_time)`. vLLM has no waiting-to-running preemption, which for this policy
@@ -496,7 +521,10 @@ cannot lift the cap that is holding batch back.
 
 Each engine binds `127.0.0.1` and a sidecar owns the only exposed port. The
 sidecar authenticates the caller, maps the key to a consumer class, strips any
-client-supplied `priority`, and stamps the server's band before forwarding.
+client-supplied priority fields and headers, and stamps the server's band
+before forwarding. JSON generation routes receive the `priority` body field;
+`/v1/messages` receives a trusted `X-Vllm-Priority` header supported by the
+pinned vLLM Anthropic adapter. Both participate in held/protected admission.
 
 The stamp is unconditional because vLLM reads a missing `priority` as `0`, which
 is its *highest* band — an unstamped request would be promoted, not dropped. For
@@ -695,11 +723,12 @@ one pool can claim from the same run at the same instant without one of them
 missing a poll. The whole claim reads a few thousand buffers: about 2 ms of
 execution on a 220,000-task queue across twenty runs.
 
-KEDA gets one trigger per band from `flakegraph_worker_demand`, which reads the
-band off the run, so a small interactive run can scale a drained pool up on its
-own rather than waiting for a bulk backlog to justify the capacity. The
-queue-depth metrics carry the same band label. Nothing is preempted: a band
-decides what is claimed next, and a running task always finishes.
+KEDA sums both priority bands from `flakegraph_worker_demand` into one demand
+metric per shared worker pool. Dividing that total by slots per pod adds
+capacity for interactive arrivals even while bulk tasks occupy existing pods.
+The pool ceiling still bounds the result. Queue-depth metrics retain their
+band labels, and task claiming gives interactive work priority. A task's
+priority band decides what is claimed next without cancelling running tasks.
 
 ### Verifying a fleet
 
@@ -1062,10 +1091,12 @@ A slot is not always in a model call - it also reads its window, grounds the
 reply, stores the result, and the pool runs the call-free compaction stages -
 so one slot per sequence leaves engines idle. The default
 `sequenceOversubscription` of 1.5 keeps every engine at its sequence limit with
-a short waiting queue behind it. The engine serves an interactive request from
-the head of that queue by priority but never evicts a running batch request, so
-a person's request waits for the next sequence to free; lower the factor toward
-1 to keep sequences free for people at the cost of idle engine time. For an
+a short waiting queue behind it. With interactive-first admission disabled,
+native engine priority puts interactive work at the head of the waiting queue
+without evicting running batch work; lower the factor toward 1 to keep sequences
+free for people at the cost of idle engine time. With the gate enabled, held
+batch calls awaiting upstream headers can instead be cancelled and retried as
+described under interactive-first admission. For an
 external provider the chart cannot see its capacity: set
 `workers.extract.autoscaling.providerSequences` to the concurrent requests the
 provider grants the fleet's key, or give `maxReplicas` outright. Increase
