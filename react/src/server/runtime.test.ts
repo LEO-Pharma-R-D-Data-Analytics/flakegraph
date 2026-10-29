@@ -102,6 +102,10 @@ describe("local runtime", () => {
     expect(objects[0]?.modifiedAt).toBe("2026-09-18T10:00:00+00:00");
     const limited = await Effect.runPromise(runtime.listSourceObjects({ kind: "s3", bucket: "test-corpora" }, 1));
     expect(limited).toHaveLength(1);
+    const failure = await Effect.runPromise(runtime.listSourceObjects({ kind: "s3", bucket: "missing" }))
+      .then(() => "unexpected success", (error: unknown) => String(error));
+    expect(failure).toContain("Listing the s3 source failed");
+    expect(failure).not.toContain("NoSuchBucket");
     // The listing's config is a scratch file the browser cleans up after itself.
     expect(await readdir(path.join(stateRoot, "browse"))).toEqual([]);
     await expect(

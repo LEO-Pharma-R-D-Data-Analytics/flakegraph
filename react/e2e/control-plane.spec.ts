@@ -399,13 +399,12 @@ test.describe("ingestion", () => {
     await expect(page.getByTestId("source-count")).toContainText("41 KB");
     await expect(page.getByTestId("credit-envelope")).toBeVisible({ timeout: 20_000 });
     await expect(start).toBeEnabled();
-    // A bucket that cannot be listed closes Start again and says why. A
-    // missing bucket is a refusal, so it is not retried: even in a hidden
-    // tab, where a retry would wait for focus, the answer arrives at once
-    // instead of a listing left pending.
+    // A refused listing disables Start, including in a hidden tab. Provider
+    // diagnostics stay server-side; the browser receives a safe action hint.
     await setVisibility(page, "hidden");
     await page.getByLabel("Bucket").fill("missing");
-    await expect(page.getByText(/NoSuchBucket/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Listing the s3 source failed/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/NoSuchBucket/)).not.toBeVisible();
     await expect(start).toBeDisabled();
     await setVisibility(page, "visible");
     await expect(page.getByText(/Listing failed/)).toBeVisible();
