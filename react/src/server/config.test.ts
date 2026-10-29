@@ -143,6 +143,20 @@ describe("the run's ontology", () => {
     expect(open.relation_rewrites).toEqual([]);
   });
 
+  it("keeps a rewrite that names a kept relation by an alias or another spelling", () => {
+    const base = {
+      entity_types: [{ name: "PERSON" }],
+      relation_types: [{ name: "RELATED_TO", aliases: ["associated with"] }, { name: "KNOWS" }],
+      relation_rewrites: [{ relation: "associated with", to: "knows", source_types: ["PERSON"] }],
+    };
+    const kept = {
+      entityTypes: [{ name: "PERSON", description: "" }],
+      relationTypes: [{ name: "RELATED_TO", description: "" }, { name: "KNOWS", description: "" }],
+      relations: "guided" as const,
+    };
+    expect(ontologyProfile(kept, base).relation_rewrites).toEqual(base.relation_rewrites);
+  });
+
   it("reads a profile back into the same terms, and is read back from a run's config", async () => {
     const roundTrip = ontologySelectionFromProfile(ontologyProfile(selection));
     expect(roundTrip.entityTypes.map((term) => term.name)).toEqual(["PERSON", "TECHNIQUE"]);

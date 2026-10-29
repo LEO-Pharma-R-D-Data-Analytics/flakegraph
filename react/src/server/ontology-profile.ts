@@ -108,10 +108,16 @@ export function ontologyProfile(selection: OntologySelection, base: Profile | nu
     delete profile.fallback_relation;
   }
   if (Array.isArray(profile.relation_rewrites)) {
+    // A rewrite may name a relation by any label the pipeline resolves it by.
+    const relationLabels = new Set(
+      relationTypes.flatMap((relation) =>
+        [relation.name, ...(Array.isArray(relation.aliases) ? relation.aliases : [])].map((label) => normalizeLabel(String(label))),
+      ),
+    );
     profile.relation_rewrites = profile.relation_rewrites.filter((value) => {
       if (!value || typeof value !== "object") return false;
       const rewrite = value as Profile;
-      if (!relationNames.has(String(rewrite.relation)) || !relationNames.has(String(rewrite.to))) return false;
+      if (!relationLabels.has(normalizeLabel(String(rewrite.relation))) || !relationLabels.has(normalizeLabel(String(rewrite.to)))) return false;
       return ["source_types", "target_types"].every((side) =>
         !Array.isArray(rewrite[side]) || (rewrite[side] as unknown[]).every((type) => entityNames.has(String(type))),
       );
