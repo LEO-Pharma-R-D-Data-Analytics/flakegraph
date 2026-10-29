@@ -105,7 +105,8 @@ If the user names a document, pass its exact document id from listDocuments. Omi
             });
           }
         }
-        const mergedDocumentIds = intersectIds(documentIds, session.scope?.documentIds);
+        // An empty list from the model means no restriction, as an omitted one does.
+        const mergedDocumentIds = intersectIds(documentIds?.length ? documentIds : undefined, session.scope?.documentIds);
         if (documentIds?.length && session.scope?.documentIds?.length && (!mergedDocumentIds || mergedDocumentIds.length === 0)) {
           return structuredObservation("GRAPH_DOCUMENT_SCOPE_MISMATCH", {
             requestedDocumentIds: documentIds,

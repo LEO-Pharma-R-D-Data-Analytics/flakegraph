@@ -176,6 +176,8 @@ function restrictToDocuments(dataset: GraphDataset, documentIds: string[]): Grap
     relation_type: edge.relation_type ?? edge.type ?? "RELATED_TO",
     description: scopedDescription(edge, "edge"),
     source_chunk_ids: scopedChunks(edge, "edge"),
+    // Numeric ranking signals carry no text from other documents.
+    ...pick(edge, ["weight", "confidence"]),
   }));
   const names = new Map(nodes.map((node) => [String(node.id), node.name]));
   const communities = dataset.communities.flatMap((community) => {

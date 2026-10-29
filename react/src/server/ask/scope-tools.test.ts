@@ -81,7 +81,7 @@ const mixedCorpus: GraphDataset = {
   edges: [
     { id: "shared-edge", source_node_id: "acme", target_node_id: "anchor", relation_type: "WORKS_WITH",
       description: `Acme and Anchor launch ${excludedFact}.`, quantities: [{ text: excludedFact }],
-      extra: excludedFact, source_chunk_ids: ["chunk-a", "chunk-b"] },
+      extra: excludedFact, source_chunk_ids: ["chunk-a", "chunk-b"], weight: 2, confidence: 0.9 },
     { id: "excluded-edge", source_node_id: "acme", target_node_id: "anchor", relation_type: "OWNS",
       description: excludedFact, source_chunk_ids: ["chunk-b"] },
   ],
@@ -127,6 +127,8 @@ describe("document-scoped corpus narratives", () => {
     expect(scoped.edges.map((edge) => edge.id)).toEqual(["shared-edge"]);
     expect(scoped.edges[0]?.description).toBe(selectedQuote);
     expect(scoped.edges[0]?.quantities).toBeUndefined();
+    // Ranking signals are numbers, not prose from other documents, so they stay.
+    expect([scoped.edges[0]?.weight, scoped.edges[0]?.confidence]).toEqual([2, 0.9]);
     expect(scoped.communities.map((community) => community.id)).toEqual(["mixed-report", "shared-only-report"]);
     for (const community of scoped.communities) {
       expect(community.title).toBe("Acme, Anchor");
@@ -170,6 +172,13 @@ describe("document-scoped corpus narratives", () => {
     }, options);
     expect(JSON.stringify(selectedInTool)).not.toContain(excludedFact);
     expect(JSON.stringify(selectedInTool)).toContain(selectedQuote);
+    // An empty selection from the model restricts nothing, as an omitted one does.
+    const unrestricted = await globalTools.searchGraph.execute!({ query: "Acme", mode: "local", documentIds: [] }, options);
+    expect(JSON.stringify(unrestricted)).toContain("Acme");
+    expect(JSON.stringify(unrestricted)).not.toContain("GRAPH_EMPTY_RESULT");
+    const narrowed = await tools.searchGraph.execute!({ query: "Acme", mode: "local", documentIds: [] }, options);
+    expect(JSON.stringify(narrowed)).not.toContain(excludedFact);
+    expect(JSON.stringify(narrowed)).toContain("Acme");
     expect(fetch).not.toHaveBeenCalled();
   });
 
