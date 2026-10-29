@@ -516,10 +516,10 @@ def test_export_publishes_matching_report_and_consumption(tmp_path: Path, encode
     assert metrics["consumption"]["events"][0]["usage"]["total_tokens"] == 20
 
 
-def test_export_requires_explicit_diagnostic_selection_and_keeps_previous_output(
+def test_export_attaches_diagnostics_only_to_one_selected_job_and_run(
     tmp_path: Path,
 ) -> None:
-    """Ambiguous reports cannot be attached to an unrelated job or replace a valid snapshot."""
+    """Several reports are never combined: unselected, the tables export alone."""
 
     output = tmp_path / "kg"
     rows = _graph_rows(encoded=True)
@@ -530,11 +530,13 @@ def test_export_requires_explicit_diagnostic_selection_and_keeps_previous_output
     for table in ("KG_RUN_REPORT", "KG_GRAPH_METRICS"):
         payload = {"graph_id": "g1", "job_id": "job-2", "run_id": "run-2"}
         rows[table].append(("job-2", "run-2", json.dumps(payload)))
-    with pytest.raises(ValueError, match="multiple jobs/runs"):
-        export_snowflake_graph(
-            _settings(), "g1", output, connector_factory=lambda **_: _diagnostic_connection(rows)
-        )
-    assert (output / "run_report.json").read_bytes() == before
+    unselected = export_snowflake_graph(
+        _settings(), "g1", output, connector_factory=lambda **_: _diagnostic_connection(rows)
+    )
+    assert (unselected["job_id"], unselected["run_id"]) == (None, None)
+    assert unselected["tables"]["nodes"] == 2
+    assert json.loads((output / "run_report.json").read_text()) == {}
+    assert json.loads((output / "graph_metrics.json").read_text()) == {}
     connection = _diagnostic_connection(rows)
     export_snowflake_graph(
         _settings(),

@@ -245,7 +245,8 @@ flakegraph snowflake export --graph-id <graph-id> --job-id <job-id> \
 
 The local `run_report.json` and `graph_metrics.json` retain consumption and
 quality diagnostics. If one job has several diagnostic pairs, select its
-batch/content run with `--run-id`. Without selectors the export requires one
-unique diagnostic job/run and refuses ambiguity. A legacy graph without
-diagnostic tables can export its tables without selectors. The selectors
-choose diagnostics; they do not recreate a historical graph-table snapshot.
+batch/content run with `--run-id`. Without selectors the diagnostics are
+exported when the graph holds exactly one job/run pair; a graph with several,
+or with no diagnostic tables, exports its graph tables with empty diagnostics.
+Selectors that match several pairs or none are refused. The selectors choose
+diagnostics; they do not recreate a historical graph-table snapshot.

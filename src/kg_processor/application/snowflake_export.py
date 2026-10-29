@@ -87,8 +87,9 @@ def export_snowflake_graph(
     """Write one graph's Snowflake tables to a local artifact directory.
 
     Returns per-table row counts and the selected diagnostic identity. Reports
-    and metrics must identify one job/run pair; callers exporting a graph with
-    several persisted pairs select it explicitly rather than combining unrelated
+    and metrics come from one job/run pair: the graph's only one, or the one the
+    caller selects. A graph holding several pairs exports its tables without
+    diagnostics unless one is selected, rather than combining unrelated
     consumption. Graph tables represent the graph's current Snowflake snapshot.
     """
 
@@ -227,9 +228,10 @@ def _read_diagnostics(
 ) -> tuple[dict[str, dict[str, Any]], tuple[str, str] | None]:
     """Select one shared job/run identity for persisted report and metrics.
 
-    A file-queue graph can have diagnostics from several batches. There is no
-    meaningful single batch total to infer from their ordering or to attach to
-    an arbitrary caller's run, so ambiguity requires an explicit selector.
+    A file-queue graph can have diagnostics from several batches, and a revised
+    graph from several runs. There is no meaningful single total to infer from
+    their ordering, so without a selector such a graph exports no diagnostics,
+    and a selector that matches several pairs is refused.
     """
 
     selected: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
@@ -265,15 +267,15 @@ def _read_diagnostics(
                 raise ValueError(f"Snowflake {table} contains duplicate job/run diagnostics")
             records[identity] = payload
             identities.add(identity)
-    if len(identities) > 1:
+    if len(identities) != 1:
+        if job_id is None and run_id is None:
+            return {name: {} for name in _DIAGNOSTIC_TABLES}, None
         raise ValueError(
             "Snowflake graph has diagnostics for multiple jobs/runs; "
             "select one with --job-id and, when needed, --run-id"
+            if identities
+            else "No Snowflake diagnostics match the requested graph/job/run"
         )
-    if not identities:
-        if job_id is not None or run_id is not None:
-            raise ValueError("No Snowflake diagnostics match the requested graph/job/run")
-        return {name: {} for name in _DIAGNOSTIC_TABLES}, None
     identity = next(iter(identities))
     diagnostics = {name: records.get(identity, {}) for name, records in selected.items()}
     report = diagnostics["run_report"]
