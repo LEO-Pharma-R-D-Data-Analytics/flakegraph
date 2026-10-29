@@ -32,8 +32,8 @@ describe("graph-geometry", () => {
   });
 
   it("keeps a large sparse graph finite under the force layout", () => {
-    // A long edge across the initial ring used to overshoot until every
-    // coordinate was NaN and the canvas painted nothing.
+    // Long edges across a sparse initial ring must retain finite coordinates
+    // so the layout and camera can render every node.
     const nodes = Array.from({ length: 400 }, (_, index) => ({ id: `node_${index}`, name: `n${index}` }));
     const edges = [
       { id: "e1", source_node_id: "node_0", target_node_id: "node_200", relation_type: "x" },

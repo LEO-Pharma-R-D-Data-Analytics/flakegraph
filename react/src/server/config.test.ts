@@ -126,6 +126,23 @@ describe("the run's ontology", () => {
     expect(open.relation_types).toEqual([]);
   });
 
+  it("removes fallback and complete rewrite rules whose vocabulary was removed", () => {
+    const base = {
+      fallback_relation: "RELATED_TO",
+      entity_types: [{ name: "PERSON" }, { name: "PLACE" }],
+      relation_types: [{ name: "RELATED_TO" }, { name: "LOCATED_IN" }],
+      relation_rewrites: [
+        { relation: "RELATED_TO", to: "LOCATED_IN", source_types: ["PERSON"], target_types: ["PLACE"] },
+        { relation: "RELATED_TO", to: "RELATED_TO", source_types: ["PERSON"] },
+      ],
+    };
+    const kept = { entityTypes: [{ name: "PERSON", description: "" }], relationTypes: [{ name: "RELATED_TO", description: "" }], relations: "guided" as const };
+    expect(ontologyProfile(kept, base)).toMatchObject({ fallback_relation: "RELATED_TO", relation_rewrites: [base.relation_rewrites[1]] });
+    const open = ontologyProfile({ ...kept, relations: "open" }, base);
+    expect(open).not.toHaveProperty("fallback_relation");
+    expect(open.relation_rewrites).toEqual([]);
+  });
+
   it("reads a profile back into the same terms, and is read back from a run's config", async () => {
     const roundTrip = ontologySelectionFromProfile(ontologyProfile(selection));
     expect(roundTrip.entityTypes.map((term) => term.name)).toEqual(["PERSON", "TECHNIQUE"]);
@@ -176,6 +193,13 @@ describe("the owner a run records", () => {
 });
 
 describe("caller provider options", () => {
+  it("accepts only credential-bearing Snowflake fields", async () => {
+    const snowflake = { account: "synthetic-account", user: "synthetic-user", database: "GRAPH", schema: "PUBLIC", warehouse: "COMPUTE", role: null, host: null, authenticator: null, bulkStage: "@GRAPH.PUBLIC.LOAD", credentialEnvironmentVariable: "KG_SNOWFLAKE_PASSWORD", credentialField: "host" };
+    await expect(buildRunConfig(request({ output: { kind: "snowflake", workspacePath: "/graphs/graph_1", snowflake } }))).rejects.toThrow(/credential field/);
+  });
+  it("refuses environment interpolation before config composition", async () => {
+    await expect(buildRunConfig(request({ source: { path: "/corpus/${KG_SECRET}" } }))).rejects.toThrow(/operator profiles/);
+  });
   it("refuses executable and provider overrides while accepting data settings", async () => {
     for (const options of [{ tesseract_command: "untrusted" }, { mineru_command: "untrusted" }, { tesseract_pdf_renderer_command: "untrusted" }, { provider: "untrusted" }]) {
       await expect(buildRunConfig(request({ ocr: { ...request().ocr, options } }))).rejects.toThrow(/Unsupported ocr option/);

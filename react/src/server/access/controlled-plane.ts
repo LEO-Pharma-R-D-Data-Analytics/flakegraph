@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import { listRunRecords, snapshotFromRecord } from "../catalog";
 import path from "node:path";
 import { Effect } from "effect";
 import { canonicalPath, isWithin } from "../confine";
@@ -59,6 +60,32 @@ const RUN_SCAN_LIMIT = 5_000;
 
 /** A list's size when the caller names none. */
 const DEFAULT_LIST_LIMIT = 100;
+
+/**
+ * Conflicting graph/run mutations share a queue across request contexts. The
+ * file-backed deployment uses one console process per canonical state root.
+ * Reserve every resource synchronously before waiting so multi-key requests
+ * cannot overtake each other or deadlock by acquiring their keys in stages.
+ */
+const mutationQueues = new Map<string, Promise<void>>();
+
+async function withResources<A>(stateRoot: string, resources: readonly string[], action: () => Promise<A>): Promise<A> {
+  const root = canonicalPath(stateRoot);
+  const keys = [...new Set(resources)].map((resource) => JSON.stringify([root, resource]));
+  const previous = keys.map((key) => mutationQueues.get(key) ?? Promise.resolve());
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  for (const key of keys) mutationQueues.set(key, held);
+  try {
+    await Promise.all(previous);
+    return await action();
+  } finally {
+    release();
+    for (const key of keys) {
+      if (mutationQueues.get(key) === held) mutationQueues.delete(key);
+    }
+  }
+}
 
 /**
  * Wrap a runtime so everything it serves is limited to one viewer's graphs.
@@ -196,11 +223,17 @@ class ControlledPlane implements GraphAccessPlane {
   }
 
   preflight(request: IngestionRequest) {
-    return Effect.flatMap(this.checkRequest(request), () => this.inner.preflight(request));
+    return this.attempt(
+      () => this.withRequest(request, () => Effect.runPromise(this.inner.preflight(request))),
+      "Unable to preflight run",
+    );
   }
 
   previewConfig(request: IngestionRequest) {
-    return Effect.flatMap(this.checkRequest(request), () => this.inner.previewConfig(request));
+    return this.attempt(
+      () => this.withRequest(request, () => Effect.runPromise(this.inner.previewConfig(request))),
+      "Unable to preview configuration",
+    );
   }
 
   cluster(namespace: string) {
@@ -314,8 +347,7 @@ class ControlledPlane implements GraphAccessPlane {
   // -------------------------------------------------------------- changes
 
   submit(request: IngestionRequest): Effect.Effect<RunSnapshot, ControlPlaneError> {
-    return this.attempt(async () => {
-      await Effect.runPromise(this.checkRequest(request));
+    return this.attempt(() => this.withRequest(request, async () => {
       const existing = await this.exists(request.graphId);
       if (existing) {
         await this.roleOrFail(request.graphId, "write");
@@ -335,15 +367,15 @@ class ControlledPlane implements GraphAccessPlane {
       const state = await loadAccess(this.stateRoot);
       const record = effectiveRecord(state, snapshot.graphId, ownerHint(snapshot));
       return annotate(snapshot, record, roleFor(record, this.who, this.policy));
-    }, "Unable to submit run");
+    }), "Unable to submit run");
   }
 
   cancel(runId: string) {
     return this.guardRun(runId, "write", () => this.inner.cancel(runId));
   }
 
-  retry(runId: string) {
-    return this.guardRun(runId, "write", () => this.inner.retry(runId));
+  retry(runId: string, skippedFileIds: readonly string[] = []) {
+    return this.guardRun(runId, "write", () => this.inner.retry(runId, skippedFileIds));
   }
 
   recover(runId: string) {
@@ -361,13 +393,13 @@ class ControlledPlane implements GraphAccessPlane {
    * upload folders only this graph used - and the access record last.
    */
   deleteGraph(graphId: string): Effect.Effect<Record<string, number>, ControlPlaneError> {
-    return this.attempt(async () => {
+    return this.attempt(() => this.mutation(graphId, [], async () => {
       await this.roleOrFail(graphId, "owner");
-      const runs = (await this.allRuns()).filter((run) => run.graphId === graphId);
+      const runs = await this.affectedRuns(graphId);
       const active = runs.filter((run) => isActiveStatus(run.status));
       if (active.length > 0) {
         throw invalid(
-          `This graph still has ${active.length === 1 ? "a run" : `${active.length} runs`} under way; cancel ${active.length === 1 ? "it" : "them"} before deleting the graph.`,
+          `This graph still has ${active.length === 1 ? "a run" : `${active.length} runs`} under way; cancel ${active.length === 1 ? "it" : "them"} before deleting the graph. Active runs: ${active.map((run) => `${run.runId} (${String(run.raw.runtime ?? this.runtime)})`).join(", ")}.`,
         );
       }
       const footprint = await graphFootprint(this.stateRoot, graphId, runs.map((run) => run.runId));
@@ -381,13 +413,13 @@ class ControlledPlane implements GraphAccessPlane {
       });
       this.runsMemo = null;
       return { ...removed, runs: footprint.runIds.length, uploads: uploads.length };
-    }, "Unable to delete graph");
+    }), "Unable to delete graph");
   }
 
   deletionPreview(graphId: string): Effect.Effect<GraphDeletionPreview, ControlPlaneError> {
-    return this.attempt(async () => {
+    return this.attempt(() => this.mutation(graphId, [], async () => {
       await this.roleOrFail(graphId, "owner");
-      const runs = (await this.allRuns()).filter((run) => run.graphId === graphId);
+      const runs = await this.affectedRuns(graphId);
       const footprint = await graphFootprint(this.stateRoot, graphId, runs.map((run) => run.runId));
       const record = recordFor(await loadAccess(this.stateRoot), graphId);
       return {
@@ -398,10 +430,45 @@ class ControlledPlane implements GraphAccessPlane {
         uploads: (await exclusiveUploads(this.stateRoot, footprint)).length,
         sharedWith: (record?.grants ?? []).map((item) => item.principal).sort(),
       };
-    }, "Unable to read what deleting this graph removes");
+    }), "Unable to read what deleting this graph removes");
   }
 
   // ------------------------------------------------------------ internals
+
+  /** Checks and runtime side effects share the same graph/run reservation. */
+  private withRequest<A>(request: IngestionRequest, action: () => Promise<A>): Promise<A> {
+    return this.mutation(request.graphId, [request.jobId], async () => {
+      await Effect.runPromise(this.checkRequest(request));
+      return action();
+    });
+  }
+
+  private mutation<A>(graphId: string, runIds: readonly string[], action: () => Promise<A>): Promise<A> {
+    return withResources(this.stateRoot, [`graph:${graphId}`, ...runIds.map((runId) => `run:${runId}`)], async () => {
+      // A queued mutation must re-read state after the preceding owner releases
+      // it; an earlier read on this request context may already be stale.
+      this.runsMemo = null;
+      try {
+        return await action();
+      } finally {
+        this.runsMemo = null;
+      }
+    });
+  }
+
+  /** The same complete catalog footprint the graph-wide cleanup removes. */
+  private async affectedRuns(graphId: string): Promise<readonly RunSnapshot[]> {
+    const records = await listRunRecords(this.stateRoot, Number.MAX_SAFE_INTEGER, { includeWithdrawn: true });
+    const runs = new Map(records
+      .filter(({ record }) => record.graphId === graphId)
+      .map(({ record }) => [record.runId, snapshotFromRecord(record, { raw: { runtime: record.runtime } })]));
+    // The selected runtime can report live progress newer than its catalog.
+    // Other runtimes' active catalog rows remain a conservative deletion guard.
+    for (const run of await Effect.runPromise(this.inner.listRuns(Number.MAX_SAFE_INTEGER))) {
+      if (run.graphId === graphId) runs.set(run.runId, { ...run, raw: { ...run.raw, runtime: this.runtime } });
+    }
+    return [...runs.values()];
+  }
 
   private guardRun<A>(runId: string, needed: GraphRole, action: () => Effect.Effect<A, ControlPlaneError>) {
     return Effect.flatMap(this.requireRun(runId, needed), () => action());

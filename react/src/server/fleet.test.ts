@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composeAgainstFleet, fleetProfileFromPayload, fleetProvider } from "./fleet";
+import { fleetSelection, providerSelection } from "./providers";
 
 const payload = {
   namespace: "flakegraph",
@@ -23,6 +24,16 @@ const payload = {
 };
 
 describe("fleet profile", () => {
+  it("carries the generic HTTP OCR schema and reads its endpoint into the form", () => {
+    const contract = { endpoint: "https://ocr.example.test/parse", api_key: "${KG_OCR_KEY}", text_field: "payload.text", page_field: "payload.pages", api_key_header: "X-Key", api_key_prefix: "", timeout_seconds: 45, max_response_bytes: 1024 };
+    const profile = fleetProfileFromPayload({ ...payload, config: { ...payload.config, ocr: { provider: "generic_http" }, generic_http_ocr: contract } })!;
+    const selection = fleetSelection(profile, "ocr", providerSelection("ocr", "builtin_text"));
+    expect(selection).toMatchObject({ provider: "generic_http", endpoint: contract.endpoint });
+    const config = { generic_http_ocr: { endpoint: contract.endpoint, max_response_bytes: 4096, text_field: "wrong" } };
+    composeAgainstFleet(config, profile);
+    expect(config.generic_http_ocr).toEqual({ ...contract, max_response_bytes: 4096 });
+    expect(fleetSelection({ config: { ocr: { provider: "mineru_api", mineru_api_url: "https://mineru.example.test" } } }, "ocr", selection).endpoint).toBe("https://mineru.example.test");
+  });
   it("reads what the workers mount", () => {
     const profile = fleetProfileFromPayload(payload);
     expect(profile?.configMap).toBe("flakegraph-config");

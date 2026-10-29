@@ -20,9 +20,10 @@ export interface FleetProfile {
 // Whole sections the worker digest covers. The profile's version replaces the
 // request's; the keys the runtime excludes from the digest (endpoints, keys,
 // parallelism) are re-applied from the request afterwards.
-export const FLEET_SECTIONS = ["ocr", "llm", "embedding", "graph", "extractors"] as const;
+export const FLEET_SECTIONS = ["ocr", "generic_http_ocr", "llm", "embedding", "graph", "extractors"] as const;
 export const DEPLOYMENT_LOCAL_KEYS: Record<string, readonly string[]> = {
   ocr: ["mineru_api_url", "timeout_seconds"],
+  generic_http_ocr: ["endpoint", "api_key", "max_response_bytes"],
   llm: ["timeout_seconds"],
   embedding: ["batch_size", "device"],
   graph: [

@@ -180,9 +180,10 @@ export const appRouter = router({
     cancel: protectedProcedure.input(runIdInput).mutation(({ ctx, input }) =>
       runEffect(ctx.controlPlane.cancel(input.runId)),
     ),
-    retry: protectedProcedure.input(runIdInput).mutation(({ ctx, input }) =>
-      runEffect(ctx.controlPlane.retry(input.runId)),
-    ),
+    retry: protectedProcedure.input(runIdInput).mutation(async ({ ctx, input }) => {
+      const workspace = await loadWorkspace();
+      return runEffect(ctx.controlPlane.retry(input.runId, workspace.skippedFiles[input.runId] ?? []));
+    }),
     recover: protectedProcedure.input(runIdInput).mutation(({ ctx, input }) =>
       runEffect(ctx.controlPlane.recover(input.runId)),
     ),

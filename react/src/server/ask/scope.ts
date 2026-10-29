@@ -9,7 +9,7 @@ export function scopeDataset(dataset: GraphDataset, scope?: AskScope): GraphData
     return dataset;
   }
   let next = dataset;
-  if (scope?.documentIds && scope.documentIds.length > 0) {
+  if (scope?.documentIds !== undefined) {
     next = restrictToDocuments(next, scope.documentIds);
   }
   if (!scope?.search && !(scope?.communityIds && scope.communityIds.length > 0)) {
@@ -61,7 +61,7 @@ export function isScoped(scope?: AskScope): boolean {
   return Boolean(
     scope?.search ||
       (scope?.communityIds && scope.communityIds.length > 0) ||
-      (scope?.documentIds && scope.documentIds.length > 0),
+      scope?.documentIds !== undefined,
   );
 }
 
@@ -72,70 +72,179 @@ export function mergeAskScope(base?: AskScope, extra?: AskScope): AskScope | und
   const documentIds = intersectIds(extra?.documentIds, base?.documentIds);
   const communityIds = extra?.communityIds ?? base?.communityIds;
   const search = extra?.search ?? base?.search;
-  if (!search && !(communityIds && communityIds.length) && !(documentIds && documentIds.length)) {
+  if (!search && !(communityIds && communityIds.length) && documentIds === undefined) {
     return undefined;
   }
   return { search, communityIds, documentIds };
 }
 
 export function intersectIds(requested?: string[], existing?: string[]): string[] | undefined {
-  if (requested && requested.length > 0 && existing && existing.length > 0) {
+  if (requested !== undefined && existing !== undefined) {
     const allowed = new Set(existing);
     return requested.filter((id) => allowed.has(id));
   }
-  if (requested && requested.length > 0) {
-    return requested;
-  }
-  if (existing && existing.length > 0) {
-    return existing;
-  }
+  if (requested !== undefined) return requested;
+  if (existing !== undefined) return existing;
   return undefined;
 }
 
+/** Rebuild document context from source rows, never from merged corpus prose. */
 function restrictToDocuments(dataset: GraphDataset, documentIds: string[]): GraphDataset {
+  const requested = new Set(documentIds);
+  const documents = dataset.documents.filter((document) =>
+    [document.id, document.document_id, document.file_id].some((id) => requested.has(String(id ?? ""))),
+  );
   const allowed = new Set(documentIds);
-  const documents = dataset.documents.filter((document) => allowed.has(String(document.id ?? "")));
-  const evidence = dataset.evidence.filter((row) => allowed.has(documentIdOf(row)));
-  const chunks = dataset.chunks.filter((row) => allowed.has(documentIdOf(row)));
+  for (const document of documents) {
+    for (const id of [document.id, document.document_id, document.file_id]) {
+      if (id != null) allowed.add(String(id));
+    }
+  }
+  const evidence = dataset.evidence.filter((row) => allowed.has(documentIdOf(row))).map(sourceRow);
+  const chunks = dataset.chunks.filter((row) => allowed.has(documentIdOf(row))).map(sourceRow);
+  const chunkIds = new Set(chunks.map((row) => String(row.id ?? row.chunk_id ?? "")));
+  for (const row of evidence) {
+    if (row.chunk_id) chunkIds.add(String(row.chunk_id));
+  }
   const relationIds = new Set<string>();
   const entityIds = new Set<string>();
   for (const row of [...evidence, ...chunks]) {
-    const relationId = evidenceRelationId(row) ?? "";
-    const entityId = evidenceEntityId(row) ?? "";
-    if (relationId) {
-      relationIds.add(relationId);
-    }
-    if (entityId) {
-      entityIds.add(entityId);
-    }
+    const relationId = evidenceRelationId(row);
+    const entityId = evidenceEntityId(row);
+    if (relationId) relationIds.add(relationId);
+    if (entityId) entityIds.add(entityId);
   }
-  const linkedEdges = dataset.edges.filter((edge) => relationIds.has(String(edge.id ?? "")));
+  const hasDocumentSupport = (row: Record<string, unknown>) =>
+    sourceChunkIds(row).some((id) => chunkIds.has(id)) ||
+    sourceFileIds(row).some((id) => allowed.has(id));
+  const linkedEdges = dataset.edges.filter((edge) =>
+    relationIds.has(String(edge.id ?? "")) || hasDocumentSupport(edge),
+  );
   for (const edge of linkedEdges) {
     const ends = edgeEnds(edge);
     entityIds.add(ends.source);
     entityIds.add(ends.target);
   }
+  for (const node of dataset.nodes) {
+    if (hasDocumentSupport(node)) entityIds.add(String(node.id ?? ""));
+  }
   if (entityIds.size === 0 && (evidence.length > 0 || chunks.length > 0)) {
-    const haystack = [...evidence, ...chunks]
-      .map((row) => String(row.quote ?? row.sentence ?? row.content ?? row.text ?? "").toLowerCase())
-      .join(" ");
+    const haystack = [...evidence, ...chunks].map(sourceText).join(" ").toLowerCase();
     for (const node of dataset.nodes) {
       const name = nodeName(node).toLowerCase();
-      if (name && haystack.includes(name)) {
-        entityIds.add(String(node.id ?? ""));
-      }
+      if (name && haystack.includes(name)) entityIds.add(String(node.id ?? ""));
     }
   }
-  const nodes = dataset.nodes.filter((node) => entityIds.has(String(node.id ?? "")));
+  const evidenceByEntity = groupSources(evidence, evidenceEntityId);
+  const evidenceByRelation = groupSources(evidence, evidenceRelationId);
+  const chunksById = new Map(chunks.map((row) => [String(row.id ?? row.chunk_id ?? ""), row]));
+  const subjectEvidence = (row: Record<string, unknown>, kind: "node" | "edge") =>
+    (kind === "node" ? evidenceByEntity : evidenceByRelation).get(String(row.id ?? "")) ?? [];
+  const scopedDescription = (row: Record<string, unknown>, kind: "node" | "edge") => {
+    const direct = subjectEvidence(row, kind);
+    const supporting = new Set(sourceChunkIds(row).filter((chunkId) => chunkIds.has(chunkId)));
+    const sources = direct.length > 0 ? direct : [...supporting].flatMap((id) => {
+      const row = chunksById.get(id);
+      return row ? [row] : [];
+    });
+    return [...new Set(sources.map(sourceText).filter(Boolean))].join("\n");
+  };
+  const scopedChunks = (row: Record<string, unknown>, kind: "node" | "edge") => {
+    const ids = new Set(sourceChunkIds(row).filter((id) => chunkIds.has(id)));
+    for (const item of subjectEvidence(row, kind)) {
+      if (item.chunk_id) ids.add(String(item.chunk_id));
+    }
+    return [...ids];
+  };
+  // Canonical identity is useful across documents, but aliases, descriptions,
+  // quantities and arbitrary metadata can contain assertions from other files.
+  const nodes = dataset.nodes.filter((node) => entityIds.has(String(node.id ?? ""))).map((node) => ({
+    id: node.id,
+    name: nodeName(node),
+    primary_type: node.primary_type ?? node.type ?? "Unknown",
+    description: scopedDescription(node, "node"),
+    source_chunk_ids: scopedChunks(node, "node"),
+  }));
   const nodeIds = new Set(nodes.map((node) => String(node.id ?? "")));
-  const edges = dataset.edges.filter((edge) => {
+  const edges = linkedEdges.filter((edge) => {
     const ends = edgeEnds(edge);
-    const id = String(edge.id ?? "");
-    return nodeIds.has(ends.source) && nodeIds.has(ends.target) && (relationIds.size === 0 || relationIds.has(id));
+    return nodeIds.has(ends.source) && nodeIds.has(ends.target);
+  }).map((edge) => ({
+    id: edge.id,
+    source_node_id: edgeEnds(edge).source,
+    target_node_id: edgeEnds(edge).target,
+    relation_type: edge.relation_type ?? edge.type ?? "RELATED_TO",
+    description: scopedDescription(edge, "edge"),
+    source_chunk_ids: scopedChunks(edge, "edge"),
+  }));
+  const names = new Map(nodes.map((node) => [String(node.id), node.name]));
+  const communities = dataset.communities.flatMap((community) => {
+    const members = communityMemberIds(community).filter((id) => nodeIds.has(id));
+    if (members.length === 0) return [];
+    const memberIds = new Set(members);
+    const descriptions = [
+      ...nodes.filter((node) => memberIds.has(String(node.id))),
+      ...edges.filter((edge) => memberIds.has(edge.source_node_id) && memberIds.has(edge.target_node_id)),
+    ].map((row) => row.description).filter(Boolean);
+    if (descriptions.length === 0) return [];
+    return [{
+      id: community.id,
+      level: community.level ?? 0,
+      member_node_ids: members,
+      title: members.map((id) => names.get(id) ?? id).join(", "),
+      summary: [...new Set(descriptions)].join("\n"),
+      findings: [],
+    }];
   });
-  const communities = dataset.communities.filter((community) => {
-    const members = communityMemberIds(community);
-    return members.some((id) => nodeIds.has(id));
-  });
-  return { ...dataset, documents, evidence, chunks, nodes, edges, communities };
+  return {
+    graphId: dataset.graphId,
+    documents: documents.map((document) => pick(document, [
+      "id", "document_id", "file_id", "filename", "name", "title", "source_uri", "path", "uri", "summary",
+    ])),
+    evidence, chunks, nodes, edges, communities,
+    runReport: {}, graphMetrics: {}, discardedWindows: [], rejectedRecords: [], failedDocuments: [],
+  };
+}
+
+function pick(row: Record<string, unknown>, fields: string[]): Record<string, unknown> {
+  return Object.fromEntries(fields.filter((field) => row[field] != null).map((field) => [field, row[field]]));
+}
+
+/** Keep the selected document's raw text and provenance, without derived metadata. */
+function sourceRow(row: Record<string, unknown>): Record<string, unknown> {
+  return pick(row, [
+    "id", "chunk_id", "document_id", "file_id", "documentId", "entity_id", "node_id",
+    "relation_id", "edge_id", "subject_id", "subject_kind", "quote", "sentence", "content", "text",
+    "page_number", "start_offset", "end_offset", "chunk_index", "method",
+  ]);
+}
+
+function sourceText(row: Record<string, unknown>): string {
+  return String(row.quote ?? row.sentence ?? row.content ?? row.text ?? "");
+}
+
+function sourceChunkIds(row: Record<string, unknown>): string[] {
+  const ids = row.source_chunk_ids ?? row.sourceChunkIds;
+  return Array.isArray(ids) ? ids.map(String) : [];
+}
+
+function sourceFileIds(row: Record<string, unknown>): string[] {
+  const ids = row.source_file_ids ?? row.sourceFileIds;
+  const single = row.source_file_id ?? row.file_id ?? row.document_id;
+  return [...(Array.isArray(ids) ? ids.map(String) : []), ...(single != null ? [String(single)] : [])];
+}
+
+function groupSources(
+  rows: Record<string, unknown>[],
+  subjectId: (row: Record<string, unknown>) => string | null,
+): Map<string, Record<string, unknown>[]> {
+  const groups = new Map<string, Record<string, unknown>[]>();
+  for (const row of rows) {
+    const id = subjectId(row);
+    if (!id) continue;
+    const sources = groups.get(id) ?? [];
+    sources.push(row);
+    groups.set(id, sources);
+  }
+  return groups;
 }

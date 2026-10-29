@@ -37,6 +37,18 @@ export async function loadLocalGraph(directory: string, options: GraphLoadOption
     "communities",
     limits.communities,
   );
+  const findings = await readOptionalTable(directory, "community_findings");
+  const findingsByCommunity = new Map<string, Record<string, unknown>[]>();
+  for (const finding of findings) {
+    const id = String(finding.community_id ?? "");
+    const rows = findingsByCommunity.get(id) ?? [];
+    rows.push(finding);
+    findingsByCommunity.set(id, rows);
+  }
+  for (const community of communities) {
+    const rows = findingsByCommunity.get(String(community.id ?? ""));
+    if (rows) community.findings = rows;
+  }
   const [evidence, evidenceCount] = await readTable(
     directory,
     "evidence",

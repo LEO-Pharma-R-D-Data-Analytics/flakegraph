@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, stat, writeFile, mkdir } from "node:fs/promises";
+import { readFile, stat, writeFile, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
@@ -16,6 +16,7 @@ import { composeAgainstFleet, type FleetProfile } from "./fleet";
 import { cliEnvironment } from "./cli";
 import { ontologyProfile, ontologySelectionFromProfile } from "./ontology-profile";
 import { samplePackProfile } from "./sample-packs";
+import { assertNoRequestInterpolation, assertProviderCredentialDestinations } from "./provider-credentials";
 
 const PARALLELISM_SETTINGS = [
   "extraction_parallelism",
@@ -132,6 +133,7 @@ export async function buildRunConfig(
   fleet: FleetProfile | null = null,
   owner: string | null = null,
 ): Promise<Record<string, unknown>> {
+  assertNoRequestInterpolation(request);
   rejectLiteralSecrets(request.source, "source");
   const config = await loadBaseConfig(request.baseConfigPath);
   inlineOntologyProfile(config, ontologyProfilePath(config, request.baseConfigPath));
@@ -191,8 +193,24 @@ export async function buildRunConfig(
   if (fleet) {
     composeAgainstFleet(config, fleet);
   }
+  assertProviderCredentialDestinations(config, await operatorProviderProfiles(fleet));
   rejectLiteralSecrets(config);
   return config;
+}
+
+/** Only server-managed profiles and the mounted fleet profile authorize credential destinations. */
+async function operatorProviderProfiles(fleet: FleetProfile | null): Promise<Record<string, unknown>[]> {
+  const files: string[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(file);
+      else if (/\.ya?ml$/i.test(entry.name)) files.push(file);
+    }
+  };
+  await visit(path.join(appEnv().repositoryRoot, "configs"));
+  const profiles = await Promise.all(files.map((file) => loadBaseConfig(file).catch(() => null)));
+  return [...profiles.filter((profile): profile is Record<string, unknown> => profile !== null), ...(fleet ? [fleet.config] : [])];
 }
 
 export async function writeRunConfig(
@@ -423,7 +441,11 @@ function snowflakeOutputConfig(request: IngestionRequest): Record<string, unknow
     bulk_stage: snowflake.bulkStage,
   };
   if (snowflake.credentialEnvironmentVariable) {
-    connection[snowflake.credentialField || "password"] = `\${${snowflake.credentialEnvironmentVariable}}`;
+    const field = snowflake.credentialField || "password";
+    if (!["password", "oauth_token", "private_key_path"].includes(field)) {
+      throw new Error("Snowflake credential field must be password, oauth_token, or private_key_path");
+    }
+    connection[field] = `\${${snowflake.credentialEnvironmentVariable}}`;
   }
   return { snowflake: connection };
 }

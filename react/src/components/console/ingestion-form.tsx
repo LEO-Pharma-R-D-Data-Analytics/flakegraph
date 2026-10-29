@@ -31,6 +31,7 @@ import {
   LLM_PROVIDERS,
   OCR_PROVIDERS,
   defaultProvider,
+  fleetSelection,
   providerSelection,
   selectionFromOption,
 } from "@/server/providers";
@@ -1568,27 +1569,6 @@ function ProviderFields({
       ) : null}
     </div>
   );
-}
-
-function fleetSelection(
-  profile: { config: Record<string, unknown> },
-  section: "ocr" | "llm" | "embedding",
-  fallback: ProviderSelection,
-): ProviderSelection {
-  const values = profile.config[section];
-  if (!values || typeof values !== "object" || Array.isArray(values)) {
-    return fallback;
-  }
-  const record = values as Record<string, unknown>;
-  if (typeof record.provider !== "string" || !record.provider) {
-    return fallback;
-  }
-  return {
-    ...providerSelection(section, record.provider),
-    model: typeof record.model === "string" ? record.model : null,
-    endpoint: typeof record.endpoint === "string" && !record.endpoint.startsWith("${") ? record.endpoint : null,
-    dimension: typeof record.dimension === "number" ? record.dimension : null,
-  };
 }
 
 /** The Snowflake account a fleet's workers write with, when its profile names one. */

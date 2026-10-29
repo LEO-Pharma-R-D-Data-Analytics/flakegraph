@@ -1,7 +1,26 @@
-import { describe, expect, it } from "vitest";
-import { scopeDataset } from "./scope";
+import { describe, expect, it, vi } from "vitest";
+import { completeAsk } from "./complete";
+import { POST } from "@/app/api/ask/route";
+import { lexicalAsk } from "./lexical";
+import { mergeAskScope, scopeDataset } from "./scope";
 import { createAskTools } from "./tools";
 import type { GraphDataset } from "../protocol/schema";
+
+vi.mock("./model", () => ({
+  resolveAskModel: () => null,
+  probeAskModel: async () => null,
+}));
+
+vi.mock("./load", () => ({
+  loadAskRunGraph: async () => ({ dataset: mixedCorpus, snapshot: { graphId: "mixed-corpus" } }),
+  perspectiveScope: async () => undefined,
+}));
+vi.mock("../auth", () => ({
+  authorizeRequest: async () => ({ mode: "demo" }),
+  mayMutate: () => true,
+  refusal: () => null,
+  SIGN_IN_HINT: "Test authentication required",
+}));
 
 const dataset: GraphDataset = {
   graphId: "g", nodes: [
@@ -40,4 +59,172 @@ describe("Ask retrieval boundaries", () => {
     expect(JSON.stringify(entities)).not.toContain('"id":"excluded"');
     expect(JSON.stringify(kept)).toContain("Albatross");
   });
+});
+
+
+const selectedQuote = "Acme collaborates with Anchor in the selected document.";
+const excludedFact = "ExcludedOnlySentinel";
+const mixedCorpus: GraphDataset = {
+  graphId: "mixed-corpus",
+  documents: [
+    { id: "doc-a", filename: "selected.txt", related_files: [excludedFact] },
+    { id: "doc-b", filename: "excluded.txt" },
+  ],
+  nodes: [
+    { id: "acme", name: "Acme", primary_type: "ORG", description: `Acme owns ${excludedFact}.`,
+      aliases: [excludedFact], extra: excludedFact, source_chunk_ids: ["chunk-a", "chunk-b"] },
+    { id: "anchor", name: "Anchor", primary_type: "ORG", description: `Anchor uses ${excludedFact}.`,
+      source_chunk_ids: ["chunk-a", "chunk-b"] },
+    { id: "beta", name: "Beta", primary_type: "ORG", description: excludedFact,
+      source_chunk_ids: ["chunk-b"] },
+  ],
+  edges: [
+    { id: "shared-edge", source_node_id: "acme", target_node_id: "anchor", relation_type: "WORKS_WITH",
+      description: `Acme and Anchor launch ${excludedFact}.`, quantities: [{ text: excludedFact }],
+      extra: excludedFact, source_chunk_ids: ["chunk-a", "chunk-b"] },
+    { id: "excluded-edge", source_node_id: "acme", target_node_id: "anchor", relation_type: "OWNS",
+      description: excludedFact, source_chunk_ids: ["chunk-b"] },
+  ],
+  communities: [
+    { id: "mixed-report", level: 0, member_node_ids: ["acme", "anchor", "beta"],
+      title: `Acme ${excludedFact}`, summary: `Acme and Beta operate ${excludedFact}.`,
+      findings: [{ summary: excludedFact, explanation: excludedFact }], extra: excludedFact },
+    { id: "shared-only-report", level: 0, member_node_ids: ["acme", "anchor"],
+      title: excludedFact, summary: excludedFact, findings: [{ summary: excludedFact }] },
+    { id: "excluded-report", level: 0, member_node_ids: ["beta"], summary: excludedFact },
+  ],
+  chunks: [
+    { id: "chunk-a", file_id: "doc-a", content: selectedQuote, metadata: { extraction: excludedFact } },
+    { id: "chunk-b", file_id: "doc-b", content: `Beta establishes ${excludedFact}.` },
+  ],
+  evidence: [
+    ...["acme", "anchor"].map((id) => ({
+      id: `a-${id}`, subject_kind: "node", subject_id: id, file_id: "doc-a", chunk_id: "chunk-a",
+      quote: selectedQuote, merged_description: excludedFact,
+    })),
+    { id: "a-edge", subject_kind: "edge", subject_id: "shared-edge", file_id: "doc-a",
+      chunk_id: "chunk-a", quote: selectedQuote },
+    { id: "b-beta", subject_kind: "node", subject_id: "beta", file_id: "doc-b",
+      chunk_id: "chunk-b", quote: excludedFact },
+    { id: "b-edge", subject_kind: "edge", subject_id: "shared-edge", file_id: "doc-b",
+      chunk_id: "chunk-b", quote: excludedFact },
+  ],
+  runReport: { extraction_trace: [excludedFact] }, graphMetrics: { details: excludedFact },
+  discardedWindows: [{ file_id: "doc-b", text: excludedFact }],
+  rejectedRecords: [{ file_id: "doc-b", text: excludedFact }],
+  failedDocuments: [{ file_id: "doc-b", error: excludedFact }],
+};
+
+
+describe("document-scoped corpus narratives", () => {
+  it("rebuilds shared descriptions and reports from selected source evidence", () => {
+    const scoped = scopeDataset(mixedCorpus, { documentIds: ["doc-a"] });
+    expect(JSON.stringify(scoped)).not.toContain(excludedFact);
+    expect(scoped.nodes.map((node) => node.id)).toEqual(["acme", "anchor"]);
+    expect(scoped.nodes.every((node) => node.description === selectedQuote)).toBe(true);
+    expect(scoped.nodes.every((node) => !node.aliases && !node.extra)).toBe(true);
+    expect(scoped.nodes.map((node) => node.source_chunk_ids)).toEqual([["chunk-a"], ["chunk-a"]]);
+    expect(scoped.edges.map((edge) => edge.id)).toEqual(["shared-edge"]);
+    expect(scoped.edges[0]?.description).toBe(selectedQuote);
+    expect(scoped.edges[0]?.quantities).toBeUndefined();
+    expect(scoped.communities.map((community) => community.id)).toEqual(["mixed-report", "shared-only-report"]);
+    for (const community of scoped.communities) {
+      expect(community.title).toBe("Acme, Anchor");
+      expect(community.summary).toBe(selectedQuote);
+      expect(community.member_node_ids).toEqual(["acme", "anchor"]);
+      expect(community.findings).toEqual([]);
+    }
+    expect(scoped.chunks[0]?.content).toBe(selectedQuote);
+    expect(scoped.evidence.every((row) => row.file_id === "doc-a")).toBe(true);
+    expect(scoped.runReport).toEqual({});
+    expect(scoped.graphMetrics).toEqual({});
+    expect(mixedCorpus.nodes[0]?.description).toContain(excludedFact);
+  });
+
+  it("keeps excluded narratives out of direct tools and every graph retrieval mode", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network allowed"));
+    const tools = createAskTools({ dataset: mixedCorpus, scope: { documentIds: ["doc-a"] } });
+    const options = { toolCallId: "scoped-fixture", messages: [], context: {} };
+    const outputs = await Promise.all([
+      tools.searchEntities.execute!({ query: "Acme" }, options),
+      tools.searchRelations.execute!({ query: "Acme" }, options),
+      tools.searchCommunities.execute!({ query: "Acme" }, options),
+      tools.getNeighborhood.execute!({ entityId: "acme", hops: 1 }, options),
+      tools.searchEvidence.execute!({ query: "Acme" }, options),
+      tools.getEntityEvidence.execute!({ entityId: "acme" }, options),
+      tools.getRelationEvidence.execute!({ relationId: "shared-edge" }, options),
+      tools.readDocumentEvidence.execute!({ documentId: "doc-a", startIndex: 0, count: 10 }, options),
+    ]);
+    for (const output of outputs) {
+      expect(JSON.stringify(output)).not.toContain(excludedFact);
+      expect(JSON.stringify(output)).toContain("Acme");
+    }
+    for (const mode of ["local", "global", "hybrid", "drift"] as const) {
+      const output = await tools.searchGraph.execute!({ query: "Acme", mode }, options);
+      expect(JSON.stringify(output)).not.toContain(excludedFact);
+      expect(JSON.stringify(output)).toContain("Acme");
+    }
+    const globalTools = createAskTools({ dataset: mixedCorpus });
+    const selectedInTool = await globalTools.searchGraph.execute!({
+      query: "Acme", mode: "global", documentIds: ["doc-a"],
+    }, options);
+    expect(JSON.stringify(selectedInTool)).not.toContain(excludedFact);
+    expect(JSON.stringify(selectedInTool)).toContain(selectedQuote);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("applies document selection through lexical and public completion entry points", async () => {
+    const answer = lexicalAsk(mixedCorpus, "Acme", "global", { documentIds: ["doc-a"] });
+    expect(answer.scoped).toBe(true);
+    expect(answer.summary).toContain(selectedQuote);
+    expect(JSON.stringify(answer)).not.toContain(excludedFact);
+    const completed = await completeAsk({
+      dataset: mixedCorpus, question: "Acme", mode: "global", documentIds: ["doc-a"],
+    });
+    expect(completed).toEqual(answer);
+    const empty = scopeDataset(mixedCorpus, { documentIds: ["missing-document"] });
+    expect(empty.nodes).toEqual([]);
+    expect(empty.edges).toEqual([]);
+    expect(empty.communities).toEqual([]);
+  });
+
+  it("preserves whole-corpus reports and merged text when no document selector is present", () => {
+    expect(scopeDataset(mixedCorpus)).toBe(mixedCorpus);
+    expect(lexicalAsk(mixedCorpus, "Acme", "global").summary).toContain(excludedFact);
+    expect(scopeDataset(mixedCorpus, { search: "Acme" }).nodes[0]?.description).toContain(excludedFact);
+  });
+});
+
+
+it("keeps a disjoint document-scope intersection empty through completion", async () => {
+  const scope = mergeAskScope({ documentIds: ["doc-a"] }, { documentIds: ["doc-b"] });
+  expect(scope?.documentIds).toEqual([]);
+  expect(scopeDataset(mixedCorpus, scope).nodes).toEqual([]);
+  const answer = await completeAsk({
+    dataset: mixedCorpus, question: "Acme", mode: "global",
+    scope: { documentIds: ["doc-a"] }, documentIds: ["doc-b"],
+  });
+  expect(answer.scoped).toBe(true);
+  expect(answer.usedCommunityReport).toBe(false);
+  expect(answer.communityIds).toEqual([]);
+  expect(JSON.stringify(answer)).not.toContain(excludedFact);
+});
+
+
+it("keeps document scope through the authorized HTTP Ask route", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network allowed"));
+  const response = await POST(new Request("https://example.invalid/api/ask", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/x-ndjson" },
+    body: JSON.stringify({
+      runId: "test-run", question: "Acme", mode: "global", documentIds: ["doc-a"], format: "ndjson",
+    }),
+  }));
+  expect(response.status).toBe(200);
+  const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+  const answer = events.find((event) => event.type === "done")?.answer;
+  expect(answer?.scoped).toBe(true);
+  expect(answer?.summary).toContain(selectedQuote);
+  expect(JSON.stringify(events)).not.toContain(excludedFact);
+  expect(fetch).not.toHaveBeenCalled();
 });

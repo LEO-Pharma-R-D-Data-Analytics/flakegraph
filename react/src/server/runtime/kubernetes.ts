@@ -453,7 +453,7 @@ export class KubernetesRuntime implements ControlPlane {
     });
   }
 
-  retry(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError> {
+  retry(runId: string, skippedFileIds: readonly string[] = []): Effect.Effect<RunSnapshot, ControlPlaneError> {
     return Effect.tryPromise({
       try: async () => {
         const record = await this.record(runId);
@@ -461,7 +461,7 @@ export class KubernetesRuntime implements ControlPlane {
           throw notFound(`Unknown Kubernetes run: ${runId}`);
         }
         if (!this.stubbed) {
-          await this.control("retry", runId, record?.configPath);
+          await this.control("retry", runId, record?.configPath, skippedFileIds.flatMap((id) => ["--skip-file-id", id]));
         }
         if (record) {
           await writeRunRecord(runDirectory(this.stateRoot, runId), {
@@ -601,8 +601,8 @@ export class KubernetesRuntime implements ControlPlane {
     return path.join(base, runId);
   }
 
-  private async control(action: "cancel" | "retry", runId: string, configPath: string | null | undefined): Promise<void> {
-    const args = ["distributed", action, "--run-id", runId];
+  private async control(action: "cancel" | "retry", runId: string, configPath: string | null | undefined, extra: readonly string[] = []): Promise<void> {
+    const args = ["distributed", action, "--run-id", runId, ...extra];
     if (configPath) {
       args.push("--config", configPath);
     }

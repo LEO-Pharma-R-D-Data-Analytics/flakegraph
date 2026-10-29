@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
 import { documentStatusesFromEvents, type DocumentStatus } from "../documents";
@@ -47,6 +47,8 @@ import { listLocalObjects, listRemoteObjects, REMOTE_SUMMARY_LIMIT, summarizeLis
 import { pidIsRunning, processRegistry, processBirth, stopLocalWorker } from "./process-registry";
 import { stringify as stringifyYaml } from "yaml";
 import { catalogWriterPrincipal } from "../workspace";
+
+const exportsInFlight = new Map<string, Promise<void>>();
 
 export class LocalRuntime implements ControlPlane {
   readonly runtime = "local" as const;
@@ -303,14 +305,45 @@ export class LocalRuntime implements ControlPlane {
   }
 
   graphDirectory(snapshot: RunSnapshot): string | null {
+    if (snapshot.storageKind === "snowflake") {
+      return path.join(this.stateRoot, "artifacts", snapshot.runId);
+    }
     return snapshot.outputPath ? this.artifactDirectory(snapshot.outputPath) : null;
   }
 
   loadRunGraph(snapshot: RunSnapshot, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError> {
+    if (snapshot.storageKind === "snowflake") {
+      return Effect.tryPromise({
+        try: async () => {
+          const directory = this.graphDirectory(snapshot)!;
+          if (!graphArtifactsExist(directory)) {
+            let pending = exportsInFlight.get(directory);
+            if (!pending) {
+              pending = this.exportSnowflakeGraph(snapshot, directory).finally(() => exportsInFlight.delete(directory));
+              exportsInFlight.set(directory, pending);
+            }
+            await pending;
+          }
+          return { ...await loadLocalGraph(directory, options), graphId: snapshot.graphId };
+        },
+        catch: (cause) => fromCause(cause, "Unable to load Snowflake graph"),
+      });
+    }
     if (!snapshot.outputPath) {
       return Effect.fail(invalid(`Run ${snapshot.runId} does not record an output directory`));
     }
     return this.loadGraph(snapshot.outputPath, snapshot.graphId, options);
+  }
+
+  private async exportSnowflakeGraph(snapshot: RunSnapshot, directory: string): Promise<void> {
+    const record = await readRunRecord(runDirectory(this.stateRoot, snapshot.runId));
+    if (!record.configPath) throw invalid(`Run ${snapshot.runId} does not record its Snowflake configuration`);
+    const result = await runFlakegraph([
+      "snowflake", "export", "--graph-id", snapshot.graphId, "--output", directory, "--config", record.configPath,
+    ], { cwd: this.repositoryRoot });
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr.trim() || `Exporting the graph of ${snapshot.runId} failed`);
+    }
   }
 
   cluster(_namespace: string): Effect.Effect<ClusterSnapshot | null, ControlPlaneError> {
@@ -434,7 +467,8 @@ export class LocalRuntime implements ControlPlane {
       status = "succeeded";
     } else if (pidIsRunning(record.pid)) {
       status = "running";
-    } else if (outputPath && graphArtifactsExist(this.artifactDirectory(outputPath))) {
+    } else if (storageKind === "local_files" && outputPath && graphArtifactsExist(this.artifactDirectory(outputPath)) &&
+      await artifactsBelongToRun(this.artifactDirectory(outputPath), record.runId, record.graphId)) {
       status = "succeeded";
     } else if (isActiveStatus(status)) {
       status = "interrupted";
@@ -464,6 +498,16 @@ export class LocalRuntime implements ControlPlane {
 
   private resolvePath(value: string): string {
     return path.isAbsolute(value) ? value : path.resolve(this.repositoryRoot, value);
+  }
+}
+
+/** Shared graph output recovers a worker only when its committed report names that run. */
+async function artifactsBelongToRun(directory: string, runId: string, graphId: string): Promise<boolean> {
+  try {
+    const report = JSON.parse(await readFile(path.join(directory, "run_report.json"), "utf8"));
+    return report?.job_id === runId && report?.graph_id === graphId;
+  } catch {
+    return false;
   }
 }
 

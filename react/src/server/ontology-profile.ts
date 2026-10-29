@@ -98,10 +98,24 @@ export function ontologyProfile(selection: OntologySelection, base: Profile | nu
     return kept;
   });
   const mode = selection.relations === "fixed" ? "closed" : selection.relations === "open" ? "open" : "hybrid";
-  return {
+  const profile: Profile = {
     ...(base ?? { name: "console", description: "Chosen on the console for this graph." }),
     mode,
     entity_types: entityTypes,
     relation_types: relationTypes,
   };
+  if (typeof profile.fallback_relation === "string" && !relationNames.has(profile.fallback_relation)) {
+    delete profile.fallback_relation;
+  }
+  if (Array.isArray(profile.relation_rewrites)) {
+    profile.relation_rewrites = profile.relation_rewrites.filter((value) => {
+      if (!value || typeof value !== "object") return false;
+      const rewrite = value as Profile;
+      if (!relationNames.has(String(rewrite.relation)) || !relationNames.has(String(rewrite.to))) return false;
+      return ["source_types", "target_types"].every((side) =>
+        !Array.isArray(rewrite[side]) || (rewrite[side] as unknown[]).every((type) => entityNames.has(String(type))),
+      );
+    });
+  }
+  return profile;
 }

@@ -1,5 +1,26 @@
 import type { ProviderSelection } from "./protocol/schema";
 
+/** The form uses each deployed transport's endpoint, including separate OCR contracts. */
+export function fleetSelection(
+  profile: { config: Record<string, unknown>; parsingEndpoint?: string | null },
+  section: "ocr" | "llm" | "embedding",
+  fallback: ProviderSelection,
+): ProviderSelection {
+  const record = profile.config[section];
+  if (!record || typeof record !== "object" || Array.isArray(record)) return fallback;
+  const values = record as Record<string, unknown>;
+  if (typeof values.provider !== "string" || !values.provider) return fallback;
+  const generic = profile.config.generic_http_ocr as Record<string, unknown> | undefined;
+  const endpoint = section === "ocr" && values.provider === "generic_http" ? generic?.endpoint :
+    section === "ocr" && values.provider === "mineru_api" ? profile.parsingEndpoint ?? values.mineru_api_url : values.endpoint;
+  return {
+    ...providerSelection(section, values.provider),
+    model: typeof values.model === "string" ? values.model : null,
+    endpoint: typeof endpoint === "string" && !endpoint.includes("${") ? endpoint : null,
+    dimension: typeof values.dimension === "number" ? values.dimension : null,
+  };
+}
+
 export interface ProviderOption {
   name: string;
   label: string;

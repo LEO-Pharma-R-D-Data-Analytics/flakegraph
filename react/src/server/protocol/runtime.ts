@@ -60,7 +60,7 @@ export interface ControlPlane {
   /** The published versions of a graph, oldest first; empty where a runtime keeps none. */
   versions(graphId: string): Effect.Effect<readonly GraphVersion[], ControlPlaneError>;
   cancel(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError>;
-  retry(runId: string): Effect.Effect<RunSnapshot, ControlPlaneError>;
+  retry(runId: string, skippedFileIds?: readonly string[]): Effect.Effect<RunSnapshot, ControlPlaneError>;
   recover(runId: string): Effect.Effect<string, ControlPlaneError>;
   renameGraph(graphId: string, displayName: string): Effect.Effect<string, ControlPlaneError>;
   loadGraph(location: string, graphId?: string | null, options?: GraphLoadOptions): Effect.Effect<GraphDataset, ControlPlaneError>;

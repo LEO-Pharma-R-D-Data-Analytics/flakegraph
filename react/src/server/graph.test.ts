@@ -6,10 +6,23 @@ import { edgeStatedTypes, loadLocalGraph } from "./graph";
 import { LocalRuntime } from "./runtime/local";
 import { Effect } from "effect";
 import { snapshotFromRecord } from "./catalog";
+import { searchCommunities } from "./ask/retrieve";
 
 const FIXTURE = path.join(import.meta.dirname, "__fixtures__", "graph");
 
 describe("loadLocalGraph", () => {
+  it("joins separate community findings for retrieval", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "fg-findings-"));
+    try {
+      for (const [table, rows] of Object.entries({ nodes: [{ id: "n" }], edges: [], communities: [{ id: "c", level: 0, title: "Group", summary: "Overview" }], community_findings: [{ id: "f", community_id: "c", summary: "QUARTZ_SENTINEL", explanation: "Grounded detail" }] })) {
+        await writeFile(path.join(directory, `${table}.json`), JSON.stringify(rows));
+      }
+      const dataset = await loadLocalGraph(directory, { purpose: "retrieval" });
+      expect(dataset.communities[0].findings).toEqual([expect.objectContaining({ id: "f" })]);
+      expect(searchCommunities(dataset, "QUARTZ_SENTINEL")).toHaveLength(1);
+      expect(searchCommunities(dataset, "QUARTZ_SENTINEL")[0].findings).toEqual([expect.objectContaining({ summary: "QUARTZ_SENTINEL", explanation: "Grounded detail" })]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it("keeps browser limits out of server retrieval", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "fg-retrieval-"));
     try {
