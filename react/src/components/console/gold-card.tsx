@@ -15,7 +15,7 @@ const EXAMPLE = `{
   "name": "Clinical trials QA",
   "description": "What the trial protocols must yield.",
   "evaluation_scope": { "entity_coverage": "reference", "relation_coverage": "reference" },
-  "documents": [{ "id": "protocol-2024.pdf", "title": "Protocol" }],
+  "documents": [{ "id": "protocol-2024.pdf", "path": "protocol-2024.pdf", "title": "Protocol" }],
   "entities": [
     { "id": "acme", "name": "Acme Pharma", "type": "SPONSOR", "aliases": ["Acme"] },
     { "id": "ab-12", "name": "AB-12", "type": "INVESTIGATIONAL_DRUG" }
@@ -171,7 +171,7 @@ export function GoldCard({
               aliases help matching. <span className="font-mono text-xs">relations</span> point at entity ids by{" "}
               <span className="font-mono text-xs">source</span> and <span className="font-mono text-xs">target</span>;{" "}
               <span className="font-mono text-xs">required</span> defaults to true, and only required relations gate
-              the graph. <span className="font-mono text-xs">documents</span> are optional and only named.
+              the graph. <span className="font-mono text-xs">documents</span> are optional; each entry needs an id and source path.
             </p>
             <p className="text-muted-foreground">
               <span className="font-mono text-xs">evaluation_scope</span> says what the file covers.{" "}

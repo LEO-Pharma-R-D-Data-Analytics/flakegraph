@@ -228,3 +228,22 @@ describe("caller provider options", () => {
     expect(config.llm).toMatchObject({ context_window_tokens: 16384, max_output_tokens: 2048 });
   });
 });
+
+describe("hosted OCR configuration", () => {
+  it.each([
+    ["mineru_api", "ocr", "mineru_api_url", "mineru_api_key"],
+    ["generic_http", "generic_http_ocr", "endpoint", "api_key"],
+  ])("maps %s connection fields to its transport", async (provider, section, endpointField, keyField) => {
+    const endpoint = provider === "mineru_api" ? "https://parse.example.test" : "https://parse.example.test/parse";
+    const profile = { [section]: { [endpointField]: endpoint, [keyField]: "${KG_SYNTHETIC_OCR_KEY}" } };
+    const file = path.join(await mkdtemp(path.join(tmpdir(), "fg-ocr-config-")), "profile.yaml");
+    await writeFile(file, JSON.stringify(profile));
+    process.env.KG_SYNTHETIC_OCR_KEY = "synthetic";
+    try {
+      const cfg = await buildRunConfig(request({ baseConfigPath: file, ocr: { provider, model: null, endpoint, apiKeyEnvironmentVariable: "KG_SYNTHETIC_OCR_KEY", dimension: null, options: {} } }), { config: profile } as never);
+      expect(cfg[section]).toMatchObject({ [endpointField]: endpoint, [keyField]: "${KG_SYNTHETIC_OCR_KEY}" });
+      expect(cfg.ocr).not.toHaveProperty("endpoint");
+      expect(cfg.ocr).not.toHaveProperty("api_key");
+    } finally { delete process.env.KG_SYNTHETIC_OCR_KEY; }
+  });
+});

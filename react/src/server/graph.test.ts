@@ -2,7 +2,7 @@ import path from "node:path";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { edgeStatedTypes, loadLocalGraph } from "./graph";
+import { edgeStatedTypes, loadLocalGraph, reviewEvidence } from "./graph";
 import { LocalRuntime } from "./runtime/local";
 import { Effect } from "effect";
 import { snapshotFromRecord } from "./catalog";
@@ -30,11 +30,12 @@ describe("loadLocalGraph", () => {
         nodes: Array.from({ length: 10_001 }, (_, i) => ({ id: `n${i}`, name: `Node ${i}` })),
         edges: Array.from({ length: 25_001 }, (_, i) => ({ id: `e${i}`, source_node_id: "n0", target_node_id: "n1" })),
         communities: Array.from({ length: 2_001 }, (_, i) => ({ id: `c${i}` })),
-        evidence: Array.from({ length: 10_001 }, (_, i) => ({ id: `q${i}` })),
+        evidence: Array.from({ length: 10_001 }, (_, i) => ({ id: `q${i}`, entity_id: "n0", quote: `Quote ${i}` })),
       };
       await Promise.all(Object.entries(rows).map(([name, data]) => writeFile(path.join(directory, `${name}.json`), JSON.stringify(data))));
       const review = await loadLocalGraph(directory);
       expect([review.nodes.length, review.edges.length, review.communities.length, review.evidence.length]).toEqual([10_000, 25_000, 2_000, 10_000]);
+      await writeFile(path.join(directory, "run_report.json"), JSON.stringify({ job_id: "r", graph_id: "g" }));
       const runtime = new LocalRuntime(directory, directory);
       const snapshot = snapshotFromRecord({ runId: "r", graphId: "g", runtime: "local", status: "succeeded", outputPath: directory });
       const full = await Effect.runPromise(runtime.loadRunGraph(snapshot, { purpose: "retrieval" }));
@@ -66,5 +67,19 @@ describe("edgeStatedTypes", () => {
     ]);
     expect(stated.get("e1")).toEqual(["USES_EQUIPMENT", "USES_PROCESS"]);
     expect(stated.has("e2")).toBe(false);
+  });
+});
+
+
+describe("bounded review evidence", () => {
+  it("retains grounding for selected edges after a large entity evidence prefix", () => {
+    const nodeQuotes = Array.from({ length: 10_001 }, (_, i) => ({ id: `nq${i}`, subject_kind: "node", subject_id: "n", quote: `Node quote ${i}` }));
+    const edgeQuote = { id: "eq", subject_kind: "edge", subject_id: "e", quote: "Grounded relation", document_id: "d" };
+    const unrelated = { id: "other", relation_id: "not-kept", quote: "Other relation" };
+    const result = reviewEvidence([...nodeQuotes, unrelated, edgeQuote], [{ id: "n" }], [{ id: "e" }], 10_000);
+    expect(result).toHaveLength(10_000);
+    expect(result[0]).toEqual(edgeQuote);
+    expect(result).not.toContain(unrelated);
+    expect(reviewEvidence([edgeQuote], [], [{ id: "e" }], 0)).toEqual([]);
   });
 });

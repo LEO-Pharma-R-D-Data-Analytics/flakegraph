@@ -25,6 +25,9 @@ const ALIASES: Record<string, string[]> = {
   "ocr.mineru_api_url": ["KG_MINERU_API_URL"],
   "ocr.mineru_api_key": ["KG_MINERU_API_KEY"],
   "files.source": ["KG_FILE_SOURCE"],
+  "azure_blob.account_url": ["KG_BLOB_ACCOUNT_URL"],
+  "azure_blob.connection_string": ["KG_BLOB_CONNECTION_STRING"],
+  "azure_blob.sas_token": ["KG_BLOB_SAS_TOKEN"],
 };
 const AMBIENT: Record<string, string[]> = {
   "snowflake.account": ["SNOWFLAKE_ACCOUNT"],
@@ -59,6 +62,7 @@ export function assertProviderCredentialDestinations(
   operatorProfiles: readonly Config[],
   environment: Environment = process.env,
 ): void {
+  assertAzureSourceDestination(config, operatorProfiles, environment);
   const resolve = settingsResolver(environment);
   const approved = new Map<string, Set<string>>();
   const approve = (credential: Credential, endpoint: string | null) => {
@@ -104,6 +108,33 @@ export function assertProviderCredentialDestinations(
         throw invalid(`Credential for ${route.section}.${credential.field} is not approved for this provider destination. Configure its endpoint and credential together in an operator profile under configs/.`);
       }
     }
+  }
+}
+
+/** Implicit Azure identities and SAS credentials may reach only operator-approved accounts. */
+export function assertAzureSourceDestination(
+  config: Config,
+  operatorProfiles: readonly Config[],
+  environment: Environment = process.env,
+): void {
+  const resolve = settingsResolver(environment);
+  if (provider(config, "files", resolve) !== "azure_blob") return;
+  // A connection string is operator configuration and fixes the SDK endpoint;
+  // source requests cannot set it through sourceSettings.
+  if (resolve.field(config, "azure_blob", "connection_string").value) return;
+  const route: Route = { section: "azure_blob", endpoint: "account_url", credentials: [] };
+  const endpoint = destination(config, route, resolve);
+  const approved = new Set(operatorProfiles.flatMap((profile) => {
+    if (!mapping(profile.azure_blob).account_url) return [];
+    const value = destination(profile, route, resolve);
+    return value ? [value] : [];
+  }));
+  if (resolve.hasEndpoint(route)) {
+    const value = destination({}, route, resolve);
+    if (value) approved.add(value);
+  }
+  if (!endpoint || !approved.has(endpoint)) {
+    throw invalid("Azure Blob account is not an approved source destination. Configure its account URL in an operator profile under configs/ or the pipeline environment.");
   }
 }
 

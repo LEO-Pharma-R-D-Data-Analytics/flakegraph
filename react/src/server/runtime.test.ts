@@ -106,7 +106,7 @@ describe("local runtime", () => {
     expect(await readdir(path.join(stateRoot, "browse"))).toEqual([]);
     await expect(
       Effect.runPromise(runtime.listSourceObjects({ kind: "azure_blob", container: "", prefix: "" })),
-    ).rejects.toThrow(/requires a bucket/);
+    ).rejects.toThrow(/not an approved source destination/);
     await expect(
       Effect.runPromise(runtime.listSourceObjects({ kind: "snowflake_stage", stage: "@docs" })),
     ).rejects.toThrow(/not available for snowflake_stage/);

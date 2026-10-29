@@ -375,7 +375,14 @@ class ControlledPlane implements GraphAccessPlane {
   }
 
   retry(runId: string, skippedFileIds: readonly string[] = []) {
-    return this.guardRun(runId, "write", () => this.inner.retry(runId, skippedFileIds));
+    return this.attempt(async () => {
+      await Effect.runPromise(this.requireRun(runId, "write"));
+      const run = await Effect.runPromise(this.inner.getRun(runId));
+      return this.mutation(run.graphId, [runId], async () => {
+        await Effect.runPromise(this.requireRun(runId, "write"));
+        return Effect.runPromise(this.inner.retry(runId, skippedFileIds));
+      });
+    }, "Unable to retry run");
   }
 
   recover(runId: string) {

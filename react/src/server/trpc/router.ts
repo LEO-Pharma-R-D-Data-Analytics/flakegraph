@@ -420,6 +420,7 @@ export const appRouter = router({
       const snapshot = await runEffect(ctx.controlPlane.getRun(input.runId));
       const dataset = await runEffect(ctx.controlPlane.loadRunGraph(snapshot));
       const quality = await qualityForGraph({
+        graphDirectory: ctx.controlPlane.graphDirectory(snapshot),
         snapshot,
         dataset,
         repositoryRoot: appEnv().repositoryRoot,

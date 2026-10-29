@@ -3,8 +3,9 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { stringify as stringifyYaml } from "yaml";
-import { runFlakegraph } from "./cli";
-import { sourceSettings } from "./config";
+import { cliEnvironment, runFlakegraph } from "./cli";
+import { operatorProviderProfiles, sourceSettings } from "./config";
+import { assertAzureSourceDestination, assertNoRequestInterpolation } from "./provider-credentials";
 import type { SourceKind, SourceObject, SourceSummary } from "./protocol/schema";
 import { SUPPORTED_SUFFIXES } from "./providers";
 
@@ -28,12 +29,15 @@ export const LISTING_TIMEOUT_MS = 60_000;
 export async function listRemoteObjects(
   sourceKind: SourceKind,
   source: Record<string, unknown>,
-  options: { cwd: string; stateRoot: string; env?: Record<string, string>; limit?: number; timeoutMs?: number },
+  options: { cwd: string; stateRoot: string; env?: Record<string, string>; operatorProfiles?: readonly Record<string, unknown>[]; limit?: number; timeoutMs?: number },
 ): Promise<SourceObject[]> {
+  assertNoRequestInterpolation(source);
+  const config = sourceSettings(sourceKind, source);
+  assertAzureSourceDestination(config, [...await operatorProviderProfiles(), ...(options.operatorProfiles ?? [])], cliEnvironment(options.env));
   const directory = path.join(options.stateRoot, "browse");
   await mkdir(directory, { recursive: true });
   const configPath = path.join(directory, `${randomUUID()}.yaml`);
-  await writeFile(configPath, stringifyYaml(sourceSettings(sourceKind, source)), "utf8");
+  await writeFile(configPath, stringifyYaml(config), "utf8");
   try {
     const timeoutMs = options.timeoutMs ?? LISTING_TIMEOUT_MS;
     const result = await runFlakegraph(
@@ -47,9 +51,13 @@ export async function listRemoteObjects(
       );
     }
     if (result.exitCode !== 0) {
-      throw new Error(result.stderr.trim() || result.stdout.trim() || `Listing the ${sourceKind} source failed`);
+      throw new Error(`Listing the ${sourceKind} source failed. Check its operator-configured endpoint and credentials.`);
     }
-    return parseListing(result.stdout);
+    try {
+      return parseListing(result.stdout);
+    } catch {
+      throw new Error("Source listing returned an invalid response");
+    }
   } finally {
     await rm(configPath, { force: true });
   }

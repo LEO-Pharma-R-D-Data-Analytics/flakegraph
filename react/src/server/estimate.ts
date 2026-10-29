@@ -63,7 +63,9 @@ export function actualUsdFromConsumption(consumption: unknown): number | null {
   if (!consumption || typeof consumption !== "object") {
     return null;
   }
-  const usd = (consumption as { totals?: { usd?: number } }).totals?.usd;
+  const totals = (consumption as { totals?: { billed_usd?: number; avoided_usd?: number; unpriced_calls?: number } }).totals;
+  if (!totals || totals.unpriced_calls || (totals.billed_usd === undefined && totals.avoided_usd === undefined)) return null;
+  const usd = (totals.billed_usd ?? 0) + (totals.avoided_usd ?? 0);
   return typeof usd === "number" && Number.isFinite(usd) ? usd : null;
 }
 

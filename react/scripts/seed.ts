@@ -118,7 +118,7 @@ async function seedGoldDataset(options: {
           failedDocuments: [unreadableDocument(options.graphId, "file_broken", "s3://corpus/deep-learning/broken.pdf")],
         }
       : base;
-  await writeDataset(outputPath, dataset);
+  await writeDataset(outputPath, { ...dataset, runReport: { ...dataset.runReport, job_id: options.runId } });
   const directory = path.join(options.stateRoot, "runs", options.runId);
   await writeRunRecord(directory, {
     runId: options.runId,
@@ -181,7 +181,7 @@ async function seedThinGoldDataset(stateRoot: string) {
   const base = goldToDataset(thin, graphId);
   // Two of its documents lost a window each, so the Documents table on Run
   // details has gap chips to show beside its phases.
-  await writeDataset(outputPath, { ...base, discardedWindows: fewGaps(graphId, base, ["page-01.md", "page-02.md"]) });
+  await writeDataset(outputPath, { ...base, runReport: { ...base.runReport, job_id: "run_martial_thin" }, discardedWindows: fewGaps(graphId, base, ["page-01.md", "page-02.md"]) });
   await writeRunRecord(path.join(stateRoot, "runs", "run_martial_thin"), {
     runId: "run_martial_thin",
     graphId,
@@ -337,7 +337,7 @@ async function seedGappyCorpus(stateRoot: string) {
     ...base,
     documents,
     discardedWindows: windows,
-    runReport: { ...base.runReport, graph_id: graphId, files_processed: total },
+    runReport: { ...base.runReport, job_id: runId, graph_id: graphId, files_processed: total },
   };
   const outputPath = path.join(stateRoot, "graphs", graphId);
   await writeDataset(outputPath, dataset);

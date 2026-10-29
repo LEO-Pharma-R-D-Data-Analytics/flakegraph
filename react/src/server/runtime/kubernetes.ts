@@ -91,7 +91,10 @@ export class KubernetesRuntime implements ControlPlane {
     readonly stubbed: boolean,
     viewer: Viewer | null = null,
   ) {
-    this.local = new LocalRuntime(repositoryRoot, stateRoot, viewer);
+    this.local = new LocalRuntime(repositoryRoot, stateRoot, viewer, async () => {
+      const fleet = this.stubbed ? null : await this.fleetProfile();
+      return fleet ? [fleet.config] : [];
+    });
   }
 
   viewer(): Effect.Effect<Viewer, ControlPlaneError> {

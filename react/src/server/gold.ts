@@ -4,7 +4,7 @@ import type { GraphDataset } from "./protocol/schema";
 
 interface GoldDocument {
   id: string;
-  path?: string;
+  path: string;
   title?: string;
 }
 
@@ -100,7 +100,7 @@ export function goldToDataset(gold: GoldGraph, graphId: string): GraphDataset {
     },
     graphMetrics: {
       consumption: {
-        totals: { usd: graphId.includes("deep") ? 12.4 : 3.1, unpriced_calls: 0 },
+        totals: { billed_usd: 0, avoided_usd: graphId.includes("deep") ? 12.4 : 3.1, unpriced_calls: 0 },
         events: [
           {
             stage: "graph_extraction",
@@ -111,7 +111,7 @@ export function goldToDataset(gold: GoldGraph, graphId: string): GraphDataset {
             calls: edges.length,
             prompt_tokens: edges.length * 400,
             completion_tokens: edges.length * 80,
-            total_tokens: edges.length * 480,
+            usage: { prompt_tokens: edges.length * 400, completion_tokens: edges.length * 80, total_tokens: edges.length * 480 },
             pages: documents.length,
           },
         ],
@@ -170,7 +170,16 @@ export function compareToGold(dataset: GraphDataset, gold: GoldGraph): GoldCompa
     const target = goldById.get(relation.target);
     const sourceName = source ? normalizeName(source.name) : "";
     const targetName = target ? normalizeName(target.name) : "";
-    const present = Boolean(sourceName && targetName && names.has(sourceName) && names.has(targetName));
+    const matches = (name: string) => new Set(dataset.nodes.filter((node) =>
+      [node.name, node.id, ...(Array.isArray(node.aliases) ? node.aliases : [])]
+        .some((value) => normalizeName(String(value ?? "")) === name),
+    ).map((node) => String(node.id)));
+    const sourceIds = matches(sourceName);
+    const targetIds = matches(targetName);
+    const present = Boolean(sourceName && targetName && names.has(sourceName) && names.has(targetName)) &&
+      dataset.edges.some((edge) => sourceIds.has(String(edge.source_node_id ?? edge.source)) &&
+        targetIds.has(String(edge.target_node_id ?? edge.target)) &&
+        normalizePredicate(String(edge.relation_type ?? edge.relationType)) === normalizePredicate(relation.relation_type));
     if (present) {
       return [];
     }
@@ -210,6 +219,10 @@ export function ontologyCoverage(proposedTypes: readonly string[], gold: GoldGra
     covered: goldTypes.filter((type) => proposedSet.has(type)),
     missing: goldTypes.filter((type) => !proposedSet.has(type)),
   };
+}
+
+function normalizePredicate(value: string): string {
+  return value.toUpperCase().replace(/-/g, " ").trim().split(/\s+/).join("_");
 }
 
 function normalizeName(value: string): string {

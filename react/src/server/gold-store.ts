@@ -119,7 +119,17 @@ export function validateGold(value: unknown): GoldGraph {
     }
   }
   if (gold.documents !== undefined && !Array.isArray(gold.documents)) {
-    throw new GoldValidationError('"documents" must be a list of { id, title? }.');
+    throw new GoldValidationError('"documents" must be a list of { id, path, title? }.');
+  }
+  if (Array.isArray(gold.documents)) {
+    gold.documents.forEach((document, index) => {
+      const record = document as Record<string, unknown>;
+      for (const field of ["id", "path"] as const) {
+        if (typeof record?.[field] !== "string" || !String(record[field]).trim()) {
+          throw new GoldValidationError(`documents[${index}] needs a string "${field}".`);
+        }
+      }
+    });
   }
   return gold as GoldGraph;
 }
@@ -159,8 +169,9 @@ export function goldTemplate(dataset: GraphDataset, graphName: string): GoldGrap
     // graph holds beyond them is not counted as wrong. Annotate the corpus in
     // full and make both "exhaustive" to be scored on precision and F1 too.
     evaluation_scope: { entity_coverage: "reference", relation_coverage: "reference" },
-    documents: (dataset.documents ?? []).map((document) => ({
+    documents: (dataset.documents ?? []).filter((document) => document.path || document.source_uri).map((document) => ({
       id: String(document.id ?? ""),
+      path: String(document.path || document.source_uri),
       ...(document.title ? { title: String(document.title) } : {}),
     })),
     entities: nodes.map((node) => ({

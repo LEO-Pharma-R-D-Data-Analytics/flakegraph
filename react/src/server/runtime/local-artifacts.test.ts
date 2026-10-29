@@ -71,10 +71,16 @@ function exportedDirectory(args: string[]): string {
   return args[index + 1];
 }
 
+async function exportGraphFiles(args: string[], nodeCount = 2) {
+  const destination = exportedDirectory(args);
+  await graphFiles(destination, "current-graph", nodeCount);
+  await writeFile(path.join(destination, "run_report.json"), JSON.stringify({ job_id: "current-run", graph_id: "current-graph" }));
+  await writeFile(path.join(destination, "graph_metrics.json"), "{}");
+}
+
 async function successfulExport(args: string[]): Promise<CommandResult> {
-  // The real exporter writes tables, without a run_report.json. Graph identity
-  // therefore comes from the persisted graph rows when the runtime loads it.
-  await graphFiles(exportedDirectory(args), "current-graph");
+  // Exported diagnostics retain the selected durable job identity.
+  await exportGraphFiles(args);
   return { exitCode: 0, stdout: "{}", stderr: "" };
 }
 
@@ -127,7 +133,7 @@ describe("local runtime inspection of Snowflake output", () => {
     expect(f.runtime.graphDirectory(f.snapshot)).toBe(destination);
     const graph = await Effect.runPromise(f.runtime.loadRunGraph(f.snapshot));
     expect(cli.run).toHaveBeenCalledExactlyOnceWith([
-      "snowflake", "export", "--graph-id", "current-graph", "--output", destination, "--config", f.configPath,
+      "snowflake", "export", "--graph-id", "current-graph", "--job-id", "current-run", "--output", destination, "--config", f.configPath,
     ], { cwd: f.repositoryRoot, timeoutMs: expect.any(Number) });
     expect(graph.graphId).toBe("current-graph");
     expect(graph.nodes.map((node) => node.id)).toEqual(["n0", "n1"]);
@@ -139,10 +145,20 @@ describe("local runtime inspection of Snowflake output", () => {
     expect(restarted.graphDirectory(f.snapshot)).toBe(destination);
   });
 
+  it("refreshes a cached graph that has no persisted diagnostics", async () => {
+    const f = await fixture("snowflake");
+    const destination = path.join(f.stateRoot, "artifacts", "current-run");
+    await graphFiles(destination, "current-graph");
+    cli.run.mockImplementation(successfulExport);
+    const graph = await Effect.runPromise(f.runtime.loadRunGraph(f.snapshot));
+    expect(graph.runReport).toMatchObject({ job_id: "current-run", graph_id: "current-graph" });
+    expect(cli.run).toHaveBeenCalledTimes(1);
+  });
+
   it("retains the requested graph identity when Snowflake exports an empty graph", async () => {
     const f = await fixture("snowflake");
     cli.run.mockImplementation(async (args: string[]) => {
-      await graphFiles(exportedDirectory(args), "current-graph", 0);
+      await exportGraphFiles(args, 0);
       return { exitCode: 0, stdout: "{}", stderr: "" };
     });
     const graph = await Effect.runPromise(f.runtime.loadRunGraph(f.snapshot));
@@ -214,7 +230,7 @@ describe("local runtime inspection of Snowflake output", () => {
   it("keeps the full exported graph available to retrieval beyond review limits", async () => {
     const f = await fixture("snowflake");
     cli.run.mockImplementation(async (args: string[]) => {
-      await graphFiles(exportedDirectory(args), "current-graph", 10_001);
+      await exportGraphFiles(args, 10_001);
       return { exitCode: 0, stdout: "{}", stderr: "" };
     });
     const review = await Effect.runPromise(f.runtime.loadRunGraph(f.snapshot));
@@ -229,8 +245,22 @@ describe("local runtime inspection of Snowflake output", () => {
   it("preserves the ordinary local artifact directory contract", async () => {
     const f = await fixture();
     await graphFiles(f.outputPath, "current-graph");
+    await writeFile(path.join(f.outputPath, "run_report.json"), JSON.stringify({ job_id: "current-run", graph_id: "current-graph" }));
     expect(f.runtime.graphDirectory(f.snapshot)).toBe(f.outputPath);
     expect((await Effect.runPromise(f.runtime.loadRunGraph(f.snapshot))).graphId).toBe("current-graph");
     expect(cli.run).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("local artifact identity", () => {
+  it("marks a succeeded run unavailable when a newer job replaces its directory", async () => {
+    const f = await fixture();
+    await writeRunRecord(f.directory, { status: "succeeded" });
+    await graphFiles(f.outputPath, "current-graph");
+    await writeFile(path.join(f.outputPath, "run_report.json"), JSON.stringify({ job_id: "newer-run", graph_id: "current-graph" }));
+    expect((await Effect.runPromise(f.runtime.getRun("current-run"))).status).toBe("unavailable");
+    expect((await Effect.runPromise(f.runtime.listRuns()))[0].status).toBe("unavailable");
+    await expect(Effect.runPromise(f.runtime.loadRunGraph(f.snapshot))).rejects.toThrow(/superseded/);
   });
 });

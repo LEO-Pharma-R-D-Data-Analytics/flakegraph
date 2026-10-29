@@ -1,9 +1,8 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import {
-  atomicWriteJson,
+  changeGraphNames,
   listRunRecords,
-  readGraphNames,
   runDirectory,
   unwithdrawRuns,
   type CatalogRecord,
@@ -69,11 +68,7 @@ export async function removeGraphRecords(stateRoot: string, footprint: GraphFoot
     }
   }
   await unwithdrawRuns(stateRoot, footprint.runIds);
-  const names = await readGraphNames(stateRoot);
-  if (footprint.graphId in names) {
-    delete names[footprint.graphId];
-    await atomicWriteJson(path.join(stateRoot, "graph-names.json"), names);
-  }
+  await changeGraphNames(stateRoot, (names) => { delete names[footprint.graphId]; });
   await removeUploadedGold(stateRoot, footprint.graphId);
   await forgetGraphItems(footprint.graphId, footprint.runIds, stateRoot);
 

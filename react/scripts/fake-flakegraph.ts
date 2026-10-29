@@ -174,9 +174,11 @@ async function worker(configPath: string) {
     : path.resolve(repo, "data/martial_arts/gold.json");
   try {
     const gold = JSON.parse(await readFile(goldPath, "utf8")) as GoldGraph;
-    await writeDataset(outputPath, goldToDataset(gold, graphId));
+    const dataset = goldToDataset(gold, graphId);
+    await writeDataset(outputPath, { ...dataset, runReport: { ...dataset.runReport, job_id: (config.job as Record<string, unknown> | undefined)?.job_id } });
   } catch {
-    await writeDataset(outputPath, goldToDataset({ name: graphId, entities: [{ id: "n1", name: "Node", type: "THING" }], relations: [] }, graphId));
+    const dataset = goldToDataset({ name: graphId, entities: [{ id: "n1", name: "Node", type: "THING" }], relations: [] }, graphId);
+    await writeDataset(outputPath, { ...dataset, runReport: { ...dataset.runReport, job_id: (config.job as Record<string, unknown> | undefined)?.job_id } });
   }
 }
 

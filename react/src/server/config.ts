@@ -199,7 +199,7 @@ export async function buildRunConfig(
 }
 
 /** Only server-managed profiles and the mounted fleet profile authorize credential destinations. */
-async function operatorProviderProfiles(fleet: FleetProfile | null): Promise<Record<string, unknown>[]> {
+export async function operatorProviderProfiles(fleet: FleetProfile | null = null): Promise<Record<string, unknown>[]> {
   const files: string[] = [];
   const visit = async (directory: string): Promise<void> => {
     for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
@@ -340,6 +340,7 @@ export function sourceSettings(
   source: Record<string, unknown>,
   options: { downloadPath?: string } = {},
 ): Record<string, unknown> {
+  assertNoRequestInterpolation(source);
   const download = options.downloadPath ? { download_path: options.downloadPath } : {};
   if (sourceKind === "upload" || sourceKind === "local_path") {
     return { files: { source: "local", input_path: String(source.path ?? "") } };
@@ -410,7 +411,14 @@ function providerConfig(selection: ProviderSelection, kind: "ocr" | "llm" | "emb
 }
 
 function ocrProviderConfig(selection: ProviderSelection): Record<string, unknown> {
-  return providerConfig(selection, "ocr");
+  const result = providerConfig(selection, "ocr");
+  delete result.endpoint;
+  delete result.api_key;
+  if (selection.provider === "mineru_api") {
+    if (selection.endpoint) result.mineru_api_url = selection.endpoint;
+    if (selection.apiKeyEnvironmentVariable) result.mineru_api_key = `\${${selection.apiKeyEnvironmentVariable.trim()}}`;
+  }
+  return result;
 }
 
 function externalOcrConfig(selection: ProviderSelection): Record<string, unknown> {

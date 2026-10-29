@@ -23,16 +23,18 @@ export function ConsumptionPanel({
     );
   }
   const record = consumption as {
-    totals?: { usd?: number; unpriced_calls?: number };
+    totals?: { billed_usd?: number; avoided_usd?: number; unpriced_calls?: number };
     events?: Array<Record<string, unknown>>;
   };
-  const usd = record.totals?.usd;
+  const usd = record.totals?.billed_usd;
+  const avoided = record.totals?.avoided_usd;
   const unpriced = record.totals?.unpriced_calls ?? 0;
   const comparison = compareEstimateToActual(estimate ?? undefined, actualUsdFromConsumption(consumption));
   return (
     <div className="space-y-3">
       <p className="text-sm" data-testid="estimate-vs-actual">
-        {usd != null ? `Derived cost ${usd} usd` : "Usage measured, cost not priced"}
+        {usd != null ? `Billed cost ${usd} usd` : "Usage measured, cost not priced"}
+        {avoided != null ? ` · Avoided cost ${avoided} usd` : ""}
         {unpriced ? ` · ${unpriced} unpriced calls` : ""}
         {comparison ? ` · ${comparison.label}` : ""}
       </p>
@@ -53,7 +55,7 @@ export function ConsumptionPanel({
             <TableRow key={index}>
               <TableCell>{String(event.stage ?? "")}</TableCell>
               <TableCell>{String(event.model ?? event.provider ?? "")}</TableCell>
-              <TableCell>{String(event.total_tokens ?? "")}</TableCell>
+              <TableCell>{String((event.usage as { total_tokens?: number } | undefined)?.total_tokens ?? "")}</TableCell>
               <TableCell>{String(event.locality ?? "")}</TableCell>
             </TableRow>
           ))}

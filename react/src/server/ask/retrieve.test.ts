@@ -26,8 +26,8 @@ const dataset = goldToDataset(
   {
     name: "ask-fixture",
     documents: [
-      { id: "doc_overview", title: "Overview" },
-      { id: "doc_karate", title: "Karate notes" },
+      { id: "doc_overview", path: "overview.pdf", title: "Overview" },
+      { id: "doc_karate", path: "karate.pdf", title: "Karate notes" },
     ],
     entities: [
       { id: "jigoro_kano", name: "Jigoro Kano", type: "PERSON", description: "Educator who founded Kodokan judo" },

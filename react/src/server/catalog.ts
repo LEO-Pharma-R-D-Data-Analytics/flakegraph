@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -12,6 +12,22 @@ import { assertSafeId } from "./confine";
  */
 const WITHDRAWN_RUNS_FILE = "withdrawn-runs.json";
 const GRAPH_NAMES_FILE = "graph-names.json";
+const graphNameQueues = new Map<string, Promise<void>>();
+
+/** Serialize the complete shared name-map update, including graph deletion. */
+export async function changeGraphNames(stateRoot: string, change: (names: Record<string, string>) => void): Promise<void> {
+  await mkdir(stateRoot, { recursive: true });
+  const file = path.join(await realpath(stateRoot), GRAPH_NAMES_FILE);
+  const next = (graphNameQueues.get(file) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+    const names = await readGraphNames(stateRoot);
+    change(names);
+    await atomicWriteJson(file, names);
+  });
+  graphNameQueues.set(file, next);
+  try { await next; } finally {
+    if (graphNameQueues.get(file) === next) graphNameQueues.delete(file);
+  }
+}
 
 export interface CatalogRecord {
   runId: string;
@@ -222,9 +238,7 @@ export async function renameGraph(
   }
   const normalizedName = validateGraphName(displayName);
   await mkdir(stateRoot, { recursive: true });
-  const names = await readGraphNames(stateRoot);
-  names[normalizedId] = normalizedName;
-  await atomicWriteJson(path.join(stateRoot, GRAPH_NAMES_FILE), names);
+  await changeGraphNames(stateRoot, (names) => { names[normalizedId] = normalizedName; });
   const rows = await listRunRecords(stateRoot, 1_000, { includeWithdrawn: true });
   for (const { directory, record } of rows) {
     if (record.graphId === normalizedId) {

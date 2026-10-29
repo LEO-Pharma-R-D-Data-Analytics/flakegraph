@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
@@ -61,6 +62,7 @@ export class LocalRuntime implements ControlPlane {
     readonly stateRoot: string,
     /** Who is asking, when a gate or key identified them; the owner of what they submit. */
     readonly currentViewer: Viewer | null = null,
+    private readonly sourceProfiles: () => Promise<readonly Record<string, unknown>[]> = async () => [],
   ) {}
 
   /** The principal recorded as owner: the identified viewer, else the workspace's assumed identity. */
@@ -88,6 +90,7 @@ export class LocalRuntime implements ControlPlane {
           return listRemoteObjects(kind, source, {
             cwd: this.repositoryRoot,
             stateRoot: this.stateRoot,
+            operatorProfiles: await this.sourceProfiles(),
             limit,
           });
         }
@@ -318,7 +321,8 @@ export class LocalRuntime implements ControlPlane {
       return Effect.tryPromise({
         try: async () => {
           const directory = this.graphDirectory(snapshot)!;
-          if (!graphArtifactsExist(directory)) {
+          if (!graphArtifactsExist(directory) || !existsSync(path.join(directory, "graph_metrics.json")) ||
+              !await artifactsBelongToRun(directory, snapshot.runId, snapshot.graphId)) {
             // Only a finished run's Snowflake graph is complete enough to keep.
             if (!isSuccessStatus(snapshot.status)) {
               throw invalid(`Run ${snapshot.runId} has not finished writing its Snowflake graph`);
@@ -330,7 +334,14 @@ export class LocalRuntime implements ControlPlane {
             }
             await pending;
           }
-          return { ...await loadLocalGraph(directory, options), graphId: snapshot.graphId };
+          if (!await artifactsBelongToRun(directory, snapshot.runId, snapshot.graphId)) {
+            throw invalid(`Exported diagnostics do not belong to run ${snapshot.runId}`);
+          }
+          const dataset = await loadLocalGraph(directory, options);
+          if (dataset.runReport.job_id !== snapshot.runId || dataset.graphId !== snapshot.graphId) {
+            throw invalid(`Artifacts for ${snapshot.runId} changed while being read`);
+          }
+          return dataset;
         },
         catch: (cause) => fromCause(cause, "Unable to load Snowflake graph"),
       });
@@ -338,14 +349,27 @@ export class LocalRuntime implements ControlPlane {
     if (!snapshot.outputPath) {
       return Effect.fail(invalid(`Run ${snapshot.runId} does not record an output directory`));
     }
-    return this.loadGraph(snapshot.outputPath, snapshot.graphId, options);
+    return Effect.tryPromise({
+      try: async () => {
+        const directory = this.artifactDirectory(snapshot.outputPath!);
+        if (!await artifactsBelongToRun(directory, snapshot.runId, snapshot.graphId)) {
+          throw invalid(`Artifacts for ${snapshot.runId} are unavailable or have been superseded by another run`);
+        }
+        const dataset = await loadLocalGraph(directory, options);
+        if (dataset.runReport.job_id !== snapshot.runId || dataset.graphId !== snapshot.graphId) {
+          throw invalid(`Artifacts for ${snapshot.runId} changed while being read`);
+        }
+        return dataset;
+      },
+      catch: (cause) => fromCause(cause, "Unable to load run artifacts"),
+    });
   }
 
   private async exportSnowflakeGraph(snapshot: RunSnapshot, directory: string): Promise<void> {
     const record = await readRunRecord(runDirectory(this.stateRoot, snapshot.runId));
     if (!record.configPath) throw invalid(`Run ${snapshot.runId} does not record its Snowflake configuration`);
     const result = await runFlakegraph([
-      "snowflake", "export", "--graph-id", snapshot.graphId, "--output", directory, "--config", record.configPath,
+      "snowflake", "export", "--graph-id", snapshot.graphId, "--job-id", snapshot.runId, "--output", directory, "--config", record.configPath,
     ], { cwd: this.repositoryRoot, timeoutMs: SNOWFLAKE_EXPORT_TIMEOUT_MS });
     if (result.exitCode !== 0) {
       throw new Error(result.stderr.trim() || `Exporting the graph of ${snapshot.runId} failed`);
@@ -414,7 +438,7 @@ export class LocalRuntime implements ControlPlane {
     } else if (returnCode != null) {
       status = "failed";
     }
-    const snapshot: RunSnapshot = {
+    let snapshot: RunSnapshot = {
       runId,
       graphId: managed?.graphId ?? record.graphId,
       status,
@@ -442,6 +466,10 @@ export class LocalRuntime implements ControlPlane {
         owner: record.owner ?? null,
       },
     };
+    if (isSuccessStatus(snapshot.status) && snapshot.storageKind === "local_files" && snapshot.outputPath &&
+        !await artifactsBelongToRun(this.artifactDirectory(snapshot.outputPath), snapshot.runId, snapshot.graphId)) {
+      snapshot = { ...snapshot, status: ARTIFACTS_UNAVAILABLE_STATUS };
+    }
     await writeRunRecord(directory, {
       status: snapshot.status,
       updatedAt: snapshot.updatedAt,
@@ -470,7 +498,9 @@ export class LocalRuntime implements ControlPlane {
     } else if (status === "failed") {
       status = "failed";
     } else if (status === "succeeded") {
-      status = "succeeded";
+      status = storageKind === "local_files" && outputPath &&
+        !await artifactsBelongToRun(this.artifactDirectory(outputPath), record.runId, record.graphId)
+        ? ARTIFACTS_UNAVAILABLE_STATUS : "succeeded";
     } else if (pidIsRunning(record.pid)) {
       status = "running";
     } else if (storageKind === "local_files" && outputPath && graphArtifactsExist(this.artifactDirectory(outputPath)) &&

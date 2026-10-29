@@ -666,15 +666,13 @@ export function GraphExplorer({
                   <Button
                     size="sm"
                     variant="ghost"
+                    disabled={!dataset.evidence.some((row) => evidenceEntityId(row) === String(selectedNode.id) && String(row.quote ?? "").trim())}
                     onClick={() => {
-                      const evidence =
-                        dataset.evidence.find((row) => evidenceEntityId(row) === String(selectedNode.id)) ??
-                        dataset.evidence.find((row) => {
-                          const quote = String(row.quote ?? "").toLowerCase();
-                          const name = String(selectedNode.name ?? "").toLowerCase();
-                          return name && quote.includes(name);
-                        });
-                      const quote = String(evidence?.quote ?? selectedNode.description ?? selectedNode.name ?? "");
+                      const evidence = dataset.evidence.find(
+                        (row) => evidenceEntityId(row) === String(selectedNode.id) && String(row.quote ?? "").trim(),
+                      );
+                      if (!evidence?.quote) return;
+                      const quote = String(evidence.quote);
                       const documentId = evidence ? documentNames.get(evidenceDocumentId(evidence)) ?? evidenceDocumentId(evidence) : "";
                       void navigator.clipboard.writeText(`${documentId} · ${quote}`.trim());
                       toast.success("Copied citation");
@@ -723,11 +721,13 @@ export function GraphExplorer({
                   <Button
                     size="sm"
                     variant="ghost"
+                    disabled={!dataset.evidence.some((row) => evidenceRelationId(row) === String(selectedEdge.id) && String(row.quote ?? "").trim())}
                     onClick={() => {
                       const evidence = dataset.evidence.find(
-                        (row) => evidenceRelationId(row) === String(selectedEdge.id),
+                        (row) => evidenceRelationId(row) === String(selectedEdge.id) && String(row.quote ?? "").trim(),
                       );
-                      const quote = String(evidence?.quote ?? selectedEdge.description ?? selectedEdge.relation_type ?? "");
+                      if (!evidence?.quote) return;
+                      const quote = String(evidence.quote);
                       const documentId = evidence ? documentNames.get(evidenceDocumentId(evidence)) ?? evidenceDocumentId(evidence) : "";
                       void navigator.clipboard.writeText(`${documentId} · ${quote}`.trim());
                       toast.success("Copied citation");

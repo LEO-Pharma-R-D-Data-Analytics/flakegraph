@@ -39,6 +39,7 @@ export async function GET(request: Request) {
       const snapshot = await Effect.runPromise(runtime.getRun(runId));
       const dataset = await Effect.runPromise(runtime.loadRunGraph(snapshot));
       const quality = await qualityForGraph({
+        graphDirectory: runtime.graphDirectory(snapshot),
         snapshot,
         dataset,
         repositoryRoot: appEnv().repositoryRoot,

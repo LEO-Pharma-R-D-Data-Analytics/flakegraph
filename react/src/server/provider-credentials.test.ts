@@ -297,3 +297,21 @@ it("does not route an ambient OAuth token when the connector uses password authe
   expect(() => check(cfg, [operator], { KG_PASSWORD: "synthetic-password", SNOWFLAKE_OAUTH_TOKEN: "unused-synthetic-token" })).not.toThrow();
   expect(() => check({ ...cfg, snowflake: { ...operator.snowflake, authenticator: "oauth" } }, [operator], { KG_PASSWORD: "synthetic-password", SNOWFLAKE_OAUTH_TOKEN: "used-synthetic-token" })).toThrow(/not approved/);
 });
+
+describe("Azure source destinations", () => {
+  const source = (accountUrl = "https://approved.blob.core.windows.net") => ({ files: { source: "azure_blob" }, azure_blob: { account_url: accountUrl, container: "fixtures" } });
+  const profiles = [source()];
+  it("binds default identity and ambient SAS tokens to operator endpoints", () => {
+    for (const env of [{}, { KG_BLOB_SAS_TOKEN: "synthetic" }, { KG_AZURE_BLOB_SAS_TOKEN: "synthetic" }]) {
+      expect(() => check(source(), profiles, env)).not.toThrow();
+      expect(() => check(source("https://unapproved.example.test"), profiles, env)).toThrow(/not an approved source destination/);
+    }
+  });
+  it("uses effective environment and inline configuration precedence", () => {
+    expect(() => check(source("https://caller.example.test"), [], { KG_BLOB_ACCOUNT_URL: "https://operator.example.test" })).not.toThrow();
+    expect(() => check(source("https://caller.example.test"), [], { KG_CONFIG_JSON: JSON.stringify({ azure_blob: { account_url: "http://emulator.example.test:10000/account" } }) })).not.toThrow();
+    expect(() => check(source("https://caller.example.test"), [], { KG_BLOB_CONNECTION_STRING: "UseDevelopmentStorage=true" })).not.toThrow();
+    expect(() => check(source("http://emulator.example.test:10000/account"), [source("http://emulator.example.test:10000/account")], {})).not.toThrow();
+    expect(() => check(source(), [], { KG_AZURE_BLOB_SAS_TOKEN: "synthetic" })).toThrow(/not an approved source destination/);
+  });
+});

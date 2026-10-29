@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { evidenceEntityId, evidenceRelationId } from "@/lib/evidence";
 import { capGraph } from "./graph-filter";
 import { GRAPH_REVIEW_ROW_LIMITS, type GraphDataset } from "./protocol/schema";
 import type { GraphLoadOptions } from "./protocol/runtime";
@@ -49,11 +50,12 @@ export async function loadLocalGraph(directory: string, options: GraphLoadOption
     const rows = findingsByCommunity.get(String(community.id ?? ""));
     if (rows) community.findings = rows;
   }
-  const [evidence, evidenceCount] = await readTable(
+  const [allEvidence, evidenceCount] = await readTable(
     directory,
     "evidence",
-    limits.evidence,
+    Number.MAX_SAFE_INTEGER,
   );
+  const evidence = options.purpose === "retrieval" ? allEvidence : reviewEvidence(allEvidence, nodes, edges, limits.evidence);
   const documents = await readOptionalTable(directory, "documents");
   // The values each relation states live on its observations; the review reads
   // them on the edge they describe.
@@ -102,6 +104,32 @@ export async function loadLocalGraph(directory: string, options: GraphLoadOption
     runReport,
     graphMetrics: await readJsonObject(path.join(directory, "graph_metrics.json")),
   };
+}
+
+/** Give each retained relation grounding before filling the bounded review with node quotes. */
+export function reviewEvidence(rows: Record<string, unknown>[], nodes: Record<string, unknown>[], edges: Record<string, unknown>[], limit: number): Record<string, unknown>[] {
+  if (limit <= 0) return [];
+  const edgeId = (row: Record<string, unknown>) => evidenceRelationId(row) ?? "";
+  const nodeId = (row: Record<string, unknown>) => evidenceEntityId(row) ?? "";
+  const keptEdges = new Set(edges.map((row) => String(row.id)));
+  const keptNodes = new Set(nodes.map((row) => String(row.id)));
+  const matching = rows.filter((row) => keptEdges.has(edgeId(row)) || keptNodes.has(nodeId(row)));
+  const selected = new Set<Record<string, unknown>>();
+  for (const [identify, kept] of [[edgeId, keptEdges], [nodeId, keptNodes]] as const) {
+    const seen = new Set<string>();
+    for (const row of matching) {
+      const id = identify(row);
+      if (!kept.has(id) || seen.has(id) || !row.quote) continue;
+      seen.add(id);
+      selected.add(row);
+      if (selected.size === limit) return [...selected];
+    }
+  }
+  for (const row of matching) {
+    selected.add(row);
+    if (selected.size === limit) break;
+  }
+  return [...selected];
 }
 
 /** Edge id → the distinct values its observations state, in source order. */
