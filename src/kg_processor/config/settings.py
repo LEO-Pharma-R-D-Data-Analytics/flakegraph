@@ -116,11 +116,10 @@ class DistributedSettings(_SettingsModel):
     spark_namespace: str = "default"
     spark_service_account: str = "flakegraph-spark"
     spark_executor_pod_template: str = "/etc/flakegraph-spark/executor-pod-template.yaml"
-    # Accepted for configuration compatibility; executor bindings are explicit
-    # in spark_provider_secret_refs rather than inferred from this name.
-    spark_provider_secret: str = "flakegraph-providers"
-    # Actual driver env-to-Secret bindings, including gateway virtual keys and
-    # renamed provider keys. Values are Kubernetes "secret-name:key" references.
+    # The driver's provider credentials as Kubernetes "secret-name:key"
+    # references, including gateway virtual keys and renamed provider keys.
+    # Executors are given these references rather than the values, which Spark
+    # would otherwise write into every executor Pod spec in clear text.
     spark_provider_secret_refs: dict[str, str] = Field(default_factory=dict)
 
     spark_executor_instances: int = Field(default=4, gt=0)

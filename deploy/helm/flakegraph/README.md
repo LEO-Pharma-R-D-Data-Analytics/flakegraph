@@ -93,9 +93,8 @@ it never lists the namespace.
 Spark finalizers receive `KG_DISTRIBUTED_SPARK_PROVIDER_SECRET_REFS` as a JSON
 map from environment variable names to `Secret-name:key` references. The chart
 derives it from the driver's provider mappings and gateway virtual key so
-executors use those same bindings. Standalone Spark installations must set
-`distributed.spark_provider_secret_refs` explicitly; `spark_provider_secret`
-alone is retained for configuration compatibility and does not infer key names.
+executors use those same bindings. Standalone Spark installations set
+`distributed.spark_provider_secret_refs` explicitly.
 Credentials are never copied into literal executor environment values.
 
 ## Console admission
