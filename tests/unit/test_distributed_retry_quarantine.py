@@ -20,10 +20,16 @@ def test_retry_sql_skips_failed_document_tree_and_preserves_other_work() -> None
 
     database = sqlite3.connect(":memory:")
     database.row_factory = sqlite3.Row
+    # PostgreSQL integration contracts exercise advisory-lock exclusion. This
+    # offline test executes the retry SQL's data transitions in one connection.
+    database.create_function("hashtextextended", 2, lambda _graph, _seed: 0)
+    database.create_function("pg_advisory_xact_lock", 1, lambda _key: None)
     database.executescript("""
         CREATE TABLE flakegraph_run (
-            id TEXT PRIMARY KEY, status TEXT, config_json TEXT, error_json TEXT, updated_at TEXT
+            id TEXT PRIMARY KEY, graph_id TEXT, status TEXT, config_json TEXT,
+            error_json TEXT, updated_at TEXT
         );
+        CREATE TABLE flakegraph_graph_deletion (graph_id TEXT PRIMARY KEY);
         CREATE TABLE flakegraph_task (
             id TEXT PRIMARY KEY, run_id TEXT, stage TEXT, scope_id TEXT, status TEXT,
             attempts INTEGER, remaining_dependencies INTEGER DEFAULT 0, last_error_json TEXT,
@@ -40,7 +46,7 @@ def test_retry_sql_skips_failed_document_tree_and_preserves_other_work() -> None
             run_id TEXT, task_id TEXT, stage TEXT, scope_id TEXT, attempts INTEGER,
             error_json TEXT, failed_at TEXT
         );
-        INSERT INTO flakegraph_run VALUES ('run', 'failed', '{}', 'failure', NULL);
+        INSERT INTO flakegraph_run VALUES ('run', 'graph', 'failed', '{}', 'failure', NULL);
         INSERT INTO flakegraph_task (id, run_id, stage, scope_id, status, attempts)
         VALUES ('prepare', 'run', 'prepare_document', 'poison', 'succeeded', 1),
                ('window', 'run', 'extract_entity_window', 'window-id', 'failed', 3),

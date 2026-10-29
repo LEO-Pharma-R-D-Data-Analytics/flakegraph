@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from datetime import timedelta
 from typing import Any, Protocol
 
+from kg_processor.domain.consumption import ConsumptionEvent
 from kg_processor.domain.distributed import (
     PublicationLease,
     RunDefinition,
@@ -48,6 +49,14 @@ class TaskStore(Protocol):
 
     def initialize(self) -> None:
         """Create or migrate durable coordination structures idempotently."""
+        ...
+
+    def record_consumption(self, run_id: str, event: ConsumptionEvent) -> None:
+        """Persist one billed or local provider event idempotently by event ID."""
+        ...
+
+    def consumption_events(self, run_id: str) -> list[ConsumptionEvent]:
+        """Read consumption across all attempts and workers serving one run."""
         ...
 
     def create_run(self, run: RunDefinition) -> None:
@@ -98,7 +107,9 @@ class TaskStore(Protocol):
         """
         ...
 
-    def heartbeat(self, task_id: str, worker_id: str, lease_duration: timedelta) -> None:
+    def heartbeat(
+        self, task_id: str, worker_id: str, lease_duration: timedelta, *, claim_token: str
+    ) -> None:
         """Extend a running task lease only when the caller still owns it."""
         ...
 
@@ -109,6 +120,8 @@ class TaskStore(Protocol):
         output_artifact_ids: list[str],
         follow_up_tasks: list[TaskDefinition] | None = None,
         barrier_task_id: str | None = None,
+        *,
+        claim_token: str,
     ) -> None:
         """Commit outputs and optional dynamically fanned-out work atomically.
 
@@ -124,6 +137,8 @@ class TaskStore(Protocol):
         worker_id: str,
         error: dict[str, Any],
         retry_delay: timedelta,
+        *,
+        claim_token: str,
     ) -> None:
         """Record an error and either retry or terminally fail the owning run."""
         ...
@@ -165,6 +180,8 @@ class TaskStore(Protocol):
         task_id: str,
         worker_id: str,
         progress: TaskProgress,
+        *,
+        claim_token: str,
     ) -> None:
         """Replace progress only while the caller owns the running task lease."""
         ...

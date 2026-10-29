@@ -42,6 +42,7 @@ from kg_processor.application.revalidation import (
     revalidate_relation_window,
 )
 from kg_processor.config.settings import Settings
+from kg_processor.domain.consumption import ConsumptionEvent
 from kg_processor.domain.distributed import (
     STAGE_PRIORITY,
     ArtifactKind,
@@ -126,6 +127,19 @@ class MemoryDistributedStore:
         # What each earlier run's tasks handed to completion, by task id.
         self.task_outputs: dict[str, list[str]] = {}
         self.abandoned_sweeps = 0
+        self.consumption_ledger: dict[tuple[str, str], ConsumptionEvent] = {}
+
+    def record_consumption(self, run_id: str, event: ConsumptionEvent) -> None:
+        """Keep events across fake task attempts with production idempotence."""
+
+        self.consumption_ledger[(run_id, event.event_id)] = event
+
+    def consumption_events(self, run_id: str) -> list[ConsumptionEvent]:
+        """Return only the requested run's accumulated provider work."""
+
+        return [
+            event for (identity, _), event in self.consumption_ledger.items() if identity == run_id
+        ]
 
     def initialize(self) -> None:
         """Satisfy the idempotent setup port for this already-initialized fake."""
@@ -331,7 +345,9 @@ class MemoryDistributedStore:
         for stage in stages:
             self.served_configurations[stage] = config_digest
 
-    def heartbeat(self, task_id: str, worker_id: str, lease_duration: timedelta) -> None:
+    def heartbeat(
+        self, task_id: str, worker_id: str, lease_duration: timedelta, *, claim_token: str
+    ) -> None:
         """Record nothing: a unit test finishes long before the first renewal is due."""
 
     def report_task_progress(
@@ -339,6 +355,8 @@ class MemoryDistributedStore:
         task_id: str,
         worker_id: str,
         progress: TaskProgress,
+        *,
+        claim_token: str,
     ) -> None:
         """Record bounded in-task updates for finalization progress assertions."""
 
@@ -351,6 +369,8 @@ class MemoryDistributedStore:
         output_artifact_ids: list[str],
         follow_up_tasks: list[TaskDefinition] | None = None,
         barrier_task_id: str | None = None,
+        *,
+        claim_token: str,
     ) -> None:
         self.completed.append(
             (task_id, worker_id, output_artifact_ids, follow_up_tasks or [], barrier_task_id)
@@ -362,6 +382,8 @@ class MemoryDistributedStore:
         worker_id: str,
         error: dict[str, Any],
         retry_delay: timedelta,
+        *,
+        claim_token: str,
     ) -> None:
         self.failed.append((task_id, worker_id, error, retry_delay))
 
@@ -2052,7 +2074,7 @@ def test_a_worker_executes_a_run_with_the_ontology_the_run_carries(tmp_path: Pat
     assert len(run_pipeline.prepared_files) == 1
     assert default_pipeline.prepared_files == []
 
-    # A run that carries no profile runs on the worker's own pipeline.
+    # An omitted profile keeps the mounted vocabulary in a run-scoped pipeline.
     store.run = store.run.model_copy(update={"config": {**store.run.config, "ontology": {}}})
     store.lease = _lease(
         _task(TaskStage.PREPARE_DOCUMENT, payload={"source_artifact_id": source_ref.id})
@@ -2067,8 +2089,11 @@ def test_a_worker_executes_a_run_with_the_ontology_the_run_carries(tmp_path: Pat
         pipeline_for=pipeline_for,
     )
     assert worker.process_one().succeeded is True
-    assert len(built_for) == 1
-    assert len(default_pipeline.prepared_files) == 1
+    assert len(built_for) == 2
+    assert built_for[-1].ontology == settings.ontology
+    assert built_for[-1].job.job_id == "run-test"
+    assert len(run_pipeline.prepared_files) == 2
+    assert default_pipeline.prepared_files == []
 
 
 def test_processing_digest_ignores_worker_local_transport_settings(tmp_path: Path) -> None:

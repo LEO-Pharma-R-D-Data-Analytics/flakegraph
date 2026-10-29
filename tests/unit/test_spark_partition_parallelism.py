@@ -15,6 +15,7 @@ from llm_fakes import CountingLlm
 
 from kg_processor.adapters.embeddings.hash import HashEmbeddingProvider
 from kg_processor.adapters.llm.fake import FakeLlmProvider
+from kg_processor.application.consumption import ConsumptionCollector
 from kg_processor.application.enrichment_batching import (
     COMMUNITY_BATCH_SIZE,
     DESCRIPTION_BATCH_SIZE,
@@ -229,11 +230,12 @@ def test_spark_enrichment_provider_reuses_durable_cache_across_worker_restart(
             "job": {"graph_id": "graph"},
             "llm": {"provider": "fake", "model": "fake"},
             "cache": {"provider": "local", "path": tmp_path / "cache"},
+            "distributed": {"artifact_uri": (tmp_path / "artifacts").as_uri()},
         },
     )
     built: list[CountingLlm] = []
 
-    def build(_settings: Settings) -> CountingLlm:
+    def build(_settings: Settings, _consumption: Any = None) -> CountingLlm:
         provider = CountingLlm()
         built.append(provider)
         return provider
@@ -430,11 +432,15 @@ def _run_partition(
     in_flight = _InFlight()
     monkeypatch.setattr(
         "kg_processor.factories.build_llm_provider",
-        lambda _settings: _InFlightLlm(in_flight, fail_on_call),
+        lambda _settings, _collector=None: _InFlightLlm(in_flight, fail_on_call),
     )
     monkeypatch.setattr(
         "kg_processor.factories.build_embedding_provider",
         lambda _settings: _InFlightEmbeddings(in_flight),
+    )
+    monkeypatch.setattr(
+        "kg_processor.application.spark_finalization._executor_consumption_collector",
+        lambda settings: ConsumptionCollector(settings.job.graph_id, job_id=settings.job.job_id),
     )
     payload = _concurrency_settings(concurrency).model_dump(mode="json")
     output = consumed if consumed is not None else []

@@ -32,6 +32,7 @@ from kg_processor.application.community_reports import (
     MAX_EVIDENCE_QUOTES_PER_RELATION,
     structural_rating,
 )
+from kg_processor.application.consumption import ConsumptionCollector
 from kg_processor.application.content_kinds import DATASET_PROFILE_STAGE, annotate_documents
 from kg_processor.application.discarded_windows import (
     DISCARDED_WINDOW_STAGES,
@@ -62,6 +63,7 @@ from kg_processor.application.type_resolution import (
     type_resolution_rules,
 )
 from kg_processor.config.settings import Settings
+from kg_processor.domain.consumption import ConsumptionEvent
 from kg_processor.domain.distributed import TaskProgress
 from kg_processor.domain.finalization import (
     DatasetFile,
@@ -361,6 +363,7 @@ class SparkFinalizationRequest:
     # Each document's provenance label where it is not simply extracted by
     # this run - reused, revalidated, or extracted again - by file id.
     document_provenance: Mapping[str, str] = field(default_factory=dict)
+    consumption_events: tuple[ConsumptionEvent, ...] = ()
 
     def stage_run_ids(self, sources: frozenset[str]) -> list[str]:
         """The run prefixes to read for one stage, the run's own first."""
@@ -522,15 +525,12 @@ def _with_provider_environment(builder: Any, distributed: Any) -> Any:
     """
 
     for name, value in os.environ.items():
-        if not name.startswith(("KG_LLM_", "KG_EMBED_")):
+        if not name.startswith(("KG_LLM_", "KG_EMBED_", "KG_EMBEDDING_")):
             continue
         if not is_sensitive_key(name):
             builder = builder.config(f"spark.executorEnv.{name}", value)
-        elif distributed.spark_provider_secret:
-            builder = builder.config(
-                f"spark.kubernetes.executor.secretKeyRef.{name}",
-                f"{distributed.spark_provider_secret}:{name}",
-            )
+        elif reference := distributed.spark_provider_secret_refs.get(name):
+            builder = builder.config(f"spark.kubernetes.executor.secretKeyRef.{name}", reference)
     return builder
 
 
@@ -572,6 +572,13 @@ class SparkGraphFinalizer:
     def _finalize_exclusively(self, request: SparkFinalizationRequest) -> GraphDatasetManifest:
         """Run one finalization, holding the process's only Spark context."""
 
+        self.settings = self.settings.model_copy(
+            update={
+                "job": self.settings.job.model_copy(
+                    update={"job_id": request.run_id, "graph_id": request.graph_id}
+                )
+            }
+        )
         self._report_progress("start_engine", completed=0, total=1)
         spark = self._spark_session(request)
         self._report_progress("start_engine", completed=1, total=1)
@@ -595,6 +602,20 @@ class SparkGraphFinalizer:
             write_started = perf_counter()
             manifests = self._write_tables(spark, tables, request)
             metrics["output_rows"] = {name: table.row_count for name, table in manifests.items()}
+            collector = ConsumptionCollector(
+                request.graph_id, job_id=request.run_id, run_id=request.run_id
+            )
+            collector.merge(request.consumption_events)
+            collector.merge(_executor_consumption_events(spark, self.settings))
+            consumption = collector.report(self.settings.consumption.rate_card(), event_limit=100)
+            consumption["event_ledger"] = {
+                "task_store_run_id": request.run_id,
+                "executor_prefix": (
+                    f"{(self.settings.distributed.artifact_uri or '').rstrip('/')}/"
+                    f"{request.run_id}/consumption/"
+                ),
+            }
+            metrics["consumption"] = consumption
             timings["partitioned_table_write"] = perf_counter() - write_started
             timings["total"] = perf_counter() - started
             return GraphDatasetManifest(
@@ -3959,9 +3980,58 @@ def _executor_llm_provider(settings: Settings) -> Any:
     with _EXECUTOR_PROVIDER_LOCK:
         provider = _EXECUTOR_LLM_PROVIDERS.get(key)
         if provider is None:
-            provider = build_llm_provider(settings)
+            provider = build_llm_provider(settings, _executor_consumption_collector(settings))
             _EXECUTOR_LLM_PROVIDERS[key] = provider
         return provider
+
+
+def _executor_consumption_collector(settings: Settings) -> ConsumptionCollector:
+    """Persist billed executor calls independently of Spark task recomputation.
+
+    Provider work can be billed even when Spark discards a failed partition.
+    Immutable event objects therefore live outside the partition's output commit
+    and survive retries; the finalizer merges them once by event identity.
+    """
+
+    from kg_processor.factories import build_blob_store
+
+    blob = build_blob_store(settings)
+    if blob is None:
+        raise ValueError("Spark consumption accounting requires shared object storage")
+
+    def persist(event: ConsumptionEvent) -> None:
+        """Write one immutable provider event under the durable run's prefix."""
+
+        blob.put(
+            f"{settings.job.job_id}/consumption/{event.event_id}.json",
+            event.model_dump_json().encode("utf-8"),
+            "application/json",
+        )
+
+    return ConsumptionCollector(
+        settings.job.graph_id,
+        job_id=settings.job.job_id,
+        run_id=settings.job.job_id,
+        sink=persist,
+    )
+
+
+def _executor_consumption_events(
+    spark: SparkSession, settings: Settings
+) -> Iterator[ConsumptionEvent]:
+    """Stream the run's durable executor event ledger after all tables materialize."""
+
+    prefix = _spark_uri(settings.distributed.artifact_uri or "")
+    location = f"{prefix}/{settings.job.job_id}/consumption"
+    jvm = spark._jvm
+    if jvm is None:
+        raise RuntimeError("Spark consumption accounting requires the Hadoop filesystem bridge")
+    path = jvm.org.apache.hadoop.fs.Path(location)
+    filesystem = path.getFileSystem(spark._jsc.hadoopConfiguration())
+    if not filesystem.exists(path):
+        return
+    for row in spark.read.text(location).toLocalIterator():
+        yield ConsumptionEvent.model_validate_json(row.value)
 
 
 def _executor_enrichment_llm_provider(settings: Settings) -> Any:

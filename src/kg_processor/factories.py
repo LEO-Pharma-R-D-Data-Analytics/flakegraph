@@ -183,6 +183,7 @@ def build_distributed_pipeline(
     lightweight queue worker process.
     """
 
+    from kg_processor.application.consumption import ConsumptionCollector
     from kg_processor.application.pipeline import KgProcessorPipeline
     from kg_processor.application.progress import JsonLineProgressSink
 
@@ -207,8 +208,10 @@ def build_distributed_pipeline(
     )
     needs_local_finalize = TaskStage.FINALIZE_GRAPH in stages and not spark_finalization
     needs_llm = needs_extract or needs_local_finalize
-    llm = build_llm_provider(settings) if needs_llm else cast(LlmProvider, unused)
+    collector = ConsumptionCollector(settings.job.graph_id, job_id=settings.job.job_id)
+    llm = build_llm_provider(settings, collector) if needs_llm else cast(LlmProvider, unused)
     return KgProcessorPipeline(
+        consumption=collector,
         settings=settings,
         file_source=cast(FileSource, unused),
         ocr=build_ocr_provider(settings) if needs_prepare else cast(OcrProvider, unused),

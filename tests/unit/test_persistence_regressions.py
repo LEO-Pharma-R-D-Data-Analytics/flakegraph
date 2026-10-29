@@ -84,7 +84,14 @@ def test_explicit_run_identity_rejects_changed_submission(tmp_path: Path, change
         settings = settings.model_copy(
             update={
                 "ontology": settings.ontology.model_copy(
-                    update={"profile": {"name": "changed", "mode": "open", "entity_types": []}}
+                    update={
+                        "profile": {
+                            "name": "changed",
+                            "description": "An explicitly changed vocabulary.",
+                            "mode": "open",
+                            "entity_types": [],
+                        }
+                    }
                 )
             }
         )

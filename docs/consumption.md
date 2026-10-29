@@ -102,3 +102,30 @@ The full report persists beside the finished graph, carrying every recorded even
 rather than only the totals. That is what makes the answer re-derivable when the
 rate table is corrected, and what lets spend be broken down afterwards along an
 axis nobody thought to group by at the time.
+
+
+## Distributed Accounting
+
+Each durable run has an independent collector bound to its graph and run IDs.
+Task attempts share provider clients while keeping their metering context
+separate. Every measured call has an immutable event ID; task workers persist
+that event in PostgreSQL before completing the call. Usage carried by a billed
+provider failure is recorded before the error propagates, so retries retain the
+cost of earlier attempts.
+
+A local finalizer reads the run's durable event ledger before assembling its
+report. Spark executors persist provider events under
+`<run_id>/consumption/<event_id>.json` in the configured artifact store. These
+objects survive failed partition attempts. After graph tables materialize, the
+Spark finalizer merges executor events with the task-worker ledger and includes
+complete totals and groupings in the manifest metrics. Event detail in a Spark
+manifest is capped at 100 entries, with `event_count`, `events_truncated`, and
+ledger references identifying the complete audit data. Event IDs make rereads
+idempotent while preserving separately billed calls during retries. The driver
+currently merges the accounting ledger in memory; its memory use therefore
+scales with provider call count even though graph tables stay partitioned.
+
+Reports use the durable run ID as `job_id`; the content-derived local report
+`run_id` remains a separate artifact identity. Revisions account for the provider
+work executed by the revision itself. Reusing a prior document does not charge
+its earlier extraction to the revision again.

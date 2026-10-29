@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from datetime import timedelta
 from threading import Lock
 from typing import Any, cast
+from uuid import uuid4
 from weakref import finalize
 
 import psycopg
@@ -25,6 +26,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from kg_processor.application.ordered_map import bounded_map
+from kg_processor.domain.consumption import ConsumptionEvent
 from kg_processor.domain.distributed import (
     PRIORITY_BAND_OFFSET,
     STAGE_PRIORITY,
@@ -108,7 +110,7 @@ _TASK_SNAPSHOT_SELECT = """
            ) AS dependency_ids
     FROM flakegraph_task AS task
 """
-_SCHEMA_VERSION = 12
+_SCHEMA_VERSION = 13
 # How many of a run's ready tasks per stage a claim considers. Only the first
 # is taken; the rest stand in when a concurrent claim has locked it, so this
 # bounds how many workers of one pool can claim from one run and stage in the
@@ -147,6 +149,10 @@ _CLAIM_TASK = """
         FROM flakegraph_run AS run
         LEFT JOIN load ON load.run_id = run.id
         WHERE run.status IN ('queued', 'running')
+          AND NOT EXISTS (
+              SELECT 1 FROM flakegraph_graph_deletion AS deletion
+              WHERE deletion.graph_id = run.graph_id
+          )
           AND (
               CAST(%(config_digest)s AS TEXT) IS NULL
               OR run.config_digest = %(config_digest)s
@@ -224,6 +230,7 @@ _CLAIM_TASK = """
     SET status = 'running',
         attempts = task.attempts + 1,
         lease_owner = %(worker_id)s,
+        claim_token = %(claim_token)s,
         lease_expires_at = CURRENT_TIMESTAMP + %(lease_duration)s,
         started_at = COALESCE(task.started_at, CURRENT_TIMESTAMP),
         completed_at = NULL,
@@ -423,10 +430,57 @@ class PostgresDistributedStore:
                 (_SCHEMA_VERSION,),
             )
 
+    def record_consumption(self, run_id: str, event: ConsumptionEvent) -> None:
+        """Persist one provider event idempotently, including failed task attempts."""
+
+        if event.job_id != run_id:
+            raise ValueError("consumption event must belong to its durable run")
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO flakegraph_consumption_event (run_id, id, event_json)
+                SELECT id, %s, %s FROM flakegraph_run WHERE id = %s
+                ON CONFLICT (run_id, id) DO NOTHING
+                """,
+                (event.event_id, Jsonb(event.model_dump(mode="json")), run_id),
+            )
+
+    def consumption_events(self, run_id: str) -> list[ConsumptionEvent]:
+        """Read the run's complete provider ledger in stable insertion order."""
+
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_json FROM flakegraph_consumption_event
+                WHERE run_id = %s ORDER BY created_at, id
+                """,
+                (run_id,),
+            ).fetchall()
+        return [ConsumptionEvent.model_validate(row["event_json"]) for row in rows]
+
+    @staticmethod
+    def _lock_graph(connection: psycopg.Connection[dict[str, Any]], graph_id: str) -> None:
+        """Serialize graph creation, retry and deletion reservation across processes."""
+
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (graph_id,))
+
+    @staticmethod
+    def _assert_graph_available(
+        connection: psycopg.Connection[dict[str, Any]], graph_id: str
+    ) -> None:
+        """Reject mutations while a graph's durable deletion reservation is held."""
+
+        if connection.execute(
+            "SELECT 1 FROM flakegraph_graph_deletion WHERE graph_id = %s", (graph_id,)
+        ).fetchone():
+            raise ValueError(f"graph {graph_id} is being deleted")
+
     def create_run(self, run: RunDefinition) -> None:
         """Insert a planning run idempotently while rejecting identity collisions."""
 
         with self._connection() as connection:
+            self._lock_graph(connection, run.graph_id)
+            self._assert_graph_available(connection, run.graph_id)
             connection.execute(
                 """
                 INSERT INTO flakegraph_run (
@@ -792,6 +846,7 @@ class PostgresDistributedStore:
                     "config_digest": expected_config_digest,
                     "candidates_per_stage": _CLAIM_CANDIDATES_PER_STAGE,
                     "worker_id": worker_id,
+                    "claim_token": str(uuid4()),
                     "lease_duration": lease_duration,
                 },
             ).fetchone()
@@ -815,11 +870,14 @@ class PostgresDistributedStore:
                 task=_task_definition(row, dependency_outputs.keys()),
                 worker_id=worker_id,
                 attempt=int(row["attempts"]),
+                claim_token=str(row["claim_token"]),
                 lease_expires_at=row["lease_expires_at"],
                 dependency_outputs=dependency_outputs,
             )
 
-    def heartbeat(self, task_id: str, worker_id: str, lease_duration: timedelta) -> None:
+    def heartbeat(
+        self, task_id: str, worker_id: str, lease_duration: timedelta, *, claim_token: str
+    ) -> None:
         """Extend an owned running lease without changing its attempt count."""
 
         _validate_duration(lease_duration, "lease duration")
@@ -829,10 +887,10 @@ class PostgresDistributedStore:
                 UPDATE flakegraph_task
                 SET lease_expires_at = CURRENT_TIMESTAMP + %s,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND status = %s AND lease_owner = %s
+                WHERE id = %s AND status = %s AND lease_owner = %s AND claim_token = %s
                 RETURNING id
                 """,
-                (lease_duration, task_id, TaskStatus.RUNNING.value, worker_id),
+                (lease_duration, task_id, TaskStatus.RUNNING.value, worker_id, claim_token),
             ).fetchone()
             if row is None:
                 raise RuntimeError(f"worker {worker_id} no longer owns task {task_id}")
@@ -842,6 +900,8 @@ class PostgresDistributedStore:
         task_id: str,
         worker_id: str,
         progress: TaskProgress,
+        *,
+        claim_token: str,
     ) -> None:
         """Persist bounded progress only while the worker owns the running lease."""
 
@@ -852,7 +912,7 @@ class PostgresDistributedStore:
                 SET progress_json = %s,
                     progress_updated_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND status = %s AND lease_owner = %s
+                WHERE id = %s AND status = %s AND lease_owner = %s AND claim_token = %s
                 RETURNING run_id
                 """,
                 (
@@ -860,6 +920,7 @@ class PostgresDistributedStore:
                     task_id,
                     TaskStatus.RUNNING.value,
                     worker_id,
+                    claim_token,
                 ),
             ).fetchone()
             if row is None:
@@ -1197,6 +1258,8 @@ class PostgresDistributedStore:
         output_artifact_ids: list[str],
         follow_up_tasks: list[TaskDefinition] | None = None,
         barrier_task_id: str | None = None,
+        *,
+        claim_token: str,
     ) -> None:
         """Commit outputs and dynamically discovered work in one transaction.
 
@@ -1210,7 +1273,7 @@ class PostgresDistributedStore:
         if len(set(output_artifact_ids)) != len(output_artifact_ids):
             raise ValueError("task output artifact ids must be unique")
         with self._connection() as connection:
-            task = self._owned_task(connection, task_id, worker_id)
+            task = self._owned_task(connection, task_id, worker_id, claim_token)
             run_id = str(task["run_id"])
             output_rows: list[dict[str, Any]] = []
             if output_artifact_ids:
@@ -1516,13 +1579,15 @@ class PostgresDistributedStore:
         worker_id: str,
         error: dict[str, Any],
         retry_delay: timedelta,
+        *,
+        claim_token: str,
     ) -> None:
         """Retry an owned task within its budget or fail the run terminally."""
 
         if retry_delay < timedelta(0):
             raise ValueError("retry delay must not be negative")
         with self._connection() as connection:
-            task = self._owned_task(connection, task_id, worker_id)
+            task = self._owned_task(connection, task_id, worker_id, claim_token)
             exhausted = int(task["attempts"]) >= int(task["max_attempts"])
             next_status = TaskStatus.FAILED if exhausted else TaskStatus.QUEUED
             connection.execute(
@@ -1555,7 +1620,38 @@ class PostgresDistributedStore:
                     ),
                 )
 
+    @contextmanager
+    def _deletion_executor(self, graph_id: str) -> Iterator[None]:
+        """Hold one deletion executor across blob I/O without an open transaction.
+
+        A dedicated session avoids consuming the task pool while external storage
+        is busy. Closing it releases the advisory lock even when deletion fails;
+        the committed reservation remains available for a subsequent retry.
+        """
+
+        try:
+            with psycopg.connect(
+                self.dsn, autocommit=True, connect_timeout=10, row_factory=dict_row
+            ) as connection:
+                row = connection.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%s, 0)) AS locked",
+                    (f"flakegraph:delete:{graph_id}",),
+                ).fetchone()
+                if row is None or not row["locked"]:
+                    raise ValueError(f"graph {graph_id} deletion is already executing")
+                yield
+        except psycopg.OperationalError:
+            raise TaskStoreUnavailableError(
+                "PostgreSQL coordination store is unavailable"
+            ) from None
+
     def delete_graph(self, graph_id: str) -> GraphDeletion:
+        """Reserve a terminal graph and remove its objects and coordination rows."""
+
+        with self._deletion_executor(graph_id):
+            return self._delete_reserved_graph(graph_id)
+
+    def _delete_reserved_graph(self, graph_id: str) -> GraphDeletion:
         """Remove a graph for good: every run of it, and everything they stored.
 
         A graph is deleted whole, never one run at a time, because a revision
@@ -1563,33 +1659,79 @@ class PostgresDistributedStore:
         objects go first - payloads, stage outputs, Spark checkpoints and the
         published parquet all live under ``<run id>/`` in the blob store - and
         then every row naming those runs, in one transaction. Interrupted
-        between the two, the rows still name the graph, so deleting it again
-        finishes the job. A graph with work still queued or running is refused:
+        between the two, the durable reservation rejects submissions and retries,
+        and deleting the graph again finishes the job. A graph with queued or running
+        work is refused:
         a worker would write into what is being removed.
         """
 
+        deletion_token = str(uuid4())
         with self._connection() as connection:
+            self._lock_graph(connection, graph_id)
             runs = connection.execute(
                 "SELECT id, status FROM flakegraph_run WHERE graph_id = %s ORDER BY created_at",
                 (graph_id,),
             ).fetchall()
-        run_ids = [str(row["id"]) for row in runs]
-        active = [
-            str(row["id"])
-            for row in runs
-            if str(row["status"])
-            in {RunStatus.PLANNING.value, RunStatus.QUEUED.value, RunStatus.RUNNING.value}
-        ]
-        if active:
-            raise ValueError(
-                f"graph {graph_id} still has work under way ({', '.join(active)}); "
-                "cancel it before deleting the graph"
+            run_ids = [str(row["id"]) for row in runs]
+            active = [
+                str(row["id"])
+                for row in runs
+                if str(row["status"])
+                in {RunStatus.PLANNING.value, RunStatus.QUEUED.value, RunStatus.RUNNING.value}
+            ]
+            if active:
+                raise ValueError(
+                    f"graph {graph_id} still has work under way ({', '.join(active)}); "
+                    "cancel it before deleting the graph"
+                )
+            # A failed run can still have sibling work finishing. Lock those
+            # rows before checking leases; an expired holder cannot renew after
+            # its row is cancelled by this reservation.
+            for table in ("flakegraph_task", "flakegraph_publication"):
+                live = connection.execute(
+                    f"SELECT id, lease_expires_at >= CURRENT_TIMESTAMP AS live FROM {table} "
+                    "WHERE run_id = ANY(%s) AND status = 'running' FOR UPDATE",
+                    (run_ids,),
+                ).fetchall()
+                if any(row["live"] for row in live):
+                    raise ValueError(
+                        f"graph {graph_id} still has work under way; wait for its leases"
+                    )
+                connection.execute(
+                    f"UPDATE {table} SET status = 'cancelled', lease_owner = NULL, "
+                    "lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE run_id = ANY(%s) AND status IN ('queued', 'running')",
+                    (run_ids,),
+                )
+            # Task transitions and cancellation lock work rows before the run.
+            # Recheck terminal status only after acquiring the same row order.
+            current = connection.execute(
+                "SELECT status FROM flakegraph_run WHERE graph_id = %s FOR UPDATE",
+                (graph_id,),
+            ).fetchall()
+            if any(
+                str(row["status"])
+                in {RunStatus.PLANNING.value, RunStatus.QUEUED.value, RunStatus.RUNNING.value}
+                for row in current
+            ):
+                raise ValueError(f"graph {graph_id} still has work under way")
+            connection.execute(
+                "INSERT INTO flakegraph_graph_deletion (graph_id, token) VALUES (%s, %s) "
+                "ON CONFLICT (graph_id) DO UPDATE SET token = EXCLUDED.token",
+                (graph_id, deletion_token),
             )
         objects = 0
         if self.blob_store is not None:
             for run_id in run_ids:
                 objects += self.blob_store.delete_prefix(run_id)
         with self._connection() as connection:
+            self._lock_graph(connection, graph_id)
+            reservation = connection.execute(
+                "SELECT token FROM flakegraph_graph_deletion WHERE graph_id = %s FOR UPDATE",
+                (graph_id,),
+            ).fetchone()
+            if reservation is None or reservation["token"] != deletion_token:
+                raise ValueError(f"graph {graph_id} deletion reservation was superseded")
             # Heads and versions hold their artifacts with ON DELETE RESTRICT,
             # and publications theirs, so they go before the artifacts; tasks
             # take their dependencies and outputs with them.
@@ -1608,6 +1750,9 @@ class PostgresDistributedStore:
                 "DELETE FROM flakegraph_artifact WHERE run_id = ANY(%s)", (run_ids,)
             ).rowcount
             connection.execute("DELETE FROM flakegraph_run WHERE id = ANY(%s)", (run_ids,))
+            connection.execute(
+                "DELETE FROM flakegraph_graph_deletion WHERE graph_id = %s", (graph_id,)
+            )
         with self._known_run_ids_lock:
             self._known_run_ids.difference_update(run_ids)
         return GraphDeletion(
@@ -1694,6 +1839,13 @@ class PostgresDistributedStore:
         """
 
         with self._connection() as connection:
+            identity = connection.execute(
+                "SELECT graph_id FROM flakegraph_run WHERE id = %s", (run_id,)
+            ).fetchone()
+            if identity is None:
+                raise KeyError(f"unknown distributed run: {run_id}")
+            self._lock_graph(connection, str(identity["graph_id"]))
+            self._assert_graph_available(connection, str(identity["graph_id"]))
             run = connection.execute(
                 "SELECT status, config_json FROM flakegraph_run WHERE id = %s FOR UPDATE",
                 (run_id,),
@@ -2314,16 +2466,17 @@ class PostgresDistributedStore:
         connection: psycopg.Connection[dict[str, Any]],
         task_id: str,
         worker_id: str,
+        claim_token: str,
     ) -> dict[str, Any]:
         """Lock and return a running task only when the caller owns its lease."""
 
         row = connection.execute(
             """
             SELECT * FROM flakegraph_task
-            WHERE id = %s AND status = %s AND lease_owner = %s
+            WHERE id = %s AND status = %s AND lease_owner = %s AND claim_token = %s
             FOR UPDATE
             """,
-            (task_id, TaskStatus.RUNNING.value, worker_id),
+            (task_id, TaskStatus.RUNNING.value, worker_id, claim_token),
         ).fetchone()
         if row is None:
             raise RuntimeError(f"worker {worker_id} no longer owns task {task_id}")
@@ -2829,10 +2982,32 @@ _VERSION_12_MIGRATION = (
     _WORKER_DEMAND_VIEW,
     "GRANT SELECT (priority_band) ON flakegraph_run TO pg_monitor",
 )
+_CONSUMPTION_TABLE = """
+    CREATE TABLE IF NOT EXISTS flakegraph_consumption_event (
+        run_id TEXT NOT NULL REFERENCES flakegraph_run(id) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        event_json JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (run_id, id)
+    )
+"""
+_DELETION_TABLE = """
+    CREATE TABLE IF NOT EXISTS flakegraph_graph_deletion (
+        graph_id TEXT PRIMARY KEY,
+        token TEXT NOT NULL,
+        reserved_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+"""
+_VERSION_13_MIGRATION = (
+    "ALTER TABLE flakegraph_task ADD COLUMN claim_token TEXT",
+    _DELETION_TABLE,
+    _CONSUMPTION_TABLE,
+)
 # The statements that take the schema from the version before each key to the key.
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
     11: _VERSION_11_MIGRATION,
     12: _VERSION_12_MIGRATION,
+    13: _VERSION_13_MIGRATION,
 }
 # Installed versions this build migrates from.
 _MIGRATIONS_FROM = frozenset(version - 1 for version in _MIGRATIONS)
@@ -2885,6 +3060,7 @@ _SCHEMA_STATEMENTS = (
             CHECK (remaining_dependencies >= 0),
         available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         lease_owner TEXT,
+        claim_token TEXT,
         lease_expires_at TIMESTAMPTZ,
         last_error_json JSONB,
         progress_json JSONB,
@@ -3112,4 +3288,6 @@ _SCHEMA_STATEMENTS = (
     """
     GRANT SELECT ON flakegraph_worker_demand TO pg_monitor
     """,
+    _DELETION_TABLE,
+    _CONSUMPTION_TABLE,
 )

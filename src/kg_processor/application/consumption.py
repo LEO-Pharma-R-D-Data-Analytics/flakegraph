@@ -12,7 +12,7 @@ Collection is thread-safe because extraction fans windows out concurrently.
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
 from kg_processor.config.provider_registry import provider_profile
 from kg_processor.domain.consumption import (
@@ -41,9 +41,23 @@ def locality_for(provider: str) -> Locality:
 class ConsumptionCollector:
     """Accumulate consumption events for one run."""
 
-    def __init__(self, graph_id: str, job_id: str = "") -> None:
+    def __init__(
+        self,
+        graph_id: str,
+        job_id: str = "",
+        *,
+        run_id: str = "",
+        task_id: str = "",
+        task_attempt: int = 0,
+        sink: Callable[[ConsumptionEvent], None] | None = None,
+    ) -> None:
         self.graph_id = graph_id
         self.job_id = job_id
+        self.run_id = run_id
+        self.task_id = task_id
+        self.task_attempt = task_attempt
+        self._sink = sink
+        self._event_ids: set[str] = set()
         self._events: list[ConsumptionEvent] = []
         self._lock = threading.Lock()
 
@@ -63,6 +77,9 @@ class ConsumptionCollector:
         event = ConsumptionEvent(
             graph_id=self.graph_id,
             job_id=self.job_id,
+            run_id=self.run_id,
+            task_id=self.task_id,
+            task_attempt=self.task_attempt,
             stage=stage,
             operation=operation,
             provider=provider,
@@ -72,8 +89,47 @@ class ConsumptionCollector:
             pages=pages,
             file_id=file_id,
         )
+        self.accept(event)
+
+    def accept(self, event: ConsumptionEvent) -> None:
+        """Persist one measured call before exposing it in the in-process report.
+
+        An immutable event identity lets durable sinks retry delivery without
+        counting one provider call twice. A failed sink propagates: completing
+        a task without its billed usage would silently lose accounting.
+        """
+
+        if self._sink is not None:
+            self._sink(event)
+        self.merge([event])
+
+    def merge(self, events: Iterable[ConsumptionEvent]) -> None:
+        """Merge persisted events once without writing them back to their sink."""
+
         with self._lock:
-            self._events.append(event)
+            for event in events:
+                if event.graph_id != self.graph_id or event.job_id != self.job_id:
+                    raise ValueError("consumption event belongs to another graph or run")
+                if event.event_id not in self._event_ids:
+                    self._events.append(event)
+                    self._event_ids.add(event.event_id)
+
+    def bind_sink(self, sink: Callable[[ConsumptionEvent], None]) -> None:
+        """Attach the run's durable accounting boundary before executing tasks."""
+
+        self._sink = sink
+
+    def for_task(self, task_id: str, attempt: int) -> ConsumptionCollector:
+        """Bind concurrent provider calls to one task attempt and the parent run."""
+
+        return ConsumptionCollector(
+            self.graph_id,
+            self.job_id,
+            run_id=self.run_id,
+            task_id=task_id,
+            task_attempt=attempt,
+            sink=self.accept,
+        )
 
     def record_completion(
         self,
@@ -119,18 +175,22 @@ class ConsumptionCollector:
 
         return dict(summarize(self.events, card).model_dump(mode="json"))
 
-    def report(self, card: RateCard) -> dict[str, object]:
+    def report(self, card: RateCard, *, event_limit: int | None = None) -> dict[str, object]:
         """Summarize the run for persistence beside its graph.
 
         Both the totals and the events are returned. Totals answer "what did this
         graph cost"; the events are what let that answer be re-derived when the
         rate table is corrected, or broken down by stage, provider or model
-        without re-running anything.
+        without re-running anything. ``event_limit`` bounds serialized detail
+        only; every event still participates in every aggregate.
         """
 
+        if event_limit is not None and event_limit < 0:
+            raise ValueError("consumption event detail limit must not be negative")
         events = self.events
         totals: ConsumptionTotals = summarize(events, card)
-        return {
+        detail = events if event_limit is None else events[:event_limit]
+        report: dict[str, object] = {
             "totals": totals.model_dump(mode="json"),
             "by_stage": {
                 name: value.model_dump(mode="json")
@@ -148,5 +208,8 @@ class ConsumptionCollector:
                 name: value.model_dump(mode="json")
                 for name, value in group_by(events, "locality", card).items()
             },
-            "events": [event.model_dump(mode="json") for event in events],
+            "events": [event.model_dump(mode="json") for event in detail],
         }
+        if event_limit is not None:
+            report.update(event_count=len(events), events_truncated=len(detail) < len(events))
+        return report

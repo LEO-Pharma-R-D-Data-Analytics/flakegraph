@@ -357,6 +357,7 @@ class TaskLease(BaseModel):
     task: TaskDefinition
     worker_id: str
     attempt: int = Field(ge=1)
+    claim_token: str = ""
     lease_expires_at: datetime
     dependency_outputs: dict[str, list[str]] = Field(default_factory=dict)
 

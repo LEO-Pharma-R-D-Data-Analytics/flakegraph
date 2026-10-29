@@ -116,15 +116,25 @@ class DistributedSettings(_SettingsModel):
     spark_namespace: str = "default"
     spark_service_account: str = "flakegraph-spark"
     spark_executor_pod_template: str = "/etc/flakegraph-spark/executor-pod-template.yaml"
-    # Kubernetes Secret holding the provider credentials. Executors are given a
-    # reference to it rather than the values, which Spark would otherwise write
-    # into every executor Pod spec in clear text.
+    # Accepted for configuration compatibility; executor bindings are explicit
+    # in spark_provider_secret_refs rather than inferred from this name.
     spark_provider_secret: str = "flakegraph-providers"
+    # Actual driver env-to-Secret bindings, including gateway virtual keys and
+    # renamed provider keys. Values are Kubernetes "secret-name:key" references.
+    spark_provider_secret_refs: dict[str, str] = Field(default_factory=dict)
+
     spark_executor_instances: int = Field(default=4, gt=0)
     spark_executor_cores: int = Field(default=4, gt=0)
     spark_executor_memory: str = "8g"
     spark_executor_memory_overhead: str = "8g"
     spark_shuffle_partitions: int = Field(default=0, ge=0)
+
+    @field_validator("spark_provider_secret_refs", mode="before")
+    @classmethod
+    def parse_provider_secret_refs(cls, value: Any) -> Any:
+        """Read JSON environment input without ever embedding credential values."""
+
+        return json.loads(value) if isinstance(value, str) else value
 
     @field_validator(
         "database_url",

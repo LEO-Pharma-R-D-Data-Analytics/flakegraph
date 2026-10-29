@@ -46,6 +46,13 @@ class MeteredLlmProvider:
         self.provider = provider
         self.model = model
 
+    def close(self) -> None:
+        """Release the reusable provider client when its owning pipeline closes."""
+
+        close = getattr(self.delegate, "close", None)
+        if callable(close):
+            close()
+
     def capabilities(self) -> LlmCapabilities:
         """Delegate capability discovery, which consumes nothing."""
 
@@ -98,7 +105,11 @@ class MeteredLlmProvider:
     ) -> DescriptionMergeResult:
         """Record one description-merge call."""
 
-        result = self.delegate.merge_entity_description(request)
+        try:
+            result = self.delegate.merge_entity_description(request)
+        except Exception as error:
+            self._record_billed_failure(error, stage="description_merge", model=self.model)
+            raise
         self.collector.record_completion(
             stage="description_merge",
             provider=self.provider,
@@ -111,7 +122,11 @@ class MeteredLlmProvider:
     def summarize_community(self, request: CommunitySummaryRequest) -> CommunitySummaryResult:
         """Record one community-report call."""
 
-        result = self.delegate.summarize_community(request)
+        try:
+            result = self.delegate.summarize_community(request)
+        except Exception as error:
+            self._record_billed_failure(error, stage="community_report", model=self.model)
+            raise
         self.collector.record_completion(
             stage="community_report",
             provider=self.provider,

@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -100,8 +101,11 @@ class ConsumptionEvent(BaseModel):
     which fans out across windows reports what each window actually consumed.
     """
 
+    event_id: str = Field(default_factory=lambda: uuid4().hex)
     graph_id: str
     run_id: str = ""
+    task_id: str = ""
+    task_attempt: int = 0
     job_id: str = ""
     stage: str
     operation: str

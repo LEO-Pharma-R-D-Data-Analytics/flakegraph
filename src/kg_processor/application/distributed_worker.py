@@ -14,6 +14,7 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
 
+from kg_processor.application.consumption import ConsumptionCollector
 from kg_processor.application.content_kinds import (
     dataset_profiles,
     dataset_windows,
@@ -148,20 +149,24 @@ def _run_ontology(settings: Settings) -> OntologyProfile:
 
 
 def settings_for_run(
-    base: Settings, run_config: dict[str, Any], *, graph_id: str | None = None
+    base: Settings,
+    run_config: dict[str, Any],
+    *,
+    graph_id: str | None = None,
+    run_id: str | None = None,
 ) -> Settings:
     """Apply a run's authoritative graph identity and stored ontology.
 
-    The run's configuration is the snapshot the planner stored. Its ontology
-    profile, when carried inline, is what the run's graph is to be built with;
-    a profile the submitter only named by path is not readable here, so such a
-    run executes with the worker's mounted profile. ``base`` is returned as is
-    when the run changes nothing, so callers can tell the two apart.
+    Explicit vocabularies are resolved by the planner and carried inline. A
+    submission that selects none uses the worker's mounted profile. The durable
+    run ID is also the job identity used by reports and accounting.
     """
 
     identity = graph_id if graph_id is not None else run_config.get("graph_id")
     if isinstance(identity, str) and identity != base.job.graph_id:
         base = base.model_copy(update={"job": base.job.model_copy(update={"graph_id": identity})})
+    if run_id is not None and run_id != base.job.job_id:
+        base = base.model_copy(update={"job": base.job.model_copy(update={"job_id": run_id})})
     ontology = run_config.get("ontology")
     profile = ontology.get("profile") if isinstance(ontology, dict) else None
     if not isinstance(profile, dict):
@@ -310,6 +315,7 @@ class DistributedWorker:
                     lease.task.id,
                     self.worker_id,
                     self.lease_duration,
+                    claim_token=lease.claim_token,
                 ),
                 heartbeat_interval_seconds(self.settings.distributed.lease_seconds),
             ) as heartbeat:
@@ -322,6 +328,7 @@ class DistributedWorker:
                 output_ids,
                 list(execution.follow_up_tasks),
                 execution.barrier_task_id,
+                claim_token=lease.claim_token,
             )
             return WorkerIteration(
                 claimed=True,
@@ -338,6 +345,7 @@ class DistributedWorker:
                     self.worker_id,
                     error,
                     self.retry_delay,
+                    claim_token=lease.claim_token,
                 )
             except TaskStoreUnavailableError:
                 # The caller owns coordination outages and retries after
@@ -603,6 +611,11 @@ class DistributedWorker:
         """Dispatch one validated lease to its stage-specific implementation."""
 
         run = self._run_context(lease.task.run_id)
+        task_pipeline = getattr(run.pipeline, "for_task", None)
+        if task_pipeline is not None:
+            run = _RunContext(
+                settings=run.settings, pipeline=task_pipeline(lease.task.id, lease.attempt)
+            )
         if lease.task.stage == TaskStage.PREPARE_DOCUMENT:
             return self._prepare_document(lease, run)
         if lease.task.stage == TaskStage.EXTRACT_DOCUMENT_CONTEXT:
@@ -642,21 +655,28 @@ class DistributedWorker:
             return cached
         definition = self.task_store.get_run_summary(run_id).run
         run_settings = settings_for_run(
-            self.settings, definition.config, graph_id=definition.graph_id
+            self.settings, definition.config, graph_id=definition.graph_id, run_id=definition.id
         )
         pipeline = self.pipeline
-        if run_settings is not self.settings:
-            configure = self._pipeline_for or getattr(self.pipeline, "for_settings", None)
-            if configure is not None:
-                pipeline = configure(run_settings)
-            elif run_settings.job.graph_id != self.settings.job.graph_id:
-                raise ValueError("a worker serving another graph requires a configurable pipeline")
+        configure = self._pipeline_for or getattr(self.pipeline, "for_settings", None)
+        if configure is not None:
+            pipeline = configure(run_settings)
+        elif run_settings.job.graph_id != self.settings.job.graph_id:
+            raise ValueError("a worker serving another graph requires a configurable pipeline")
         with self._lock:
             # Two slots can resolve one run at once; the first to finish is
             # kept, so every slot of a run executes on the same pipeline.
             cached = self._run_contexts.get(run_id)
             if cached is not None:
                 return cached
+            collector = getattr(pipeline, "consumption", None)
+            record = getattr(self.task_store, "record_consumption", None)
+            read = getattr(self.task_store, "consumption_events", None)
+            if isinstance(collector, ConsumptionCollector):
+                if record is not None:
+                    collector.bind_sink(lambda event: record(run_id, event))
+                if read is not None:
+                    collector.merge(read(run_id))
             context = _RunContext(settings=run_settings, pipeline=pipeline)
             if len(self._run_contexts) >= _RUN_CONTEXT_CACHE_SIZE:
                 self._run_contexts.pop(next(iter(self._run_contexts)))
@@ -1579,6 +1599,11 @@ class DistributedWorker:
                     ref.run_id for ref in inputs if ref.kind is ArtifactKind.EXTRACTED_DOCUMENT
                 ),
                 document_provenance=document_provenance(lease.task.payload),
+                consumption_events=tuple(
+                    getattr(self.task_store, "consumption_events", lambda _run: [])(
+                        lease.task.run_id
+                    )
+                ),
             )
         )
         # Destination publication is queued atomically by ``complete_task`` after
@@ -1631,6 +1656,7 @@ class DistributedWorker:
         report(finalization_progress("read_artifacts", completed=1, total=1))
         report(finalization_progress("materialize_inputs", completed=1, total=1))
         report(finalization_progress("resolve_entities", completed=0, total=1))
+        self._refresh_consumption(lease.task.run_id, run.pipeline)
         batch = run.pipeline.finalize_document_shards(document_shards, write=False)
         for phase, _label in FINALIZATION_PHASES[4:11]:
             report(finalization_progress(phase, completed=1, total=1))
@@ -1649,6 +1675,14 @@ class DistributedWorker:
         )
         report(finalization_progress("persist_manifest", completed=1, total=1))
         return ref.id
+
+    def _refresh_consumption(self, run_id: str, pipeline: DistributedPipeline) -> None:
+        """Include usage from other worker processes before building graph metrics."""
+
+        collector = getattr(pipeline, "consumption", None)
+        read = getattr(self.task_store, "consumption_events", None)
+        if isinstance(collector, ConsumptionCollector) and read is not None:
+            collector.merge(read(run_id))
 
     def _quarantined_file_ids(self, run_id: str) -> set[str]:
         """Read durable retry exclusions afresh rather than from the settings cache."""
@@ -1692,7 +1726,9 @@ class DistributedWorker:
             """Persist progress without allowing observability failure to abort work."""
 
             try:
-                self.task_store.report_task_progress(lease.task.id, self.worker_id, progress)
+                self.task_store.report_task_progress(
+                    lease.task.id, self.worker_id, progress, claim_token=lease.claim_token
+                )
             except Exception:
                 # Lease heartbeat remains authoritative for ownership and
                 # availability. A progress write is useful but non-critical.

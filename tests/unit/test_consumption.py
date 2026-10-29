@@ -420,3 +420,31 @@ def test_a_provider_is_billed_where_the_registry_says_it_runs(
     """
 
     assert locality_for(provider) == locality
+
+
+def test_bounded_event_detail_preserves_complete_consumption_aggregates() -> None:
+    """A small manifest can retain full totals without embedding the audit ledger."""
+
+    collector = ConsumptionCollector("graph", job_id="run", run_id="run")
+    for _ in range(125):
+        collector.record_completion(
+            stage="extraction",
+            provider="openai",
+            model="gpt-5.6",
+            usage=TokenUsage(prompt_tokens=100, completion_tokens=20),
+        )
+    report = collector.report(_card(), event_limit=100)
+    events, totals, by_stage = report["events"], report["totals"], report["by_stage"]
+    assert isinstance(events, list)
+    assert isinstance(totals, dict)
+    assert isinstance(by_stage, dict)
+    assert report["event_count"] == 125
+    assert report["events_truncated"] is True
+    assert len(events) == 100
+    assert totals["calls"] == 125
+    assert totals["total_tokens"] == 15_000
+    assert by_stage["extraction"] == totals
+    assert totals["billed_usd"] == pytest.approx(0.045)
+    full_events = collector.report(_card())["events"]
+    assert isinstance(full_events, list)
+    assert len(full_events) == 125

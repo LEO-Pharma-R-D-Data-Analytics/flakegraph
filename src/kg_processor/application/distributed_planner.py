@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from kg_processor.application.content_kinds import relative_location, source_roots
 from kg_processor.application.extraction_contracts import extraction_contract_fingerprint
+from kg_processor.application.ontology import load_ontology
 from kg_processor.application.prompt_registry import two_pass_prompt_fingerprints
 from kg_processor.application.redaction import redact_sensitive_data, redact_sensitive_text
 from kg_processor.application.revision_plan import RevisionPlan, plan_revision
@@ -66,7 +67,7 @@ class DistributedRunPlanner:
         is refused at submit.
         """
 
-        self.settings = settings
+        self.settings = snapshot_run_ontology(settings)
         self.file_source = file_source
         self.task_store = task_store
         self.artifact_store = artifact_store
@@ -457,6 +458,36 @@ def _iter_unique_file_ids(files: Iterable[InputFile]) -> Iterator[InputFile]:
         yield file
 
 
+def snapshot_run_ontology(settings: Settings) -> Settings:
+    """Carry an explicitly selected vocabulary by value across worker filesystems.
+
+    An omitted ontology deliberately uses the fleet's mounted default. Explicit
+    graph labels are another ontology source and must travel with the run just
+    like a profile file, even if they happen to equal the built-in defaults.
+    """
+
+    selected = (
+        settings.ontology.profile is not None
+        or settings.ontology.profile_path is not None
+        or bool({"entity_types", "relation_types"} & settings.graph.model_fields_set)
+    )
+    if not selected:
+        return settings
+    profile = load_ontology(
+        settings.ontology.profile_path,
+        settings.graph.entity_types,
+        settings.graph.relation_types,
+        inline=settings.ontology.profile,
+    ).profile
+    return settings.model_copy(
+        update={
+            "ontology": settings.ontology.model_copy(
+                update={"profile": profile.model_dump(mode="json"), "profile_path": None}
+            )
+        }
+    )
+
+
 def distributed_processing_config(settings: Settings) -> dict[str, object]:
     """Return the redacted graph-semantic configuration shared by every worker.
 
@@ -489,9 +520,10 @@ def distributed_processing_config_digest(settings: Settings) -> str:
     for diagnosis, but those values cannot participate in worker compatibility.
     A production fleet may route extraction workers to node-local replicas while a
     finalizer uses a cluster-wide Service, and heterogeneous workers may use
-    different device names or cache paths. Provider and model identities, parsing
-    behavior, ontology content, extraction policy, and graph policy remain part of
-    the digest because changing any of them can change the resulting graph.
+    different device names or cache paths. Provider and model identities,
+    parsing behavior, extraction policy, and graph policy remain part of the
+    digest. The ontology travels in the run snapshot rather than constraining
+    which otherwise compatible worker may claim it.
     """
 
     canonical = json.dumps(

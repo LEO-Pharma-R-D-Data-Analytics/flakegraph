@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -72,7 +73,12 @@ from kg_processor.application.graph_quality import (
     GraphQualityResult,
     evaluate_graph_quality,
 )
-from kg_processor.application.llm_extractors import LlmEntityExtractor, LlmRelationVerifier
+from kg_processor.application.llm_extractors import (
+    LlmEntityExtractor,
+    LlmRelationExtractor,
+    LlmRelationVerifier,
+)
+from kg_processor.application.metered_llm import MeteredLlmProvider
 from kg_processor.application.ontology import LoadedOntology, load_ontology
 from kg_processor.application.ordered_map import ordered_map
 from kg_processor.application.progress import (
@@ -147,6 +153,16 @@ from kg_processor.ports.ocr import NoTextReadError, OcrOptions, OcrProvider
 logger = logging.getLogger(__name__)
 
 
+def _bind_extractor[T](extractor: T, llm: StructuredCompletionProvider) -> T:
+    """Rebind application LLM extractors without rebuilding reusable local models."""
+
+    if isinstance(extractor, (LlmEntityExtractor, LlmRelationExtractor, LlmRelationVerifier)):
+        scoped = copy(extractor)
+        scoped.llm = llm
+        return scoped
+    return extractor
+
+
 class KgProcessorPipeline:
     """Coordinate one end-to-end graph build through provider-neutral interfaces.
 
@@ -206,35 +222,49 @@ class KgProcessorPipeline:
         # operators notice a broken corpus instead of writing a partial graph.
         self._failed_job_file_results: list[JobFileResult] = []
 
-    def for_settings(self, settings: Settings) -> KgProcessorPipeline:
-        """Return a pipeline that runs these settings over the same adapters.
+    def for_settings(
+        self, settings: Settings, *, consumption: ConsumptionCollector | None = None
+    ) -> KgProcessorPipeline:
+        """Bind reusable adapters to one run's vocabulary and accounting.
 
-        A distributed worker serves many runs, each carrying its own ontology in
-        its stored configuration. The providers behind the pipeline - a loaded
-        embedding model, an OCR pool, an LLM client - are the worker's and are
-        shared; only the settings, and the ontology they resolve to, are the
-        run's. The variant owns nothing, so closing it releases nothing.
+        Provider clients may be shared across runs, but their metering wrappers
+        and extractors refer to the run's collector. Rebinding both prevents a
+        prior run's OCR pages or LLM calls from entering another graph's report.
         """
 
+        collector = consumption or ConsumptionCollector(
+            settings.job.graph_id, job_id=settings.job.job_id, run_id=settings.job.job_id
+        )
+        delegate = self.llm.delegate if isinstance(self.llm, MeteredLlmProvider) else self.llm
+        llm = MeteredLlmProvider(
+            delegate, collector, provider=settings.llm.provider, model=settings.llm.model
+        )
         variant = KgProcessorPipeline(
             settings=settings,
             file_source=self.file_source,
             ocr=self.ocr,
-            llm=self.llm,
+            llm=llm,
             embeddings=self.embeddings,
             writer=self.writer,
             cache=self.cache,
             claimed_files=self.claimed_files,
-            consumption=self.consumption,
+            consumption=collector,
             write_scope_override=self.write_scope_override,
             progress_sink=self.progress_sink,
-            entity_extractor=self.entity_extractor,
-            relation_extractor=self.relation_extractor,
-            relation_verifier=self.relation_verifier,
+            entity_extractor=_bind_extractor(self.entity_extractor, llm),
+            relation_extractor=_bind_extractor(self.relation_extractor, llm),
+            relation_verifier=_bind_extractor(self.relation_verifier, llm),
             replay_extractors=self.replay_extractors,
         )
         variant._owns_adapters = False
         return variant
+
+    def for_task(self, task_id: str, attempt: int) -> KgProcessorPipeline:
+        """Keep one task attempt's provider calls attributable under parallel slots."""
+
+        return self.for_settings(
+            self.settings, consumption=self.consumption.for_task(task_id, attempt)
+        )
 
     def close(self) -> None:
         """Release adapters and cache sessions owned by this pipeline instance."""

@@ -26,6 +26,7 @@ from kg_processor.application.spark_finalization import (
     _is_stopped,
 )
 from kg_processor.config.settings import Settings
+from kg_processor.domain.consumption import ConsumptionEvent, TokenUsage
 from kg_processor.domain.extraction import (
     EntityMention,
     ExtractionObservations,
@@ -752,6 +753,24 @@ def test_spark_finalizer_publishes_schema_correct_empty_graph(tmp_path: Path) ->
         extracted.model_dump_json().encode(),
         "application/json",
     )
+    extraction_usage = ConsumptionEvent(
+        graph_id="empty-graph",
+        job_id="empty-run",
+        run_id="empty-run",
+        stage="entity_extraction",
+        operation="completion",
+        provider="fake",
+        model="fake",
+        usage=TokenUsage(prompt_tokens=20, completion_tokens=5),
+    )
+    executor_usage = extraction_usage.model_copy(
+        update={"event_id": "executor-event", "stage": "description_merge"}
+    )
+    store.put(
+        "empty-run/consumption/executor-event.json",
+        executor_usage.model_dump_json().encode(),
+        "application/json",
+    )
     manifest = SparkGraphFinalizer(_settings(tmp_path, root, "empty-graph")).finalize(
         SparkFinalizationRequest(
             run_id="empty-run",
@@ -762,6 +781,7 @@ def test_spark_finalizer_publishes_schema_correct_empty_graph(tmp_path: Path) ->
             extracted_run_ids=frozenset({"empty-run"}),
             # A revision says how it came by each document it did not simply extract.
             document_provenance={"file-empty": "reextracted:relations"},
+            consumption_events=(extraction_usage, extraction_usage),
         )
     )
     batch = GraphDatasetReader(store).read(manifest)
@@ -784,6 +804,9 @@ def test_spark_finalizer_publishes_schema_correct_empty_graph(tmp_path: Path) ->
         "rejected_records",
         "failed_documents",
     }
+    assert manifest.metrics["consumption"]["totals"]["total_tokens"] == 50
+    assert len(manifest.metrics["consumption"]["events"]) == 2
+    assert {row["job_id"] for row in manifest.metrics["consumption"]["events"]} == {"empty-run"}
     assert manifest.metrics["input_entity_mentions"] == 0
     assert manifest.metrics["discarded_windows"]["windows"] == 0
     assert batch.nodes == []

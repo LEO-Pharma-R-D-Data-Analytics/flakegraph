@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter, deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import timedelta
@@ -25,6 +25,7 @@ from kg_processor.adapters.files.local import LocalFileSource
 from kg_processor.application.distributed_planner import DistributedRunPlanner
 from kg_processor.application.distributed_worker import DistributedWorker
 from kg_processor.config.settings import Settings
+from kg_processor.domain.consumption import ConsumptionEvent, Locality, TokenUsage
 from kg_processor.domain.distributed import (
     ArtifactKind,
     PriorityBand,
@@ -102,6 +103,9 @@ def _version_11_database(dsn: str) -> tuple[str, str]:
     with psycopg.connect(dsn, autocommit=True) as connection:
         connection.execute("DROP VIEW flakegraph_worker_demand")
         connection.execute("ALTER TABLE flakegraph_run DROP COLUMN priority_band")
+        connection.execute("ALTER TABLE flakegraph_task DROP COLUMN claim_token")
+        connection.execute("DROP TABLE flakegraph_graph_deletion")
+        connection.execute("DROP TABLE flakegraph_consumption_event")
         # The version 11 view's shape: its band is read off the task.
         connection.execute(
             """
@@ -180,7 +184,7 @@ def test_the_previous_schema_version_is_migrated_in_place(isolated_postgres_dsn:
               AND indexname = 'flakegraph_task_queued_claim_idx'
             """
         ).fetchone()
-    assert version == (12,)
+    assert version == (13,)
     assert index is not None
     assert "(run_id, stage, remaining_dependencies, priority DESC, created_at, id)" in index[0]
     assert store.get_run(urgent).run.priority_band == PriorityBand.INTERACTIVE
@@ -244,7 +248,7 @@ def test_a_schema_two_versions_behind_is_migrated_step_by_step(
             """,
             (f"{urgent}-window", urgent),
         )
-    assert version == (12,)
+    assert version == (13,)
     assert store.get_run(urgent).run.priority_band == PriorityBand.INTERACTIVE
 
 
@@ -350,7 +354,7 @@ def test_a_runs_artifacts_are_the_ones_a_succeeded_task_linked(
     claim = store.claim_task("worker", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
     assert claim is not None
     linked = store.put(run_id, ArtifactKind.PREPARED_DOCUMENT, b"attempt 2", "application/json")
-    store.complete_task(claim.task.id, claim.worker_id, [linked.id])
+    store.complete_task(claim.task.id, claim.worker_id, [linked.id], claim_token=claim.claim_token)
 
     assert orphan.id != linked.id
     assert store.get_run_artifact_ids(run_id, {ArtifactKind.PREPARED_DOCUMENT}) == [linked.id]
@@ -397,7 +401,9 @@ def test_run_summary_counts_the_documents_a_preparation_recorded_as_unreadable(
             "application/json",
             failure if broken else {"file_ids": [claim.task.scope_id]},
         )
-        store.complete_task(claim.task.id, claim.worker_id, [extracted.id])
+        store.complete_task(
+            claim.task.id, claim.worker_id, [extracted.id], claim_token=claim.claim_token
+        )
 
     assert store.get_run_summary(run_id).documents_failed == 1
 
@@ -560,7 +566,7 @@ def test_postgres_claims_are_exclusive_and_dependencies_form_a_barrier(
         )
         assert store.get(ref.id).payload == payload
         artifact_ids.append(ref.id)
-        store.complete_task(claim.task.id, claim.worker_id, [ref.id])
+        store.complete_task(claim.task.id, claim.worker_id, [ref.id], claim_token=claim.claim_token)
     batched = store.get_many(list(reversed(artifact_ids)))
     assert [artifact.ref.id for artifact in batched] == list(reversed(artifact_ids))
 
@@ -576,7 +582,9 @@ def test_postgres_claims_are_exclusive_and_dependencies_form_a_barrier(
         for outputs in final_claim.dependency_outputs.values()
         for artifact_id in outputs
     } == set(artifact_ids)
-    store.complete_task(final_claim.task.id, final_claim.worker_id, [])
+    store.complete_task(
+        final_claim.task.id, final_claim.worker_id, [], claim_token=final_claim.claim_token
+    )
 
     snapshot = store.get_run(run_id)
     assert snapshot.run.status == RunStatus.SUCCEEDED
@@ -615,8 +623,10 @@ def test_running_task_progress_is_lease_owned_and_bounded(
     )
 
     with pytest.raises(RuntimeError, match="no longer owns"):
-        store.report_task_progress(final.id, "another-worker", progress)
-    store.report_task_progress(final.id, claim.worker_id, progress)
+        store.report_task_progress(
+            final.id, "another-worker", progress, claim_token=claim.claim_token
+        )
+    store.report_task_progress(final.id, claim.worker_id, progress, claim_token=claim.claim_token)
 
     detailed = store.get_run(run_id)
     summary = store.get_run_summary(run_id)
@@ -653,12 +663,12 @@ def test_worker_demand_view_tracks_ready_work_and_active_leases(
     first = store.claim_task("prepare-1", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
     assert first is not None
     assert _worker_demand(isolated_postgres_dsn) == {"prepare_document": 2}
-    store.complete_task(first.task.id, first.worker_id, [])
+    store.complete_task(first.task.id, first.worker_id, [], claim_token=first.claim_token)
     assert _worker_demand(isolated_postgres_dsn) == {"prepare_document": 1}
 
     second = store.claim_task("prepare-2", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
     assert second is not None
-    store.complete_task(second.task.id, second.worker_id, [])
+    store.complete_task(second.task.id, second.worker_id, [], claim_token=second.claim_token)
     assert _worker_demand(isolated_postgres_dsn) == {"finalize_graph": 1}
 
     final_claim = store.claim_task(
@@ -668,7 +678,9 @@ def test_worker_demand_view_tracks_ready_work_and_active_leases(
     )
     assert final_claim is not None
     assert _worker_demand(isolated_postgres_dsn) == {"finalize_graph": 1}
-    store.complete_task(final_claim.task.id, final_claim.worker_id, [])
+    store.complete_task(
+        final_claim.task.id, final_claim.worker_id, [], claim_token=final_claim.claim_token
+    )
     assert _worker_demand(isolated_postgres_dsn) == {}
 
 
@@ -695,7 +707,7 @@ def test_publication_keeps_finalize_demand_and_a_retry_reactivates_it(
         b'{"format":"flakegraph.graph-dataset-manifest/v1"}',
         "application/vnd.flakegraph.graph-manifest+json",
     )
-    store.complete_task(task.task.id, task.worker_id, [manifest.id])
+    store.complete_task(task.task.id, task.worker_id, [manifest.id], claim_token=task.claim_token)
     # A finalizer whose graph still awaits publication keeps the run running
     # and keeps asking for a finalizer, before and after the claim.
     assert store.get_run(run_id).run.status == RunStatus.RUNNING
@@ -769,11 +781,23 @@ def test_postgres_retries_then_fails_run_after_attempt_budget(
 
     first = store.claim_task("worker-1", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
     assert first is not None and first.attempt == 1
-    store.fail_task(first.task.id, first.worker_id, {"message": "first"}, timedelta(0))
+    store.fail_task(
+        first.task.id,
+        first.worker_id,
+        {"message": "first"},
+        timedelta(0),
+        claim_token=first.claim_token,
+    )
 
     second = store.claim_task("worker-2", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
     assert second is not None and second.attempt == 2
-    store.fail_task(second.task.id, second.worker_id, {"message": "second"}, timedelta(0))
+    store.fail_task(
+        second.task.id,
+        second.worker_id,
+        {"message": "second"},
+        timedelta(0),
+        claim_token=second.claim_token,
+    )
 
     snapshot = store.get_run(run_id)
     assert snapshot.run.status == RunStatus.FAILED
@@ -810,7 +834,7 @@ def test_postgres_retries_then_fails_run_after_attempt_budget(
     # The retried task succeeds, and the history outlives the success.
     claim = store.claim_task("worker-3", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
     assert claim is not None
-    store.complete_task(claim.task.id, claim.worker_id, [])
+    store.complete_task(claim.task.id, claim.worker_id, [], claim_token=claim.claim_token)
     assert store.get_run_summary(run_id).resolved_failure_count == 1
 
 
@@ -832,7 +856,7 @@ def test_a_cancelled_run_resumes_where_it_stopped(isolated_postgres_dsn: str) ->
     store.activate_run(run_id)
     prepared = store.claim_task("worker-1", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
     assert prepared is not None
-    store.complete_task(prepared.task.id, prepared.worker_id, [])
+    store.complete_task(prepared.task.id, prepared.worker_id, [], claim_token=prepared.claim_token)
     running = store.claim_task(
         "worker-2", {TaskStage.EXTRACT_DOCUMENT_CONTEXT}, timedelta(minutes=1)
     )
@@ -915,7 +939,7 @@ def test_postgres_bounds_abandoned_reclaims_and_fails_after_recovery_window(
     assert snapshot.tasks[0].status == TaskStatus.RUNNING
     assert snapshot.tasks[0].lease_owner == "recovery-worker"
     with pytest.raises(RuntimeError, match="no longer owns"):
-        store.complete_task(task.id, "abandoned-worker", [])
+        store.complete_task(task.id, "abandoned-worker", [], claim_token="stale-claim")
 
     with psycopg.connect(isolated_postgres_dsn) as connection:
         connection.execute(
@@ -985,7 +1009,7 @@ def test_postgres_final_attempt_can_complete_during_expiry_recovery_window(
         )
         is None
     )
-    store.complete_task(task.id, "slow-worker", [])
+    store.complete_task(task.id, "slow-worker", [], claim_token=lease.claim_token)
 
     assert store.get_run(run_id).tasks[0].status == TaskStatus.SUCCEEDED
 
@@ -1055,7 +1079,9 @@ def test_a_run_shares_a_pool_equally_with_one_ten_times_its_size(
     served = Counter(lease.task.run_id for lease in pool)
     while served[small] < 5:
         finished = pool.popleft()
-        store.complete_task(finished.task.id, finished.worker_id, [])
+        store.complete_task(
+            finished.task.id, finished.worker_id, [], claim_token=finished.claim_token
+        )
         pool.append(claim())
         served[pool[-1].task.run_id] += 1
         assert Counter(lease.task.run_id for lease in pool) == {large: 2, small: 2}
@@ -1063,7 +1089,7 @@ def test_a_run_shares_a_pool_equally_with_one_ten_times_its_size(
 
     # With the small run out of ready work, the large one takes the pool.
     finished = pool.popleft()
-    store.complete_task(finished.task.id, finished.worker_id, [])
+    store.complete_task(finished.task.id, finished.worker_id, [], claim_token=finished.claim_token)
     assert claim().task.run_id == large
 
 
@@ -1118,7 +1144,9 @@ def test_work_discovered_by_a_worker_is_claimed_in_its_runs_band(
         run_id, "context", TaskStage.EXTRACT_DOCUMENT_CONTEXT, "file", dependency_ids=[prepare.id]
     )
 
-    store.complete_task(parent.task.id, parent.worker_id, [], [context], final.id)
+    store.complete_task(
+        parent.task.id, parent.worker_id, [], [context], final.id, claim_token=parent.claim_token
+    )
 
     assert _task_priorities(isolated_postgres_dsn, run_id) == {
         prepare.id: 1020,
@@ -1201,7 +1229,9 @@ def test_postgres_dynamic_windows_extend_final_barrier_atomically(
         "file",
         dependency_ids=[prepare.id],
     )
-    store.complete_task(parent.task.id, parent.worker_id, [], [context], final.id)
+    store.complete_task(
+        parent.task.id, parent.worker_id, [], [context], final.id, claim_token=parent.claim_token
+    )
     context_claim = store.claim_task(
         "context-worker",
         {TaskStage.EXTRACT_DOCUMENT_CONTEXT},
@@ -1225,7 +1255,14 @@ def test_postgres_dynamic_windows_extend_final_barrier_atomically(
         "file",
         dependency_ids=[context.id, *(window.id for window in windows)],
     )
-    store.complete_task(context.id, context_claim.worker_id, [], [*windows, inventory], final.id)
+    store.complete_task(
+        context.id,
+        context_claim.worker_id,
+        [],
+        [*windows, inventory],
+        final.id,
+        claim_token=context_claim.claim_token,
+    )
 
     assert (
         store.claim_task(
@@ -1247,7 +1284,7 @@ def test_postgres_dynamic_windows_extend_final_barrier_atomically(
     assert len({claim.task.id for claim in claimed_windows if claim is not None}) == 4
     for claim in claimed_windows:
         assert claim is not None
-        store.complete_task(claim.task.id, claim.worker_id, [])
+        store.complete_task(claim.task.id, claim.worker_id, [], claim_token=claim.claim_token)
 
     assert (
         store.claim_task(
@@ -1290,6 +1327,7 @@ def test_postgres_dynamic_windows_extend_final_barrier_atomically(
         [],
         [*relation_windows, compact],
         final.id,
+        claim_token=inventory_claim.claim_token,
     )
 
     claimed_relations = [
@@ -1303,7 +1341,7 @@ def test_postgres_dynamic_windows_extend_final_barrier_atomically(
     assert all(claim is not None for claim in claimed_relations)
     for claim in claimed_relations:
         assert claim is not None
-        store.complete_task(claim.task.id, claim.worker_id, [])
+        store.complete_task(claim.task.id, claim.worker_id, [], claim_token=claim.claim_token)
 
     compact_claim = store.claim_task(
         "compact-worker",
@@ -1311,7 +1349,9 @@ def test_postgres_dynamic_windows_extend_final_barrier_atomically(
         timedelta(minutes=1),
     )
     assert compact_claim is not None
-    store.complete_task(compact_claim.task.id, compact_claim.worker_id, [])
+    store.complete_task(
+        compact_claim.task.id, compact_claim.worker_id, [], claim_token=compact_claim.claim_token
+    )
 
     final_claim = store.claim_task(
         "final-worker",
@@ -1364,7 +1404,9 @@ def test_spark_finalizer_claim_keeps_barrier_without_loading_outputs(
         b"{}",
         "application/json",
     )
-    store.complete_task(parent.task.id, parent.worker_id, [artifact.id])
+    store.complete_task(
+        parent.task.id, parent.worker_id, [artifact.id], claim_token=parent.claim_token
+    )
 
     final_claim = store.claim_task(
         "spark-driver",
@@ -1401,7 +1443,9 @@ def test_graph_manifest_and_active_version_publish_in_one_transaction(
         "application/vnd.flakegraph.graph-manifest+json",
     )
 
-    store.complete_task(claim.task.id, claim.worker_id, [artifact.id])
+    store.complete_task(
+        claim.task.id, claim.worker_id, [artifact.id], claim_token=claim.claim_token
+    )
 
     with psycopg.connect(isolated_postgres_dsn, row_factory=dict_row) as connection:
         head = connection.execute(
@@ -2116,14 +2160,20 @@ def test_retry_quarantines_failed_document_descendants_without_requeueing_them(
     claim = store.claim_task("worker", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
     assert claim is not None
     if claim.task.id == good.id:
-        store.complete_task(good.id, "worker", [])
+        store.complete_task(good.id, "worker", [], claim_token=claim.claim_token)
         claim = store.claim_task("worker", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
         assert claim is not None
     assert claim.task.id == prepare.id
-    store.complete_task(prepare.id, "worker", [])
+    store.complete_task(prepare.id, "worker", [], claim_token=claim.claim_token)
     claim = store.claim_task("worker", {TaskStage.EXTRACT_ENTITY_WINDOW}, timedelta(minutes=1))
     assert claim is not None
-    store.fail_task(claim.task.id, "worker", {"message": "poison window"}, timedelta(0))
+    store.fail_task(
+        claim.task.id,
+        "worker",
+        {"message": "poison window"},
+        timedelta(0),
+        claim_token=claim.claim_token,
+    )
 
     with pytest.raises(ValueError, match="must name documents of this run"):
         store.retry_run(run_id, ["unknown"])
@@ -2160,7 +2210,7 @@ def test_staged_publication_commit_rejects_cancelled_or_superseded_lease(
         claim = store.claim_task("worker", {TaskStage.FINALIZE_GRAPH}, timedelta(minutes=1))
         assert claim is not None
         artifact = store.put(run_id, ArtifactKind.GRAPH_RESULT, b"{}", "application/json")
-        store.complete_task(task.id, "worker", [artifact.id])
+        store.complete_task(task.id, "worker", [artifact.id], claim_token=claim.claim_token)
         publication = store.claim_publication("publisher", timedelta(minutes=1))
         assert publication is not None
         return publication
@@ -2195,7 +2245,7 @@ def test_staged_publication_preserves_fence_during_slow_destination_commit(
     claim = store.claim_task("worker", {TaskStage.FINALIZE_GRAPH}, timedelta(minutes=1))
     assert claim is not None
     artifact = store.put(run_id, ArtifactKind.GRAPH_RESULT, b"{}", "application/json")
-    store.complete_task(task.id, "worker", [artifact.id])
+    store.complete_task(task.id, "worker", [artifact.id], claim_token=claim.claim_token)
     lease = store.claim_publication("publisher", timedelta(minutes=1))
     assert lease is not None
     original = store._connection
@@ -2244,3 +2294,146 @@ def test_staged_publication_preserves_fence_during_slow_destination_commit(
             "SELECT current_setting('idle_in_transaction_session_timeout') AS idle"
         ).fetchone()
     assert restored == {"idle": "1min"}
+
+
+def test_claim_token_fences_every_task_transition(isolated_postgres_dsn: str) -> None:
+    """Only the opaque token returned by a claim can mutate that task."""
+
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    store.create_run(_run(run_id))
+    task = _task(run_id, "prepare", TaskStage.PREPARE_DOCUMENT, "file")
+    store.add_tasks(run_id, [task])
+    store.activate_run(run_id)
+    claim = store.claim_task("worker", {task.stage}, timedelta(minutes=1))
+    assert claim is not None and claim.claim_token
+    progress = TaskProgress(phase="reading", phase_index=1, phase_total=1)
+    transitions: tuple[Callable[[], None], ...] = (
+        lambda: store.heartbeat(task.id, "worker", timedelta(minutes=1), claim_token="wrong"),
+        lambda: store.report_task_progress(task.id, "worker", progress, claim_token="wrong"),
+        lambda: store.complete_task(task.id, "worker", [], claim_token="wrong"),
+        lambda: store.fail_task(task.id, "worker", {}, timedelta(0), claim_token="wrong"),
+    )
+    for transition in transitions:
+        with pytest.raises(RuntimeError, match="no longer owns"):
+            transition()
+    store.heartbeat(task.id, "worker", timedelta(minutes=1), claim_token=claim.claim_token)
+    store.complete_task(task.id, "worker", [], claim_token=claim.claim_token)
+    assert store.get_run(run_id).tasks[0].status == TaskStatus.SUCCEEDED
+
+
+def test_deletion_reservation_blocks_retry_and_submission_during_blob_removal(
+    isolated_postgres_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reservation remains committed throughout external object deletion."""
+
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    run = _run(run_id)
+    store.create_run(run)
+    store.cancel_run(run_id)
+    blobs = LocalBlobStore(tmp_path.as_uri())
+    store.blob_store = blobs
+    original = blobs.delete_prefix
+    checks = []
+
+    def remove(prefix: str) -> int:
+        with pytest.raises(ValueError, match="being deleted"):
+            store.retry_run(run_id)
+        with pytest.raises(ValueError, match="being deleted"):
+            store.create_run(
+                _run(f"run_{uuid4().hex}").model_copy(update={"graph_id": run.graph_id})
+            )
+        with pytest.raises(ValueError, match="already executing"):
+            store.delete_graph(run.graph_id)
+        checks.append(prefix)
+        return original(prefix)
+
+    monkeypatch.setattr(blobs, "delete_prefix", remove)
+    result = store.delete_graph(run.graph_id)
+    assert checks == [run_id]
+    assert result.run_ids == [run_id]
+    assert store.list_runs() == []
+    # A completed deletion releases the graph identifier for a fresh submission.
+    store.create_run(_run(f"run_{uuid4().hex}").model_copy(update={"graph_id": run.graph_id}))
+
+
+def test_retry_uses_a_new_claim_token_when_the_attempt_budget_resets(
+    isolated_postgres_dsn: str,
+) -> None:
+    """A new retry budget cannot restore the authority of a completed claim."""
+
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    store.create_run(_run(run_id))
+    task = _task(run_id, "prepare", TaskStage.PREPARE_DOCUMENT, "file", max_attempts=1)
+    store.add_tasks(run_id, [task])
+    store.activate_run(run_id)
+    first = store.claim_task("worker", {task.stage}, timedelta(minutes=1))
+    assert first is not None
+    store.fail_task(task.id, "worker", {}, timedelta(0), claim_token=first.claim_token)
+    store.retry_run(run_id)
+    second = store.claim_task("worker", {task.stage}, timedelta(minutes=1))
+    assert second is not None
+    assert second.attempt == first.attempt == 1
+    assert second.claim_token != first.claim_token
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        store.complete_task(task.id, "worker", [], claim_token=first.claim_token)
+    store.complete_task(task.id, "worker", [], claim_token=second.claim_token)
+
+
+def test_durable_consumption_is_idempotent_and_scoped_to_the_run(
+    isolated_postgres_dsn: str,
+) -> None:
+    """Repeated delivery preserves one event, while separate calls remain distinct."""
+
+    store = _store(isolated_postgres_dsn)
+    first, second = (f"run_{uuid4().hex}" for _ in range(2))
+    store.create_run(_run(first))
+    store.create_run(_run(second))
+    event = ConsumptionEvent(
+        graph_id="g",
+        job_id=first,
+        run_id=first,
+        stage="extraction",
+        operation="completion",
+        provider="fake",
+        model="fixture",
+        locality=Locality.LOCAL,
+        usage=TokenUsage(prompt_tokens=3, completion_tokens=2),
+    )
+    store.record_consumption(first, event)
+    store.record_consumption(first, event)
+    assert store.consumption_events(first) == [event]
+    assert store.consumption_events(second) == []
+    with pytest.raises(ValueError, match="belong"):
+        store.record_consumption(second, event)
+    store.record_consumption(first, event.model_copy(update={"event_id": uuid4().hex}))
+    assert len(store.consumption_events(first)) == 2
+
+
+def test_graph_deletion_waits_for_live_siblings_of_a_failed_run(
+    isolated_postgres_dsn: str,
+) -> None:
+    """Failure of one task cannot authorize deletion under another live lease."""
+
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    run = _run(run_id)
+    store.create_run(run)
+    tasks = [
+        _task(
+            run_id, f"prepare-{index}", TaskStage.PREPARE_DOCUMENT, f"file-{index}", max_attempts=1
+        )
+        for index in range(2)
+    ]
+    store.add_tasks(run_id, tasks)
+    store.activate_run(run_id)
+    first = store.claim_task("worker-1", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
+    second = store.claim_task("worker-2", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
+    assert first is not None and second is not None
+    store.fail_task(first.task.id, first.worker_id, {}, timedelta(0), claim_token=first.claim_token)
+    with pytest.raises(ValueError, match="work under way"):
+        store.delete_graph(run.graph_id)
+    store.complete_task(second.task.id, second.worker_id, [], claim_token=second.claim_token)
+    assert store.delete_graph(run.graph_id).run_ids == [run_id]

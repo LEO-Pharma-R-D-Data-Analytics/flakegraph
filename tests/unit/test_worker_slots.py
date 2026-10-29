@@ -82,7 +82,9 @@ class _SlotStore:
                 lease_expires_at=datetime.now(UTC) + lease_duration,
             )
 
-    def heartbeat(self, task_id: str, worker_id: str, lease_duration: timedelta) -> None:
+    def heartbeat(
+        self, task_id: str, worker_id: str, lease_duration: timedelta, *, claim_token: str
+    ) -> None:
         del lease_duration
         with self._lock:
             self.heartbeats.setdefault(task_id, []).append(worker_id)
@@ -94,6 +96,8 @@ class _SlotStore:
         output_artifact_ids: list[str],
         follow_up_tasks: list[TaskDefinition] | None = None,
         barrier_task_id: str | None = None,
+        *,
+        claim_token: str,
     ) -> None:
         del worker_id, output_artifact_ids, follow_up_tasks, barrier_task_id
         with self._lock:
@@ -105,6 +109,8 @@ class _SlotStore:
         worker_id: str,
         error: dict[str, Any],
         retry_delay: timedelta,
+        *,
+        claim_token: str,
     ) -> None:
         del worker_id, retry_delay
         with self._lock:
