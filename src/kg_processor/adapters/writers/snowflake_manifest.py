@@ -23,6 +23,7 @@ from kg_processor.adapters.snowflake import (
 )
 from kg_processor.adapters.writers.snowflake_bulk import (
     SnowflakeBulkWriter,
+    acquire_publication_fence,
     best_effort_remove_stage_prefix,
     build_bulk_load_prefix,
     build_bulk_merge_statement,
@@ -30,6 +31,7 @@ from kg_processor.adapters.writers.snowflake_bulk import (
     build_create_load_table_statement,
     build_load_table_name,
     build_put_statement,
+    ensure_publication_fence,
     validate_put_result,
     write_bulk_load_files,
 )
@@ -217,35 +219,15 @@ class SnowflakeManifestWriter:
             return True
         if not self.publication_id:
             raise ValueError("publication generation requires a publication id")
-        cursor.execute(
-            "MERGE INTO KG_GRAPH_PUBLICATION_FENCE target USING ("
-            "SELECT ? AS GRAPH_ID, ? AS GENERATION, ? AS PUBLICATION_ID"
-            ") source ON target.GRAPH_ID = source.GRAPH_ID "
-            "WHEN MATCHED AND target.GENERATION < source.GENERATION THEN UPDATE SET "
-            "GENERATION = source.GENERATION, PUBLICATION_ID = source.PUBLICATION_ID, "
-            "UPDATED_AT = CURRENT_TIMESTAMP() "
-            "WHEN NOT MATCHED THEN INSERT (GRAPH_ID, GENERATION, PUBLICATION_ID) "
-            "VALUES (source.GRAPH_ID, source.GENERATION, source.PUBLICATION_ID)",
-            (graph_id, self.publication_generation, self.publication_id),
+        return acquire_publication_fence(
+            cursor, graph_id, self.publication_generation, self.publication_id
         )
-        cursor.execute(
-            "SELECT PUBLICATION_ID FROM KG_GRAPH_PUBLICATION_FENCE "
-            "WHERE GRAPH_ID = ? AND GENERATION = ?",
-            (graph_id, self.publication_generation),
-        )
-        row = cursor.fetchone()
-        return row is not None and str(row[0]) == self.publication_id
 
     def _ensure_publication_fence(self, cursor: Any) -> None:
         """Create the destination generation ledger before opening the data transaction."""
 
-        if self.publication_generation is None:
-            return
-        cursor.execute(
-            "CREATE TABLE IF NOT EXISTS KG_GRAPH_PUBLICATION_FENCE ("
-            "GRAPH_ID STRING PRIMARY KEY, GENERATION NUMBER NOT NULL, "
-            "PUBLICATION_ID STRING NOT NULL, UPDATED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP())"
-        )
+        if self.publication_generation is not None:
+            ensure_publication_fence(cursor)
 
     def _stage_rows(
         self,

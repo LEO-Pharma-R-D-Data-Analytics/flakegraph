@@ -173,39 +173,20 @@ class SnowflakeBulkWriter:
                 if generation is not None:
                     if generation < 1 or not publication_id:
                         raise ValueError("publication requires an identity and positive generation")
-                    cursor.execute(
-                        "CREATE TABLE IF NOT EXISTS KG_GRAPH_PUBLICATION_FENCE ("
-                        "GRAPH_ID STRING PRIMARY KEY, GENERATION NUMBER NOT NULL, "
-                        "PUBLICATION_ID STRING NOT NULL, "
-                        "UPDATED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP())"
-                    )
+                    ensure_publication_fence(cursor)
 
                 def commit() -> None:
                     """Publish only after the caller validates the durable lease."""
 
                     with snowflake_transaction(connection) as transaction:
-                        if generation is not None:
-                            transaction.execute(
-                                "MERGE INTO KG_GRAPH_PUBLICATION_FENCE target USING ("
-                                "SELECT ? AS GRAPH_ID, ? AS GENERATION, ? AS PUBLICATION_ID"
-                                ") source ON target.GRAPH_ID = source.GRAPH_ID "
-                                "WHEN MATCHED AND target.GENERATION < source.GENERATION "
-                                "THEN UPDATE SET GENERATION = source.GENERATION, "
-                                "PUBLICATION_ID = source.PUBLICATION_ID "
-                                "WHEN NOT MATCHED THEN INSERT "
-                                "(GRAPH_ID, GENERATION, PUBLICATION_ID) "
-                                "VALUES (source.GRAPH_ID, source.GENERATION, "
-                                "source.PUBLICATION_ID)",
-                                (batch.graph_id, generation, publication_id),
+                        if (
+                            generation is not None
+                            and publication_id
+                            and not acquire_publication_fence(
+                                transaction, batch.graph_id, generation, publication_id
                             )
-                            transaction.execute(
-                                "SELECT PUBLICATION_ID FROM KG_GRAPH_PUBLICATION_FENCE "
-                                "WHERE GRAPH_ID = ? AND GENERATION = ?",
-                                (batch.graph_id, generation),
-                            )
-                            fence = transaction.fetchone()
-                            if fence is None or str(fence[0]) != publication_id:
-                                raise RuntimeError("a newer publication owns the destination")
+                        ):
+                            raise RuntimeError("a newer publication owns the destination")
                         for sql, params in build_reindex_delete_statements(batch):
                             transaction.execute(sql, params)
                         for table_name, table_load_files in load_files_by_table.items():
@@ -380,6 +361,41 @@ def _put_status(row: object) -> str:
             row[_PUT_STATUS_INDEX] if len(row) > _PUT_STATUS_INDEX else row[-1] if row else ""
         ).upper()
     return str(getattr(row, "status", "")).upper()
+
+
+def ensure_publication_fence(cursor: Any) -> None:
+    """Create the destination generation ledger before opening the data transaction."""
+
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS KG_GRAPH_PUBLICATION_FENCE ("
+        "GRAPH_ID STRING PRIMARY KEY, GENERATION NUMBER NOT NULL, "
+        "PUBLICATION_ID STRING NOT NULL, UPDATED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP())"
+    )
+
+
+def acquire_publication_fence(
+    cursor: Any, graph_id: str, generation: int, publication_id: str
+) -> bool:
+    """Make newer durable generations permanently supersede older deliveries."""
+
+    cursor.execute(
+        "MERGE INTO KG_GRAPH_PUBLICATION_FENCE target USING ("
+        "SELECT ? AS GRAPH_ID, ? AS GENERATION, ? AS PUBLICATION_ID"
+        ") source ON target.GRAPH_ID = source.GRAPH_ID "
+        "WHEN MATCHED AND target.GENERATION < source.GENERATION THEN UPDATE SET "
+        "GENERATION = source.GENERATION, PUBLICATION_ID = source.PUBLICATION_ID, "
+        "UPDATED_AT = CURRENT_TIMESTAMP() "
+        "WHEN NOT MATCHED THEN INSERT (GRAPH_ID, GENERATION, PUBLICATION_ID) "
+        "VALUES (source.GRAPH_ID, source.GENERATION, source.PUBLICATION_ID)",
+        (graph_id, generation, publication_id),
+    )
+    cursor.execute(
+        "SELECT PUBLICATION_ID FROM KG_GRAPH_PUBLICATION_FENCE "
+        "WHERE GRAPH_ID = ? AND GENERATION = ?",
+        (graph_id, generation),
+    )
+    row = cursor.fetchone()
+    return row is not None and str(row[0]) == publication_id
 
 
 def best_effort_remove_stage_prefix(
