@@ -1807,6 +1807,8 @@ class PostgresDistributedStore:
         A window's scope is its window ID, so matching scope_id alone would miss
         failed descendants. Traverse document dependencies, excluding the run-wide
         final barrier, and keep successful artifacts immutable for audit purposes.
+        A requested document of this run with no failed task has nothing to
+        retry; it is left in the graph rather than excluded.
         """
 
         requested = set(file_ids)
@@ -1836,7 +1838,6 @@ class PostgresDistributedStore:
                 WHERE child.run_id = %s AND child.stage <> 'finalize_graph'
             )
         """
-        parameters = (run_id, sorted(requested), roots, run_id)
         candidates = connection.execute(
             tree
             + """
@@ -1844,11 +1845,13 @@ class PostgresDistributedStore:
                 FROM file_tasks tree JOIN flakegraph_task task ON task.id = tree.id
                 GROUP BY tree.file_id
             """,
-            parameters,
+            (run_id, sorted(requested), roots, run_id),
         ).fetchall()
+        if requested - previous - {str(row["file_id"]) for row in candidates}:
+            raise ValueError("quarantined file ids must name documents of this run")
         eligible = {str(row["file_id"]) for row in candidates if row["has_failed_task"]}
-        if requested - previous - eligible:
-            raise ValueError("only files with a failed task can be quarantined")
+        if not eligible:
+            return
         connection.execute(
             tree
             + """
@@ -1857,7 +1860,7 @@ class PostgresDistributedStore:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id IN (SELECT id FROM file_tasks) AND status <> 'succeeded'
             """,
-            parameters,
+            (run_id, sorted(eligible), roots, run_id),
         )
         connection.execute(
             """
@@ -1873,7 +1876,7 @@ class PostgresDistributedStore:
         )
         connection.execute(
             "UPDATE flakegraph_run SET config_json = %s WHERE id = %s",
-            (Jsonb({**config, "quarantined_file_ids": sorted(previous | requested)}), run_id),
+            (Jsonb({**config, "quarantined_file_ids": sorted(previous | eligible)}), run_id),
         )
 
     def get_run(self, run_id: str) -> RunSnapshot:

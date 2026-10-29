@@ -2125,10 +2125,11 @@ def test_retry_quarantines_failed_document_descendants_without_requeueing_them(
     assert claim is not None
     store.fail_task(claim.task.id, "worker", {"message": "poison window"}, timedelta(0))
 
-    with pytest.raises(ValueError, match="only files with a failed task"):
-        store.retry_run(run_id, ["good"])
+    with pytest.raises(ValueError, match="must name documents of this run"):
+        store.retry_run(run_id, ["unknown"])
     assert store.get_run(run_id).run.status is RunStatus.FAILED
-    store.retry_run(run_id, ["poison"])
+    # A healthy document has nothing to retry, so naming it excludes nothing.
+    store.retry_run(run_id, ["good", "poison"])
     snapshot = store.get_run(run_id)
     assert snapshot.run.config["quarantined_file_ids"] == ["poison"]
     by_id = {item.task.id: item for item in snapshot.tasks}

@@ -94,10 +94,11 @@ def test_retry_sql_skips_failed_document_tree_and_preserves_other_work() -> None
 
     store = object.__new__(PostgresDistributedStore)
     cast(Any, store)._connection = connection
-    with pytest.raises(ValueError, match="only files with a failed task"):
-        store.retry_run("run", ["good"])
+    with pytest.raises(ValueError, match="must name documents of this run"):
+        store.retry_run("run", ["unknown"])
     assert database.execute("SELECT status FROM flakegraph_run").fetchone()[0] == "failed"
-    store.retry_run("run", ["poison"])
+    # A healthy document has nothing to retry, so naming it excludes nothing.
+    store.retry_run("run", ["good", "poison"])
     run = database.execute("SELECT * FROM flakegraph_run").fetchone()
     assert run["status"] == "queued"
     assert json.loads(run["config_json"])["quarantined_file_ids"] == ["poison"]
