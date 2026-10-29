@@ -10,7 +10,7 @@ _CREATE_TABLE_RE = re.compile(
     r"CREATE TABLE IF NOT EXISTS\s+(?P<table>[A-Z][A-Z0-9_]*)\s*\((?P<body>.*)\)\s*\Z",
     re.DOTALL,
 )
-_COLUMN_DEFINITION_RE = re.compile(r"^\s*(?P<column>[A-Z][A-Z0-9_]*)\s+")
+_COLUMN_DEFINITION_RE = re.compile(r"^\s*(?P<column>[A-Z][A-Z0-9_]*)\s+(?P<type>[A-Z]+)")
 
 
 def render_snowflake_schema_sql(embedding_dimension: int) -> str:
@@ -421,6 +421,28 @@ def snowflake_schema_columns() -> dict[str, tuple[str, ...]]:
         )
         columns_by_table[table_name] = columns
     return columns_by_table
+
+
+def snowflake_schema_array_columns() -> dict[str, frozenset[str]]:
+    """Return untyped ARRAY columns that the connector may deliver as JSON text.
+
+    Local artifacts persist these fields as lists. Keeping the list contract
+    derived from the same DDL as the columns prevents exports from silently
+    changing their shape as new graph fields are added.
+    """
+
+    result: dict[str, frozenset[str]] = {}
+    sql = render_snowflake_schema_sql(_SCHEMA_INTROSPECTION_DIMENSION)
+    for statement in split_sql_statements(sql):
+        match = _CREATE_TABLE_RE.fullmatch(statement)
+        if match:
+            result[match.group("table")] = frozenset(
+                column.group("column")
+                for line in match.group("body").splitlines()
+                if (column := _COLUMN_DEFINITION_RE.match(line.strip().rstrip(",")))
+                and column.group("type") == "ARRAY"
+            )
+    return result
 
 
 def _validate_dimension(value: int) -> int:

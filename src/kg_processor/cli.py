@@ -1481,6 +1481,10 @@ def snowflake_export(
     graph_id: Annotated[str, typer.Option("--graph-id", help="Graph to materialize.")],
     output: Annotated[Path, typer.Option("--output", "-o")] = Path("out/kg"),
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
+    job_id: Annotated[str | None, typer.Option("--job-id", help="Diagnostic job identity.")] = None,
+    run_id: Annotated[
+        str | None, typer.Option("--run-id", help="Diagnostic batch/run identity.")
+    ] = None,
 ) -> None:
     """Materialize a Snowflake-resident graph as local inspection artifacts.
 
@@ -1492,7 +1496,7 @@ def snowflake_export(
     from kg_processor.application.snowflake_export import export_snowflake_graph
 
     settings = Settings.load(config)
-    _echo_json(export_snowflake_graph(settings, graph_id, output))
+    _echo_json(export_snowflake_graph(settings, graph_id, output, job_id=job_id, run_id=run_id))
 
 
 @snowflake_app.command("retry")

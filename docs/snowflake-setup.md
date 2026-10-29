@@ -9,11 +9,11 @@ FlakeGraph can run locally without Snowflake. Snowflake mode uses the same
 pipeline with Snowflake stages, Cortex functions, Snowflake tables, and
 Snowpark Container Services.
 
-The optional [console](../react/README.md) provides stage upload and
-listing, queue submission, per-run SPCS launch, live `KG_JOB_FILE` progress, and
-graph exploration through the active Snowpark session. It is a control plane;
-the launched SPCS worker remains responsible for OCR, extraction, embedding,
-and graph writes.
+The optional [console](../react/README.md) has a JSON-backed Snowflake
+rehearsal runtime. It records local queue and progress state; it does not
+upload to Snowflake stages, launch SPCS jobs, or query a live Snowpark session.
+For live processing, use the Python CLI submission and SPCS execution workflow
+below. The SPCS worker performs OCR, extraction, embedding, and graph writes.
 
 ```mermaid
 flowchart LR
@@ -233,3 +233,19 @@ flowchart TD
     service --> inspect["Inspect KG_* tables"]
     inspect --> parity["Compare with local artifacts"]
 ```
+
+## Materialize graph tables for local review
+
+Export the current graph tables and the matching run diagnostics with:
+
+```bash
+flakegraph snowflake export --graph-id <graph-id> --job-id <job-id> \
+  --output out/kg --config <config.yaml>
+```
+
+The local `run_report.json` and `graph_metrics.json` retain consumption and
+quality diagnostics. If one job has several diagnostic pairs, select its
+batch/content run with `--run-id`. Without selectors the export requires one
+unique diagnostic job/run and refuses ambiguity. A legacy graph without
+diagnostic tables can export its tables without selectors. The selectors
+choose diagnostics; they do not recreate a historical graph-table snapshot.
