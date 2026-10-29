@@ -51,6 +51,8 @@ export async function listRemoteObjects(
       );
     }
     if (result.exitCode !== 0) {
+      // The provider's own diagnosis is for the operator's logs, not the browser.
+      console.error(`Source listing: the ${sourceKind} source failed: ${result.stderr.trim() || result.stdout.trim()}`);
       throw new Error(`Listing the ${sourceKind} source failed. Check its operator-configured endpoint and credentials.`);
     }
     try {
