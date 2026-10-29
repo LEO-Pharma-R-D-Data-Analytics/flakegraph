@@ -10,6 +10,7 @@ from pypdf import PdfWriter
 
 from kg_processor.adapters.ocr import mineru_api
 from kg_processor.adapters.ocr.mineru_api import MineruApiOcrProvider
+from kg_processor.application.document_normalization import block_rows
 from kg_processor.ports.ocr import OcrOptions
 
 
@@ -307,7 +308,7 @@ def test_mineru_api_ocr_raises_for_a_rejected_upload(
     client = StreamingClient({"detail": "unsupported media type"}, status_code=415)
     monkeypatch.setattr(httpx, "Client", client.open)
 
-    with pytest.raises(RuntimeError, match="HTTP 415: .*unsupported media type"):
+    with pytest.raises(httpx.HTTPStatusError, match="HTTP 415: .*unsupported media type"):
         MineruApiOcrProvider("https://mineru.example").parse(input_file(input_path), OcrOptions())
 
 
@@ -521,3 +522,66 @@ def test_mineru_api_ocr_still_rejects_a_document_that_reads_nothing_any_way_up(
     with pytest.raises(RuntimeError, match="returned no text"):
         provider.parse(input_file(input_path), OcrOptions())
     assert len(client.requests) == 7
+
+
+@pytest.mark.parametrize(
+    "options,selected",
+    [
+        (OcrOptions(page_range="1-2"), [2, 3]),
+        (OcrOptions(page_range="2-"), [3, 4]),
+        (OcrOptions(page_range="-1"), [1, 2]),
+        (OcrOptions(page_range="0-3", start_page_id=1, end_page_id=2), [2, 3]),
+    ],
+)
+def test_rotation_recovery_only_uploads_unread_pages_in_the_requested_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: OcrOptions, selected: list[int]
+) -> None:
+    """A window-honoring service can leave a selected page unread without widening recovery."""
+
+    source = tmp_path / "windowed.pdf"
+    pdf = PdfWriter()
+    for _ in range(4):
+        pdf.add_blank_page(width=100, height=100)
+    pdf.write(source)
+    first_pass: dict[str, object] = {
+        "pages": [{"page_number": selected[0], "text": "Readable selected page"}]
+    }
+    client = StreamingClient(payloads=[first_pass, _content("Recovered selected page")])
+    monkeypatch.setattr(httpx, "Client", client.open)
+
+    parsed = MineruApiOcrProvider("https://mineru.invalid").parse(input_file(source), options)
+
+    assert [page.page_number for page in parsed.pages] == selected
+    assert [request["files"]["files"][0] for request in client.requests[1:]] == [
+        f"page-{selected[1]}-90.pdf",
+        f"page-{selected[1]}-270.pdf",
+    ]
+    assert all(
+        "start_page_id" not in request["data"] and "end_page_id" not in request["data"]
+        for request in client.requests[1:]
+    )
+
+
+def test_recovered_block_ids_remain_file_scoped_and_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Identical recovered text in distinct source files retains distinct canonical block rows."""
+
+    first_pass: dict[str, object] = {"pages": [{"page_number": 1, "text": "Page one"}]}
+    recovered = _content("Identical recovered text")
+    client = StreamingClient(payloads=[first_pass, recovered, recovered] * 3)
+    monkeypatch.setattr(httpx, "Client", client.open)
+    provider = MineruApiOcrProvider("https://mineru.invalid")
+    rows = []
+    for identity in ("first", "second", "first"):
+        source = tmp_path / f"{identity}.pdf"
+        _two_blank_pages(source)
+        file = input_file(source).model_copy(update={"id": identity, "checksum": identity})
+        parsed = provider.parse(file, OcrOptions())
+        rows.append(
+            next(row for row in block_rows("shared-graph", file, parsed) if row["page_number"] == 2)
+        )
+
+    assert rows[0]["id"] != rows[1]["id"]
+    assert rows[0]["file_id"] != rows[1]["file_id"]
+    assert rows[0]["id"] == rows[2]["id"]

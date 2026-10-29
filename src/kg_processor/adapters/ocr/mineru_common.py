@@ -274,12 +274,16 @@ def write_rotated_page(source: Path, page_number: int, degrees: int, target: Pat
 def renumber_page(
     page: ParsedPage, page_number: int, *, degrees: int, id_prefix: str
 ) -> ParsedPage:
-    """Return ``page`` as page ``page_number`` of its document, marked as turned."""
+    """Renumber a turned page while retaining source identity in its block ids.
+
+    The original block id is scoped to its input file, so identical recovered
+    text in different documents remains distinct in canonical block tables.
+    """
 
     blocks = [
         block.model_copy(
             update={
-                "id": stable_id(id_prefix, page_number, degrees, index, block.text[:256]),
+                "id": stable_id(id_prefix, block.id, page_number, degrees, index, block.text[:256]),
                 "page_number": page_number,
                 "metadata": {**block.metadata, "rotation_degrees": degrees},
             }

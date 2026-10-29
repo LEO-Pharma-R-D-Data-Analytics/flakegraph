@@ -7,10 +7,11 @@ from typing import Any
 
 import pytest
 import yaml
+from helm import render as render_chart
 
 from kg_processor.fleet.kubectl import ClusterTarget
 from kg_processor.fleet.preflight import fleet_preflight, placeholder_names
-from kg_processor.fleet.profile import fleet_profile, semantic_mismatches
+from kg_processor.fleet.profile import fleet_profile, mounted_config_key, semantic_mismatches
 from kg_processor.fleet.recover import queued_worker_components, recover_workers
 
 _RUN: dict[str, Any] = {
@@ -51,6 +52,8 @@ def _fleet_kubectl_fixture(
     output_credential: str | None = None,
     service_account_available: bool = True,
     ontology: Mapping[str, object] | None = None,
+    config_key: str = "config.yaml",
+    mounted_filename: str | None = None,
 ) -> object:
     """Return a deterministic kubectl adapter for fleet-preflight unit tests."""
 
@@ -128,6 +131,15 @@ def _fleet_kubectl_fixture(
                             "containers": [
                                 {
                                     "image": "flakegraph:1.0.0",
+                                    "args": [
+                                        "distributed",
+                                        "worker",
+                                        "--config",
+                                        f"/etc/flakegraph/{mounted_filename or config_key}",
+                                    ],
+                                    "volumeMounts": [
+                                        {"name": "config", "mountPath": "/etc/flakegraph"}
+                                    ],
                                     "env": (
                                         [
                                             {
@@ -148,7 +160,18 @@ def _fleet_kubectl_fixture(
                             "volumes": [
                                 {
                                     "name": "config",
-                                    "configMap": {"name": "flakegraph-runtime"},
+                                    "configMap": {
+                                        "name": "flakegraph-runtime",
+                                        **(
+                                            {
+                                                "items": [
+                                                    {"key": config_key, "path": mounted_filename}
+                                                ]
+                                            }
+                                            if mounted_filename
+                                            else {}
+                                        ),
+                                    },
                                 },
                                 *(
                                     [
@@ -195,7 +218,7 @@ def _fleet_kubectl_fixture(
         elif resource == "configmap":
             response = {
                 "data": {
-                    "config.yaml": yaml.safe_dump(
+                    config_key: yaml.safe_dump(
                         {
                             "ocr": {"provider": profile_ocr},
                             "llm": {
@@ -575,3 +598,106 @@ def test_recovery_reports_a_pod_that_cannot_start_instead_of_restarting_it(
 
     with pytest.raises(RuntimeError, match="pod startup failed: manifest unknown"):
         recover_workers("flakegraph", {"worker-finalize"}, ClusterTarget())
+
+
+@pytest.mark.parametrize("filename", [None, "runtime.yaml", "nested/runtime.yaml"])
+def test_fleet_profile_and_preflight_follow_the_workers_selected_config_key(
+    monkeypatch: pytest.MonkeyPatch, filename: str | None
+) -> None:
+    """Custom chart keys and ConfigMap items renames select the mounted worker profile."""
+
+    _use(
+        monkeypatch,
+        _fleet_kubectl_fixture(
+            profile_ocr="fallback",
+            model_servers=1,
+            output_credential="KG_LLM_API_KEY",
+            config_key="processing.yaml",
+            mounted_filename=filename,
+        ),
+    )
+    profile = fleet_profile(ClusterTarget(), "flakegraph")
+    assert profile["config"]["ocr"]["provider"] == "fallback"
+    assert fleet_preflight(_run(), "flakegraph", ClusterTarget())["ok"]
+
+
+def test_profile_discovery_requires_worker_pools_to_agree_on_the_config_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A filename mismatch cannot make submission compare against an arbitrary pool's profile."""
+
+    fixture = _fleet_kubectl_fixture(profile_ocr="fallback", model_servers=1)
+
+    def kubectl(arguments: list[str], **kwargs: Any) -> Any:
+        result = fixture(arguments, **kwargs)  # type: ignore[operator]
+        if arguments[:2] == ["get", "deployments"]:
+            result["items"][-1]["spec"]["template"]["spec"]["containers"][0]["args"][-1] = (
+                "/etc/flakegraph/other.yaml"
+            )
+        return result
+
+    _use(monkeypatch, kubectl)
+    with pytest.raises(RuntimeError, match="shared processing ConfigMap key"):
+        fleet_profile(ClusterTarget(), "flakegraph")
+    preflight = fleet_preflight(_run(), "flakegraph", ClusterTarget())
+    assert not preflight["ok"]
+    assert any("shared processing ConfigMap key" in error for error in preflight["errors"])
+
+
+def test_mounted_profile_resolves_a_configmap_items_key_through_a_subpath_mount() -> None:
+    """A file mount maps the on-disk config path back to its ConfigMap key."""
+
+    deployment = {
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "args": ["--config=/etc/flakegraph/runtime.yaml"],
+                            "volumeMounts": [
+                                {
+                                    "name": "config",
+                                    "mountPath": "/etc/flakegraph/runtime.yaml",
+                                    "subPath": "selected.yaml",
+                                }
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "config",
+                            "configMap": {
+                                "name": "profile",
+                                "items": [{"key": "processing.yaml", "path": "selected.yaml"}],
+                            },
+                        }
+                    ],
+                }
+            }
+        }
+    }
+    assert mounted_config_key(deployment) == "processing.yaml"
+
+
+@pytest.mark.helm
+def test_fleet_profile_reads_the_custom_filename_rendered_by_the_chart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Helm's config.key override remains discoverable through real worker args and mounts."""
+
+    resources = render_chart(("config.key=processing.yaml",))
+    deployments = [item for item in resources if item["kind"] == "Deployment"]
+    config_maps = {
+        item["metadata"]["name"]: item for item in resources if item["kind"] == "ConfigMap"
+    }
+
+    def kubectl(arguments: list[str], **_kwargs: Any) -> dict[str, Any]:
+        if arguments[:2] == ["get", "deployments"]:
+            return {"items": deployments}
+        assert arguments[:2] == ["get", "configmap"]
+        return config_maps[arguments[2]]
+
+    _use(monkeypatch, kubectl)
+    result = fleet_profile(ClusterTarget(), "fleet")
+    assert "processing.yaml" in config_maps[result["config_map"]]["data"]
+    assert result["config"]["llm"]["provider"]

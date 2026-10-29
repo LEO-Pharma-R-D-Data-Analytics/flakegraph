@@ -12,7 +12,6 @@ from typing import Any
 
 import pandas as pd
 import pytest
-from pyspark.sql import SparkSession
 
 from kg_processor.adapters.distributed.local_blob import LocalBlobStore
 from kg_processor.adapters.writers.local_artifacts import LocalArtifactsWriter
@@ -36,6 +35,8 @@ from kg_processor.domain.finalization import GraphDatasetManifest
 from kg_processor.domain.graph import Chunk, GraphWriteBatch
 from kg_processor.domain.ids import sha256_hex
 from kg_processor.domain.stages import ExtractedDocumentShard, PreparedDocumentShard
+
+SparkSession = pytest.importorskip("pyspark.sql").SparkSession
 
 
 def _java_runtime_available() -> bool:
@@ -772,15 +773,11 @@ def _mention(
 
 
 def test_two_runs_finalize_in_one_worker_process(tmp_path: Path) -> None:
-    """A worker claims one finalize task after another; both must produce a graph.
+    """Sequential finalizations publish both graphs and retain one live session.
 
-    Spark allows one context per JVM. The finalizer used to build a session per
-    call with ``getOrCreate`` and stop it in a ``finally``, so the second run in
-    a process either failed on SPARK-2243 or tore down the context the first was
-    still computing in. On 2026-09-22 that took out eight finished corpora in
-    one minute: seven raised SPARK-2243 and the eighth lost its job to another
-    attempt's cleanup. The session is now the process's, reused and left
-    running, and finalizations are serialized.
+    Finalizations in one worker are serialized and share a process-scoped Spark
+    session until worker shutdown. Completing a run leaves that session alive
+    for the next task.
     """
 
     root = tmp_path / "artifacts"
@@ -826,8 +823,7 @@ def test_two_runs_finalize_in_one_worker_process(tmp_path: Path) -> None:
         assert "documents" in manifest.tables
         sessions.append(SparkSession.getActiveSession())
 
-    # One context, still alive after both runs: the second did not rebuild it
-    # and neither run stopped it out from under the other.
+    # Both completed runs share the same live process-scoped context.
     assert sessions[0] is sessions[1]
     assert sessions[1] is not None
     assert not _is_stopped(sessions[1])

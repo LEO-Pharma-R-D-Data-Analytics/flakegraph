@@ -11,7 +11,8 @@ from what the worker pools mount, which is the one place it cannot drift.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from pathlib import PurePosixPath
 from typing import Any
 
 import yaml
@@ -66,15 +67,73 @@ def mounted_config_map(resource: Mapping[str, Any], volume_name: str = "config")
     return None
 
 
-def load_deployed_profile(config_map: Mapping[str, Any]) -> dict[str, Any]:
+def mounted_config_key(resource: Mapping[str, Any], volume_name: str = "config") -> str:
+    """Resolve the worker's ``--config`` path through its ConfigMap volume mount.
+
+    ConfigMap ``items`` can rename a key on disk, and ``subPath`` mounts can
+    select one file. The argument identifies the file the worker actually reads
+    rather than assuming the chart's default filename.
+    """
+
+    pod = resource.get("spec", {}).get("template", {}).get("spec", {})
+    volume: Mapping[str, Any] = next(
+        (item for item in pod.get("volumes", []) if item.get("name") == volume_name), {}
+    )
+    mapping = volume.get("configMap", {})
+    keys: set[str] = set()
+    for container in pod.get("containers", []):
+        arguments = [*container.get("command", []), *container.get("args", [])]
+        paths = [
+            str(arguments[index + 1])
+            for index, argument in enumerate(arguments[:-1])
+            if argument == "--config"
+        ]
+        paths.extend(
+            str(argument).split("=", 1)[1]
+            for argument in arguments
+            if str(argument).startswith("--config=")
+        )
+        for mount in container.get("volumeMounts", []):
+            if mount.get("name") != volume_name or mount.get("subPathExpr"):
+                continue
+            mount_path = PurePosixPath(str(mount.get("mountPath", "")))
+            for path in paths:
+                try:
+                    relative = PurePosixPath(path).relative_to(mount_path)
+                except ValueError:
+                    continue
+                mounted_file = PurePosixPath(str(mount.get("subPath", ""))) / relative
+                filename = str(mounted_file)
+                items = mapping.get("items")
+                if items is None:
+                    keys.add(filename)
+                else:
+                    keys.update(str(item["key"]) for item in items if item.get("path") == filename)
+    if len(keys) != 1 or not mapping.get("name"):
+        raise RuntimeError("Worker --config must select one file from its processing ConfigMap")
+    return next(iter(keys))
+
+
+def shared_config_key(workers: Sequence[Mapping[str, Any]]) -> str:
+    """Require every worker pool to read the same ConfigMap data key."""
+
+    keys = {mounted_config_key(worker) for worker in workers}
+    if len(keys) != 1:
+        raise RuntimeError("Worker pools must read one shared processing ConfigMap key")
+    return next(iter(keys))
+
+
+def load_deployed_profile(
+    config_map: Mapping[str, Any], key: str = "config.yaml"
+) -> dict[str, Any]:
     """Parse the mounted worker profile without exposing any Secret resources."""
 
-    text = config_map.get("data", {}).get("config.yaml")
+    text = config_map.get("data", {}).get(key)
     if not isinstance(text, str) or not text.strip():
-        raise RuntimeError("Fleet processing ConfigMap does not contain config.yaml")
+        raise RuntimeError(f"Fleet processing ConfigMap does not contain {key}")
     loaded = yaml.safe_load(text) or {}
     if not isinstance(loaded, Mapping):
-        raise RuntimeError("Fleet processing config.yaml must contain a mapping")
+        raise RuntimeError(f"Fleet processing {key} must contain a mapping")
     return dict(loaded)
 
 
@@ -132,7 +191,9 @@ def fleet_profile(target: ClusterTarget, namespace: str) -> dict[str, Any]:
     if len(config_maps) != 1:
         raise RuntimeError("Worker pools must mount one shared FlakeGraph processing ConfigMap")
     config_name = next(iter(config_maps))
-    profile = load_deployed_profile(config_map(target, namespace, config_name))
+    profile = load_deployed_profile(
+        config_map(target, namespace, config_name), shared_config_key(workers)
+    )
     ontology_name = next(
         (name for item in workers if (name := mounted_config_map(item, "ontology"))), None
     )

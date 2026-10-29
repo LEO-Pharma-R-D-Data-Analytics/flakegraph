@@ -224,26 +224,23 @@ else
   fetch() { [[ "$installer" == http* ]] && curl -sfL "$installer" || cat "$installer"; }
 
   if [[ "$role" == "server" ]]; then
-    # --cluster-init starts embedded etcd. A default k3s server uses SQLite and
-    # can never gain a second control-plane node, which would mean rebuilding
-    # the cluster the first time this fleet grows beyond one Spark.
+    # --cluster-init starts embedded etcd so additional control-plane nodes
+    # can join the cluster.
     #
     # The node's own address is added as a TLS SAN so an operator's kubectl can
     # reach the API over the network rather than only from localhost.
     # INSTALL_K3S_EXEC is written verbatim into the systemd unit, and the
-    # installer drops the value if it spans lines — the first attempt here used
-    # backslash continuations and produced a server with none of its flags. Keep
-    # it on one line.
+    # installer requires the command and flags on one line.
     #
     # The kubeconfig k3s writes is cluster-admin; 0600 keeps it root's, and the
     # operator gets a copy of their own below rather than a world-readable one.
-    INSTALL_K3S_EXEC="server --cluster-init --tls-san ${primary_ip} --tls-san $(hostname -f 2>/dev/null || hostname) --write-kubeconfig-mode 0600" \
-      fetch | sh -
+    fetch | INSTALL_K3S_EXEC="server --cluster-init --tls-san ${primary_ip} --tls-san $(hostname -f 2>/dev/null || hostname) --write-kubeconfig-mode 0600" \
+      sh -
     ok "k3s server started with embedded etcd"
   else
-    INSTALL_K3S_EXEC="agent --node-label flakegraph.io/node-class=${node_class} --node-label nvidia.com/gpu.present=true" \
+    fetch | INSTALL_K3S_EXEC="agent --node-label flakegraph.io/node-class=${node_class} --node-label nvidia.com/gpu.present=true" \
       K3S_URL="$server_url" K3S_TOKEN="$join_token" \
-      fetch | sh -
+      sh -
     ok "k3s agent joined $server_url"
   fi
 fi

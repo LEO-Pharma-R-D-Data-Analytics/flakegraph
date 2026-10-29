@@ -85,24 +85,34 @@ MESSAGE
     ok "pods may be scheduled here again"
 
     step "Wait for this node's pods to become Ready"
-    # StatefulSet replicas pinned here by their volumes - the engine and the
-    # parsing replica - reschedule on their own. The wait is what turns "the
-    # node is back" into "the node is serving", which is the point at which
-    # the next node may be taken.
+    # Pod Ready includes init containers and readiness gates. A pod without a
+    # Ready condition is still starting, even when no container status exists.
+    # The reference fleet also needs both serving StatefulSets at their desired
+    # replica counts: a pinned engine/parser may not have a node assignment yet.
     deadline=$(( $(date +%s) + $(seconds "$restore_timeout") ))
     while :; do
-      not_ready=$(kubectl get pods -n "$namespace" --field-selector "spec.nodeName=$node" \
-        -o jsonpath='{range .items[?(@.status.phase!="Succeeded")]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.ready}{" "}{end}{"\n"}{end}' \
-        | awk '/false/ {print $1}')
-      [[ -z "$not_ready" ]] && break
-      if (( $(date +%s) > deadline )); then
+      not_ready=$(kubectl get pods -n "$namespace" --field-selector "spec.nodeName=$node" --request-timeout=15s \
+        -o 'go-template={{range .items}}{{if ne .status.phase "Succeeded"}}{{$name := .metadata.name}}{{$ready := false}}{{range .status.conditions}}{{if and (eq .type "Ready") (eq .status "True")}}{{$ready = true}}{{end}}{{end}}{{if not $ready}}{{$name}}{{"\n"}}{{end}}{{end}}{{end}}')
+      serving_not_ready=$(kubectl get statefulsets -n "$namespace" --request-timeout=15s \
+        -l 'app.kubernetes.io/name=flakegraph,app.kubernetes.io/component in (model-serving,document-parsing)' \
+        -o 'go-template={{range .items}}{{.metadata.name}}|{{index .metadata.labels "app.kubernetes.io/component"}}|{{.spec.replicas}}|{{.status.readyReplicas}}|{{.metadata.generation}}|{{.status.observedGeneration}}{{"\n"}}{{end}}' \
+        | awk -F '|' '
+          { seen[$2] = 1 }
+          $3 !~ /^[0-9]+$/ || $3 < 1 || $4 !~ /^[0-9]+$/ || $4 != $3 ||
+          $5 !~ /^[0-9]+$/ || $6 !~ /^[0-9]+$/ || $6 < $5 { print $1 }
+          END {
+            if (!seen["model-serving"]) print "missing model-serving StatefulSet"
+            if (!seen["document-parsing"]) print "missing document-parsing StatefulSet"
+          }')
+      [[ -z "$not_ready" && -z "$serving_not_ready" ]] && break
+      if (( $(date +%s) >= deadline )); then
         echo "still not ready after $restore_timeout:" >&2
-        printf '      %s\n' "${not_ready//$'\n'/ }" >&2
+        printf '      %s\n' "$not_ready" "$serving_not_ready" >&2
         exit 1
       fi
       sleep 20
     done
-    ok "everything scheduled on $node is Ready"
+    ok "node pods and all engine/parser replicas are Ready"
     kubectl get pods -n "$namespace" --field-selector "spec.nodeName=$node" -o wide --no-headers \
       | awk '{print "      " $1 "  " $2}'
     ;;

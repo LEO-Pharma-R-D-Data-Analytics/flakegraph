@@ -26,7 +26,7 @@ from kg_processor.domain.documents import (
     ParsedPage,
 )
 from kg_processor.domain.ids import stable_id
-from kg_processor.ports.ocr import OcrOptions
+from kg_processor.ports.ocr import NoTextReadError, OcrOptions
 
 _BBOX_COORDS = 4
 _SECRET_ENVIRONMENT_PREFIXES = (
@@ -129,7 +129,7 @@ class MineruInternalOcrProvider:
         else:
             raise RuntimeError(f"MinerU did not produce JSON or Markdown output in {output_dir}")
         if not any(page.markdown.strip() or page.raw_text.strip() for page in pages):
-            raise RuntimeError(f"MinerU produced no usable text in {output_dir}")
+            raise NoTextReadError(f"MinerU produced no usable text in {output_dir}")
 
         return ParsedDocument(
             file_id=file.id,

@@ -30,7 +30,7 @@ from typing import Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -654,8 +654,10 @@ def create_app(
             rejected = _Accounting(metrics, UNAUTHENTICATED_CLASS, route)
             return rejected.close(JSONResponse({"error": "unauthorized"}, status_code=401))
 
-        accounting = await _admit(gate, metrics, consumer_class, route)
+        # Stamp before admission so invalid bytes cannot retain a protected
+        # request or capped batch slot without a relay to release it.
         stamped, priority = _stamped_body(body, route, resolved, consumer_class)
+        accounting = await _admit(gate, metrics, consumer_class, route)
         if priority is not None:
             metrics.priority_stamped.labels(consumer_class, str(priority)).inc()
         return await _relay(request, route, stamped, accounting)
@@ -881,12 +883,15 @@ def _stamped_body(
     Returns the body to relay and the band stamped into it, or ``None`` when
     none was. A body that is not a JSON object is relayed untouched. It cannot
     carry a priority field, so there is nothing to strip and nothing to forge.
+    Invalid JSON encoding is rejected before the caller acquires admission.
     """
 
     if not body:
         return body, None
     try:
         payload = json.loads(body)
+    except UnicodeDecodeError as error:
+        raise HTTPException(status_code=400, detail="invalid JSON encoding") from error
     except json.JSONDecodeError:
         return body, None
     if not isinstance(payload, dict):

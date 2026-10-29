@@ -29,6 +29,7 @@ from kg_processor.fleet.profile import (
     load_deployed_profile,
     mounted_config_map,
     semantic_mismatches,
+    shared_config_key,
 )
 
 CREDENTIAL_SECTIONS = ("ocr", "llm", "embedding", "snowflake")
@@ -83,12 +84,20 @@ def fleet_preflight(
     )
     if len(config_maps) == 1:
         config_name = next(iter(config_maps))
-        deployed = load_deployed_profile(config_map(target, namespace, config_name))
-        profile_errors = semantic_mismatches(run, deployed)
-        profile_errors.extend(_ontology_mismatches(run))
-        errors.extend(profile_errors)
-        if not profile_errors:
-            checks.append("Selected OCR, LLM, embedding, and ontology match fleet workers")
+        workers = [
+            item for name, item in by_component.items() if name in REQUIRED_WORKER_COMPONENTS
+        ]
+        try:
+            key = shared_config_key(workers)
+            deployed = load_deployed_profile(config_map(target, namespace, config_name), key)
+        except RuntimeError as error:
+            errors.append(str(error))
+        else:
+            profile_errors = semantic_mismatches(run, deployed)
+            profile_errors.extend(_ontology_mismatches(run))
+            errors.extend(profile_errors)
+            if not profile_errors:
+                checks.append("Selected OCR, LLM, embedding, and ontology match fleet workers")
 
     llm = _section(run, "llm")
     if llm.get("provider") == "vllm_local" and _loopback_endpoint(llm.get("endpoint")):

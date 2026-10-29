@@ -112,19 +112,19 @@ class MineruApiOcrProvider:
         pages: list[ParsedPage],
         assets: list[ParsedAsset],
     ) -> tuple[list[ParsedPage], list[ParsedAsset]]:
-        """Read again, turned, every PDF page the first pass produced no text for.
+        """Recover unread PDF pages within the requested inclusive page window.
 
-        A landscape form fed through a portrait scanner arrives with its text
-        running vertically. MinerU's layout model finds no text regions on such
-        a page and returns nothing for it, silently, so a one-page release
-        report came back empty and the run stopped on it. Each unread page is
-        sent back on its own turned a quarter either way, the orientation that
-        read more wins, and upside down is tried only when neither did. Pages
-        that read the first time are never resent, so an ordinary document
-        costs nothing extra.
+        Each selected unread page is retried in both quarter turns; the parse
+        with more text wins. A half turn is tried when neither quarter turn
+        reads text. Readable pages and pages outside the window are not resent.
         """
 
-        unread = unread_pdf_pages(file.path, pages)
+        start, end = resolve_page_window(options, provider="mineru_api")
+        unread = [
+            number
+            for number in unread_pdf_pages(file.path, pages)
+            if (start is None or number - 1 >= start) and (end is None or number - 1 <= end)
+        ]
         if not unread:
             return pages, assets
         form_data = _form_data(options)

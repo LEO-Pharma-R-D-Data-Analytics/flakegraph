@@ -711,3 +711,37 @@ def test_the_admission_route_is_readable_and_settable_only_by_protected_classes(
             assert upstream.started == []
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("key,consumer", [("sk-chat", "interactive"), ("sk-pipeline", "batch")])
+def test_invalid_utf8_cannot_retain_admission_or_in_flight_metrics(key: str, consumer: str) -> None:
+    """Malformed generation bytes fail before admission and leave batch capacity available."""
+
+    async def exercise() -> None:
+        upstream = _SlowUpstream()
+        upstream.release.set()
+        app = _gated_app(upstream)
+        app.state.gate.set_batch_cap(1)
+        async with _serve(app) as client:
+            malformed = await client.post(
+                "/v1/chat/completions",
+                content=b"\xff",
+                headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
+            )
+            assert malformed.status_code == 400
+            assert not upstream.started
+            state = app.state.gate.state()
+            assert state["protected_in_flight"] == state["held_in_flight"] == 0
+            assert not app.state.metrics.registry.get_sample_value(
+                "flakegraph_sidecar_requests_in_flight", {"consumer_class": consumer}
+            )
+            # With a 30-second gate hold, any orphan would exceed this deadline.
+            good = await asyncio.wait_for(
+                _post(client, "sk-pipeline", "batch-after-bad"), timeout=1
+            )
+            assert good.status_code == 200
+            state = app.state.gate.state()
+            assert state["protected_in_flight"] == state["held_in_flight"] == 0
+            assert upstream.started == ["batch-after-bad"]
+
+    asyncio.run(exercise())

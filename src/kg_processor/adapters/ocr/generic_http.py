@@ -96,13 +96,23 @@ def raise_for_status(response: httpx.Response, provider: str) -> None:
 
     httpx's own message names the status and a documentation URL; the body is
     where a parser says what was wrong with the file, and that is what an
-    operator reading a failed task needs to see.
+    operator reading a failed task needs to see. Consume only a short excerpt
+    and retain the response status for systemic authentication-error handling.
     """
 
     if response.is_success:
         return
-    excerpt = response.read()[:_ERROR_EXCERPT_BYTES].decode("utf-8", errors="replace").strip()
-    raise RuntimeError(f"{provider} returned HTTP {response.status_code}: {excerpt or 'no body'}")
+    content = bytearray()
+    for chunk in response.iter_bytes():
+        content.extend(chunk[: _ERROR_EXCERPT_BYTES - len(content)])
+        if len(content) == _ERROR_EXCERPT_BYTES:
+            break
+    excerpt = content.decode("utf-8", errors="replace").strip()
+    raise httpx.HTTPStatusError(
+        f"{provider} returned HTTP {response.status_code}: {excerpt or 'no body'}",
+        request=response.request,
+        response=response,
+    )
 
 
 def _json_payload(response: httpx.Response, max_response_bytes: int) -> object:

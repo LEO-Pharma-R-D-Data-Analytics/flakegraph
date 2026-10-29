@@ -8,7 +8,7 @@ import pytest
 
 from kg_processor.adapters.files.local import LocalFileSource
 from kg_processor.adapters.ocr.tesseract_internal import TesseractInternalOcrProvider
-from kg_processor.ports.ocr import OcrOptions
+from kg_processor.ports.ocr import NoTextReadError, OcrOptions
 
 
 def test_tesseract_internal_builds_pdf_render_command(tmp_path: Path) -> None:
@@ -126,7 +126,7 @@ def test_tesseract_internal_rejects_a_recognition_that_produced_no_text(
 
     monkeypatch.setattr("kg_processor.adapters.ocr.tesseract_internal.subprocess.run", fake_run)
 
-    with pytest.raises(RuntimeError, match="recognized no text"):
+    with pytest.raises(NoTextReadError, match="recognized no text"):
         TesseractInternalOcrProvider().parse(file, OcrOptions())
 
 

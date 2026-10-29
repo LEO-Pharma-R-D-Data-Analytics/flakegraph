@@ -11,7 +11,7 @@ from pathlib import Path
 
 from kg_processor.domain.documents import InputFile, LayoutBlock, ParsedDocument, ParsedPage
 from kg_processor.domain.ids import stable_id
-from kg_processor.ports.ocr import OcrOptions, parse_page_range
+from kg_processor.ports.ocr import NoTextReadError, OcrOptions, parse_page_range
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 _PDF_SUFFIXES = {".pdf"}
@@ -59,7 +59,7 @@ class TesseractInternalOcrProvider:
         # contributes nothing, so the empty result is a failure the caller can
         # route or see.
         if not any(page.raw_text.strip() for page in pages):
-            raise RuntimeError(f"Tesseract recognized no text in {file.source_uri}")
+            raise NoTextReadError(f"Tesseract recognized no text in {file.source_uri}")
 
         return ParsedDocument(
             file_id=file.id,
