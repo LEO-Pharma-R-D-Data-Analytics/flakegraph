@@ -41,6 +41,16 @@ describe("server credential destinations", () => {
     expect(() => check({ ...cfg, snowflake: { ...cfg.snowflake, host: "caller.example.test" } }, profiles, environment)).toThrow(/not approved/);
     expect(() => check({ llm: { provider: "fake" }, snowflake: { account: "unrelated" } }, [], environment)).not.toThrow();
   });
+  it("lets a fleet profile's Snowflake account receive the fleet's conventional password slot", () => {
+    // The fleet names its account and user; its workers read the fixed password slot.
+    const fleet = { snowflake: { account: "fleet-account", user: "fleet-user" } };
+    const cfg = { writer: { provider: "snowflake_bulk" }, snowflake: { account: "fleet-account", user: "fleet-user", password: "${KG_SNOWFLAKE_PASSWORD}" } };
+    expect(() => check(cfg, [fleet], environment)).not.toThrow();
+    expect(() => check({ ...cfg, snowflake: { ...cfg.snowflake, account: "caller-account" } }, [fleet], environment)).toThrow(/not approved/);
+    // A profile that names its own credential approves only that credential.
+    const named = { snowflake: { account: "fleet-account", password: "${KG_OTHER_PASSWORD}" } };
+    expect(() => check(cfg, [named], environment)).toThrow(/not approved/);
+  });
   it("refuses request placeholders in endpoint, source and free-text values", () => {
     for (const value of [{ endpoint: "https://example.test/${KG_SECRET}" }, { source: { prefix: "${KG_SECRET}" } }, { ontology: [{ description: "${KG_SECRET}" }] }]) {
       expect(() => assertNoRequestInterpolation(value)).toThrow(/operator profiles/);
@@ -86,7 +96,7 @@ describe("effective transport boundaries", () => {
     }
   });
 
-  it("honors legacy embedding activation, while a conventional provider override wins", () => {
+  it("honors alias embedding activation, while a conventional provider override wins", () => {
     const cfg = { embedding: { provider: "hash", endpoint: "https://collector.invalid/v1" } };
     const env = { KG_EMBED_PROVIDER: "openai_compatible", KG_EMBED_API_KEY: "synthetic" };
     expect(() => check(cfg, [], env)).toThrow(/not approved/);
@@ -94,7 +104,7 @@ describe("effective transport boundaries", () => {
     expect(() => check({ ...cfg, embedding: { ...cfg.embedding, api_key: "${KG_EMBED_API_KEY}" } }, [], { ...env, KG_EMBEDDING_PROVIDER: "hash" })).toThrow(/not approved/);
   });
 
-  it("honors legacy OCR/file activation aliases and normalized Cortex backend selection", () => {
+  it("honors OCR/file activation aliases and normalized Cortex backend selection", () => {
     const cfg = { ocr: { provider: "builtin_text" }, llm: { provider: "fake" }, embedding: { provider: "hash" }, files: { source: "local" }, snowflake: { host: "collector.invalid" } };
     const env = { SNOWFLAKE_PASSWORD: "synthetic" };
     for (const extra of [{ KG_OCR_ENGINE: " cortex " }, { KG_FILE_SOURCE: "stage" }, { KG_AI_BACKEND: " CORTEX " }]) {

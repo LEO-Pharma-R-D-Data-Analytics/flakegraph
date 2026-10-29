@@ -14,9 +14,9 @@ const ROUTES: Route[] = [
   { section: "snowflake", endpoint: "host", credentials: ["password", "oauth_token", "private_key_path", "oauth_token_path"] },
 ];
 
-// Settings._environment_names applies legacy aliases first, then conventional
+// Settings._environment_names applies alias names first, then conventional
 // KG_<SECTION>_<FIELD> names. Ambient Snowflake defaults precede the YAML.
-const LEGACY: Record<string, string[]> = {
+const ALIASES: Record<string, string[]> = {
   "embedding.provider": ["KG_EMBED_PROVIDER"],
   "embedding.endpoint": ["KG_EMBED_ENDPOINT"],
   "embedding.api_key": ["KG_EMBED_API_KEY"],
@@ -120,7 +120,7 @@ function lastSet(names: readonly string[], environment: Environment): string | u
 }
 
 function conventional(section: string, field: string): string[] {
-  return [...(LEGACY[`${section}.${field}`] ?? []), `KG_${section}_${field}`.toUpperCase()];
+  return [...(ALIASES[`${section}.${field}`] ?? []), `KG_${section}_${field}`.toUpperCase()];
 }
 
 /** Resolve only routing fields, with the same precedence as Settings.load. */
@@ -199,7 +199,13 @@ function declaredCredentials(profile: Config, route: Route, environment: Environ
       }
     } else if (route.section === "snowflake") {
       const reference = rawValue(`${field}_environment_variable`);
+      const slot = `KG_SNOWFLAKE_${field.toUpperCase()}`;
       if (typeof reference === "string" && environment[reference]) used.push({ identity: `env:${reference}`, field });
+      // A profile that names no credential of its own runs with the
+      // conventional slot, which the fleet's workers read for its account.
+      else if (record[field] === undefined && record[`${field}_environment_variable`] === undefined && environment[slot]) {
+        used.push({ identity: `env:${slot}`, field });
+      }
     }
   }
   if (route.section === "snowflake") {
