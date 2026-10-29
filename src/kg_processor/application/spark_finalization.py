@@ -1236,6 +1236,12 @@ class SparkGraphFinalizer:
             F.col("node_id").alias("target_node_id"),
         )
 
+        self_loop_relation_types = sorted(
+            normalize_relation_type(definition.name)
+            for definition in self._ontology_profile().relation_types
+            if definition.allow_self_loop
+        )
+
         def with_edges(endpoint_relations: DataFrame) -> DataFrame:
             """Locate relations with resolved endpoints in their chunks and name their edges."""
 
@@ -1250,8 +1256,16 @@ class SparkGraphFinalizer:
             # Distinct extracted spellings can resolve to the same canonical node
             # after alias and punctuation normalization. Such an assertion was not
             # a source-level self-loop, so it survives extraction and is rejected
-            # here, where canonical endpoint identity is finally known.
-            return located.where(F.col("source_node_id") != F.col("target_node_id")).withColumn(
+            # here, where canonical endpoint identity is finally known. A source
+            # assertion naming one mention at both ends is kept where the
+            # ontology allows its predicate to loop.
+            distinct_ends = F.col("source_node_id") != F.col("target_node_id")
+            if self_loop_relation_types:
+                distinct_ends = distinct_ends | (
+                    (F.col("source_entity_id") == F.col("target_entity_id"))
+                    & F.col("normalized_relation_type").isin(self_loop_relation_types)
+                )
+            return located.where(distinct_ends).withColumn(
                 "edge_id",
                 _stable_id(
                     "edge",

@@ -33,6 +33,11 @@ from kg_processor.domain.extraction import (
 )
 from kg_processor.domain.finalization import GraphDatasetManifest
 from kg_processor.domain.graph import Chunk, GraphWriteBatch
+from kg_processor.domain.ontology import (
+    EntityTypeDefinition,
+    OntologyProfile,
+    RelationTypeDefinition,
+)
 from kg_processor.domain.ids import sha256_hex
 from kg_processor.domain.stages import ExtractedDocumentShard, PreparedDocumentShard
 
@@ -605,6 +610,115 @@ def test_provider_threads_change_no_published_row(tmp_path: Path) -> None:
         len(names) - 1
     )
     assert tables["four-threads"] == tables["one-thread"]
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_spark_keeps_only_explicit_self_relations_the_ontology_allows(
+    tmp_path: Path, allowed: bool
+) -> None:
+    """One mention at both ends is a stated loop; two spellings of one node never are.
+
+    The local engine applies the same rule, so one corpus yields one edge set on
+    either engine.
+    """
+
+    root = tmp_path / "artifacts"
+    store = LocalBlobStore(root.as_uri())
+    store.initialize()
+    graph_id = "loop-graph"
+    text = "Kinase Alpha activates itself. KINASE ALPHA activates Kinase Alpha."
+    chunk = _chunk("chunk-loop", "file-loop", text).model_copy(update={"graph_id": graph_id})
+    second = text.index("KINASE ALPHA")
+    last = text.rindex("Kinase Alpha")
+    mentions = [
+        _mention("entity-first", "Kinase Alpha", chunk.id, start_offset=0, entity_type="PROTEIN"),
+        _mention(
+            "entity-upper", "KINASE ALPHA", chunk.id, start_offset=second, entity_type="PROTEIN"
+        ),
+        _mention("entity-last", "Kinase Alpha", chunk.id, start_offset=last, entity_type="PROTEIN"),
+    ]
+    sentences = text.split(". ")
+
+    def relation(relation_id: str, source: str, target: str, quote: str) -> RelationObservation:
+        start = text.index(quote)
+        return RelationObservation(
+            id=relation_id,
+            source_entity_id=source,
+            target_entity_id=target,
+            relation_type="ACTIVATES",
+            description=quote,
+            source_chunk_id=chunk.id,
+            quote=quote,
+            start_offset=start,
+            end_offset=start + len(quote),
+        )
+
+    relations = [
+        relation("relation-explicit", "entity-first", "entity-first", sentences[0]),
+        relation("relation-merged", "entity-upper", "entity-last", sentences[1]),
+    ]
+    prepared = PreparedDocumentShard(
+        file_ids=[chunk.file_id],
+        files_seen=1,
+        documents_processed=1,
+        document_rows=[{"id": "document-loop", "graph_id": graph_id, "file_id": chunk.file_id}],
+        chunks=[chunk],
+    )
+    extracted = ExtractedDocumentShard(
+        prepared=prepared,
+        observations=ExtractionObservations(
+            entities=mentions, relations=relations, chunk_count=1, window_count=1
+        ),
+    )
+    store.put(
+        "loop-run/prepared_document/prepared.json",
+        prepared.model_dump_json().encode(),
+        "application/json",
+    )
+    store.put(
+        "loop-run/extracted_document/extracted.json",
+        extracted.model_dump_json().encode(),
+        "application/json",
+    )
+    ontology = OntologyProfile(
+        name="self-regulation",
+        description="Protein self regulation",
+        mode="closed",
+        entity_types=[EntityTypeDefinition(name="PROTEIN", description="Named protein")],
+        relation_types=[
+            RelationTypeDefinition(
+                name="ACTIVATES",
+                description="A protein activates a protein",
+                source_types=["PROTEIN"],
+                target_types=["PROTEIN"],
+                allow_self_loop=allowed,
+            )
+        ],
+    )
+    settings = _settings(tmp_path, root, graph_id)
+    settings = settings.model_copy(
+        update={
+            "ontology": settings.ontology.model_copy(
+                update={"profile": ontology.model_dump(mode="json")}
+            )
+        }
+    )
+    manifest = SparkGraphFinalizer(settings).finalize(
+        SparkFinalizationRequest(
+            run_id="loop-run", graph_id=graph_id, attempt=1, artifact_ids=LINKED
+        )
+    )
+    batch = GraphDatasetReader(store).read(manifest)
+
+    assert len(batch.nodes) == 1
+    # Only the stated loop survives, and only where the ontology allows it.
+    assert [observation.description for observation in batch.edge_observations] == (
+        [sentences[0]] if allowed else []
+    )
+    assert len(batch.edges) == (1 if allowed else 0)
+    if allowed:
+        (edge,) = batch.edges
+        assert edge.source_node_id == edge.target_node_id == batch.nodes[0].id
 
 
 def test_spark_finalizer_publishes_schema_correct_empty_graph(tmp_path: Path) -> None:
