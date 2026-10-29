@@ -252,7 +252,7 @@ _EMPTY_SCHEMAS = {
     ),
     "entity_sources": (
         "id string, graph_id string, node_id string, file_id string, "
-        "per_file_description string, mention_count long"
+        "per_file_description string, mention_count long, aliases array<string>"
     ),
     "communities": (
         "id string, graph_id string, stable_key string, level int, title string, "
@@ -765,12 +765,12 @@ class SparkGraphFinalizer:
                     "spark.kubernetes.driver.pod.name",
                     driver_pod_name,
                 )
-        if distributed.artifact_endpoint_url:
+        if (distributed.artifact_uri or "").startswith("s3://"):
             builder = self._configure_s3(builder)
         return cast(SparkSession, builder.getOrCreate())
 
     def _configure_s3(self, builder: Any) -> Any:
-        """Configure Hadoop S3A for path-style S3-compatible object storage.
+        """Configure Hadoop S3A credentials and optional endpoint overrides.
 
         Transport security follows the configured endpoint scheme, and only an
         explicit ``http://`` endpoint disables TLS. Artifact objects and the SigV4
@@ -779,20 +779,16 @@ class SparkGraphFinalizer:
         """
 
         distributed = self.settings.distributed
-        endpoint_url = distributed.artifact_endpoint_url or ""
-        ssl_enabled = urlparse(endpoint_url).scheme.casefold() != "http"
-        builder = (
-            builder.config(
-                "spark.hadoop.fs.s3a.endpoint",
-                distributed.artifact_endpoint_url,
-            )
-            .config("spark.hadoop.fs.s3a.path.style.access", "true")
-            .config("spark.hadoop.fs.s3a.connection.ssl.enabled", str(ssl_enabled).lower())
-            .config(
-                "spark.hadoop.fs.s3a.impl",
-                "org.apache.hadoop.fs.s3a.S3AFileSystem",
-            )
+        builder = builder.config(
+            "spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem"
         )
+        if distributed.artifact_endpoint_url:
+            ssl_enabled = urlparse(distributed.artifact_endpoint_url).scheme.casefold() != "http"
+            builder = (
+                builder.config("spark.hadoop.fs.s3a.endpoint", distributed.artifact_endpoint_url)
+                .config("spark.hadoop.fs.s3a.path.style.access", "true")
+                .config("spark.hadoop.fs.s3a.connection.ssl.enabled", str(ssl_enabled).lower())
+            )
         if distributed.artifact_access_key_id:
             builder = builder.config(
                 "spark.hadoop.fs.s3a.access.key",
@@ -1520,6 +1516,18 @@ class SparkGraphFinalizer:
                 F.max_by("description", F.length("description")).alias("per_file_description"),
                 # Mention IDs are unique before this one-to-one provenance join.
                 F.count("id").alias("mention_count"),
+                F.array_sort(
+                    F.array_distinct(
+                        F.flatten(
+                            F.collect_list(
+                                F.concat(
+                                    F.array("name"),
+                                    F.coalesce("aliases", F.array().cast("array<string>")),
+                                )
+                            )
+                        )
+                    )
+                ).alias("aliases"),
             )
             .withColumn(
                 "id",
@@ -1538,6 +1546,7 @@ class SparkGraphFinalizer:
                 "file_id",
                 "per_file_description",
                 "mention_count",
+                "aliases",
             )
         )
         phase_started = perf_counter()

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import batched, chain
@@ -133,51 +134,86 @@ class DistributedRunPlanner:
         validated_files = _iter_unique_file_ids(
             chain((first_file,), files) if first_file is not None else files
         )
-        effective_run_id = run_id or f"run_{uuid4().hex}"
-        snapshot = {**distributed_processing_config(self.settings), "owner": owner}
-        definition = RunDefinition(
-            id=effective_run_id,
-            graph_id=self.settings.job.graph_id,
-            config=snapshot,
-            config_digest=distributed_processing_config_digest(self.settings),
-            priority_band=priority_band,
-        )
-        if run_id is not None:
-            try:
-                existing = self.task_store.get_run_summary(effective_run_id)
-            except KeyError:
-                existing = None
-            if existing is not None and existing.run.status.value != "planning":
-                if (
-                    existing.run.config_digest != definition.config_digest
-                    or existing.run.priority_band != definition.priority_band
-                ):
-                    raise ValueError(
-                        f"run id {effective_run_id} already exists with different inputs"
+        # Discover the full immutable submission before accepting an idempotency
+        # key. Spooling metadata retains bounded memory for large source listings;
+        # source bytes are still uploaded in bounded batches after validation.
+        with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as file_records:
+            file_identities = []
+            for file in validated_files:
+                file_records.write(file.model_dump_json() + "\n")
+                identity = file.model_dump(mode="json", exclude={"path"})
+                file_identities.append(sha256_hex(json.dumps(identity, sort_keys=True)))
+            file_records.seek(0)
+            effective_run_id = run_id or f"run_{uuid4().hex}"
+            snapshot = {
+                **distributed_processing_config(self.settings),
+                "owner": owner,
+                "submission_identity": sha256_hex(
+                    json.dumps(
+                        {
+                            "graph_id": self.settings.job.graph_id,
+                            "owner": owner,
+                            "ontology": self.settings.ontology.model_dump(mode="json"),
+                            "output": _graph_output_payload(self.settings),
+                            "revision": revision.model_dump(mode="json") if revision else None,
+                            "files": sorted(file_identities),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
                     )
-                # Explicit run IDs are idempotency keys. Returning the existing
-                # summary is safe for active and terminal runs and, critically,
-                # never cancels live work merely because submit was retried.
-                return existing
-        self.task_store.create_run(definition)
-        try:
-            tasks = self._iter_initial_tasks(effective_run_id, validated_files, plan)
-            self.task_store.add_initial_tasks(effective_run_id, tasks)
-            self.task_store.activate_run(effective_run_id)
-        except Exception:
-            # Explicit run IDs are durable planning idempotency keys. PostgreSQL
-            # commits bounded COPY batches so an interrupted coordinator can
-            # safely replay the deterministic stream and activate the same run.
+                ),
+            }
+            definition = RunDefinition(
+                id=effective_run_id,
+                graph_id=self.settings.job.graph_id,
+                config=snapshot,
+                config_digest=distributed_processing_config_digest(self.settings),
+                priority_band=priority_band,
+            )
+            if run_id is not None:
+                try:
+                    existing = self.task_store.get_run_summary(effective_run_id)
+                except KeyError:
+                    existing = None
+                if existing is not None:
+                    if (
+                        existing.run.graph_id != definition.graph_id
+                        or existing.run.config.get("submission_identity")
+                        != snapshot["submission_identity"]
+                        or existing.run.config_digest != definition.config_digest
+                        or existing.run.priority_band != definition.priority_band
+                    ):
+                        raise ValueError(
+                            f"run id {effective_run_id} already exists with different inputs"
+                        )
+                    # Explicit run IDs are idempotency keys. Returning the existing
+                    # summary is safe for active and terminal runs and, critically,
+                    # never cancels live work merely because submit was retried.
+                    if existing.run.status.value != "planning":
+                        return existing
+            self.task_store.create_run(definition)
             try:
-                partial = self.task_store.get_run_summary(effective_run_id)
+                tasks = self._iter_initial_tasks(
+                    effective_run_id,
+                    (InputFile.model_validate_json(line) for line in file_records),
+                    plan,
+                )
+                self.task_store.add_initial_tasks(effective_run_id, tasks)
+                self.task_store.activate_run(effective_run_id)
             except Exception:
-                partial = None
-            if run_id is None or partial is None or partial.total_tasks == 0:
-                self.task_store.cancel_run(effective_run_id)
-            raise
-        # Submission is an operator-facing path, so return bounded counts rather
-        # than serializing every task immediately after inserting a large plan.
-        return self.task_store.get_run_summary(effective_run_id)
+                # Explicit run IDs are durable planning idempotency keys. PostgreSQL
+                # commits bounded COPY batches so an interrupted coordinator can
+                # safely replay the deterministic stream and activate the same run.
+                try:
+                    partial = self.task_store.get_run_summary(effective_run_id)
+                except Exception:
+                    partial = None
+                if run_id is None or partial is None or partial.total_tasks == 0:
+                    self.task_store.cancel_run(effective_run_id)
+                raise
+            # Submission is an operator-facing path, so return bounded counts rather
+            # than serializing every task immediately after inserting a large plan.
+            return self.task_store.get_run_summary(effective_run_id)
 
     def _plan_revision(self, revision: RevisionRequest) -> RevisionPlan:
         """Work out what a revision keeps from its base, reprocesses, and must not re-add.

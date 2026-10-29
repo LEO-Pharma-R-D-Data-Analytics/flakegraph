@@ -445,7 +445,7 @@ class PostgresDistributedStore:
             )
             existing = connection.execute(
                 """
-                SELECT graph_id, config_digest, status, priority_band
+                SELECT graph_id, config_json, config_digest, status, priority_band
                 FROM flakegraph_run
                 WHERE id = %s
                 """,
@@ -455,6 +455,8 @@ class PostgresDistributedStore:
                 raise RuntimeError(f"failed to create distributed run {run.id}")
             if (
                 str(existing["graph_id"]) != run.graph_id
+                or existing["config_json"].get("submission_identity")
+                != run.config.get("submission_identity")
                 or str(existing["config_digest"]) != run.config_digest
                 or str(existing["priority_band"]) != run.priority_band.value
             ):
@@ -1029,6 +1031,59 @@ class PostgresDistributedStore:
                 )
             self._complete_run_after_final_barrier(connection, lease.run_id)
 
+    def commit_publication(self, lease: PublicationLease, commit: Callable[[], None]) -> None:
+        """Serialize an already staged destination swap with cancellation and replacement.
+
+        The immutable batch and destination staging already exist. Holding the run,
+        publication and graph-head rows only during the final replacement closes
+        the ownership-check/write race of the in-flight local finalizer.
+        """
+
+        with self._connection() as connection:
+            owned = connection.execute(
+                """
+                SELECT publication.id
+                FROM flakegraph_publication AS publication
+                JOIN flakegraph_run AS run ON run.id = publication.run_id
+                JOIN flakegraph_graph_head AS head ON head.graph_id = run.graph_id
+                WHERE publication.id = %s AND publication.run_id = %s
+                  AND publication.status = %s AND publication.lease_owner = %s
+                  AND publication.attempts = %s AND publication.generation = %s
+                  AND publication.lease_expires_at >= CURRENT_TIMESTAMP
+                  AND run.status = %s AND head.version_id = publication.artifact_id
+                FOR UPDATE OF publication, run, head
+                """,
+                (
+                    lease.id,
+                    lease.run_id,
+                    PublicationStatus.RUNNING.value,
+                    lease.worker_id,
+                    lease.attempt,
+                    lease.generation,
+                    RunStatus.RUNNING.value,
+                ),
+            ).fetchone()
+            if owned is None:
+                raise RuntimeError(
+                    f"worker {lease.worker_id} no longer owns publication {lease.id}"
+                )
+            # The final destination transaction may outlast an ordinary queue
+            # transaction's idle budget. Losing this connection would release
+            # the fence while an external commit was still in progress. Limit
+            # the exemption to this transaction; statement/lock timeouts remain.
+            connection.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
+            commit()
+            connection.execute(
+                """
+                UPDATE flakegraph_publication
+                SET status = %s, lease_owner = NULL, lease_expires_at = NULL,
+                    completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (PublicationStatus.SUCCEEDED.value, lease.id),
+            )
+            self._complete_run_after_final_barrier(connection, lease.run_id)
+
     def heartbeat_publication(
         self,
         publication_id: str,
@@ -1233,7 +1288,14 @@ class PostgresDistributedStore:
 
         payload = cast(dict[str, Any], task["payload_json"])
         output = payload.get("output")
-        if not isinstance(output, dict) or output.get("provider") != "snowflake_bulk":
+        if not isinstance(output, dict):
+            return
+        batch_output = any(
+            row["media_type"] == "application/json"
+            and str(row["kind"]) == ArtifactKind.GRAPH_RESULT.value
+            for row in output_rows
+        )
+        if output.get("provider") != "snowflake_bulk" and not batch_output:
             return
         graph_outputs = [
             row for row in output_rows if str(row["kind"]) == ArtifactKind.GRAPH_RESULT.value
@@ -1621,7 +1683,7 @@ class PostgresDistributedStore:
                 ),
             )
 
-    def retry_run(self, run_id: str) -> None:
+    def retry_run(self, run_id: str, skipped_file_ids: list[str] | None = None) -> None:
         """Requeue a failed run's failed work, or a cancelled run's cancelled work.
 
         Successful prerequisites and immutable outputs are preserved either way.
@@ -1633,7 +1695,7 @@ class PostgresDistributedStore:
 
         with self._connection() as connection:
             run = connection.execute(
-                "SELECT status FROM flakegraph_run WHERE id = %s FOR UPDATE",
+                "SELECT status, config_json FROM flakegraph_run WHERE id = %s FOR UPDATE",
                 (run_id,),
             ).fetchone()
             if run is None:
@@ -1673,6 +1735,10 @@ class PostgresDistributedStore:
                     PublicationStatus.FAILED.value,
                 ),
             )
+            if skipped_file_ids:
+                self._quarantine_failed_files(
+                    connection, run_id, run["config_json"], skipped_file_ids
+                )
             requeued = connection.execute(
                 """
                 UPDATE flakegraph_task
@@ -1691,7 +1757,11 @@ class PostgresDistributedStore:
                 """,
                 (TaskStatus.QUEUED.value, run_id, stopped_task),
             )
-            publication_only_retry = requeued.rowcount == 0
+            unfinished = connection.execute(
+                "SELECT 1 FROM flakegraph_task WHERE run_id = %s AND status IN (%s, %s) LIMIT 1",
+                (run_id, TaskStatus.QUEUED.value, TaskStatus.RUNNING.value),
+            ).fetchone()
+            publication_only_retry = requeued.rowcount == 0 and unfinished is None
             if publication_only_retry:
                 publications = connection.execute(
                     """
@@ -1724,6 +1794,87 @@ class PostgresDistributedStore:
                     run_id,
                 ),
             )
+
+    def _quarantine_failed_files(
+        self,
+        connection: psycopg.Connection[dict[str, Any]],
+        run_id: str,
+        config: dict[str, Any],
+        file_ids: list[str],
+    ) -> None:
+        """Retire only document trees containing a failed task and persist exclusions.
+
+        A window's scope is its window ID, so matching scope_id alone would miss
+        failed descendants. Traverse document dependencies, excluding the run-wide
+        final barrier, and keep successful artifacts immutable for audit purposes.
+        """
+
+        requested = set(file_ids)
+        if any(not identity.strip() for identity in requested):
+            raise ValueError("quarantined file ids must not be blank")
+        previous = set(config.get("quarantined_file_ids", []))
+        roots = [
+            stage.value
+            for stage in (
+                TaskStage.PREPARE_DOCUMENT,
+                TaskStage.EXTRACT_DOCUMENT_CONTEXT,
+                TaskStage.COMPACT_ENTITY_INVENTORY,
+                TaskStage.COMPACT_DOCUMENT,
+                TaskStage.REVALIDATE_DOCUMENT_CONTEXT,
+                TaskStage.REVALIDATE_DOCUMENT,
+            )
+        ]
+        tree = """
+            WITH RECURSIVE file_tasks AS (
+                SELECT id, scope_id AS file_id FROM flakegraph_task
+                WHERE run_id = %s AND scope_id = ANY(%s) AND stage = ANY(%s)
+                UNION
+                SELECT child.id, parent.file_id FROM file_tasks parent
+                JOIN flakegraph_task_dependency dependency
+                  ON dependency.depends_on_task_id = parent.id
+                JOIN flakegraph_task child ON child.id = dependency.task_id
+                WHERE child.run_id = %s AND child.stage <> 'finalize_graph'
+            )
+        """
+        parameters = (run_id, sorted(requested), roots, run_id)
+        candidates = connection.execute(
+            tree
+            + """
+                SELECT tree.file_id, BOOL_OR(task.status = 'failed') AS has_failed_task
+                FROM file_tasks tree JOIN flakegraph_task task ON task.id = tree.id
+                GROUP BY tree.file_id
+            """,
+            parameters,
+        ).fetchall()
+        eligible = {str(row["file_id"]) for row in candidates if row["has_failed_task"]}
+        if requested - previous - eligible:
+            raise ValueError("only files with a failed task can be quarantined")
+        connection.execute(
+            tree
+            + """
+                UPDATE flakegraph_task SET status = 'succeeded', lease_owner = NULL,
+                    lease_expires_at = NULL, completed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id IN (SELECT id FROM file_tasks) AND status <> 'succeeded'
+            """,
+            parameters,
+        )
+        connection.execute(
+            """
+            UPDATE flakegraph_task dependent
+            SET remaining_dependencies = (
+                SELECT COUNT(*) FROM flakegraph_task_dependency dependency
+                JOIN flakegraph_task prerequisite ON prerequisite.id = dependency.depends_on_task_id
+                WHERE dependency.task_id = dependent.id AND prerequisite.status <> 'succeeded'
+            )
+            WHERE dependent.run_id = %s AND dependent.stage <> 'finalize_graph'
+            """,
+            (run_id,),
+        )
+        connection.execute(
+            "UPDATE flakegraph_run SET config_json = %s WHERE id = %s",
+            (Jsonb({**config, "quarantined_file_ids": sorted(previous | requested)}), run_id),
+        )
 
     def get_run(self, run_id: str) -> RunSnapshot:
         """Read one run and its ordered tasks from a repeatable transaction snapshot."""

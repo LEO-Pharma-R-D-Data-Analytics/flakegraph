@@ -132,8 +132,8 @@ class TaskStore(Protocol):
         """Cancel unfinished work while preserving completed artifacts and audit data."""
         ...
 
-    def retry_run(self, run_id: str) -> None:
-        """Requeue a failed run's failed tasks, or a cancelled run's cancelled ones."""
+    def retry_run(self, run_id: str, skipped_file_ids: list[str] | None = None) -> None:
+        """Retry stopped work, atomically excluding explicitly quarantined failed files."""
         ...
 
     def get_run(self, run_id: str) -> RunSnapshot:
@@ -193,6 +193,15 @@ class TaskStore(Protocol):
         lease_duration: timedelta,
     ) -> None:
         """Extend an active publication lease while external delivery is in progress."""
+        ...
+
+    def commit_publication(self, lease: PublicationLease, commit: Callable[[], None]) -> None:
+        """Commit an already staged batch under ownership and graph-head locks.
+
+        Expensive parsing, serialization, uploads and COPY happen before this
+        call. Only the final destination replacement runs while locked, making
+        cancellation and a superseding graph version serialize with that swap.
+        """
         ...
 
     def fail_publication(

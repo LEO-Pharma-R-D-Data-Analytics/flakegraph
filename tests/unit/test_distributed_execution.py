@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -135,10 +136,11 @@ class MemoryDistributedStore:
         _ = limit
         return []
 
-    def retry_run(self, run_id: str) -> None:
+    def retry_run(self, run_id: str, skipped_file_ids: list[str] | None = None) -> None:
         """Record no state because retry transitions are covered by PostgreSQL tests."""
 
         assert self.run is not None and self.run.id == run_id
+        assert skipped_file_ids is None
 
     def create_run(self, run: RunDefinition) -> None:
         self.run = run
@@ -379,6 +381,12 @@ class MemoryDistributedStore:
         del worker_id, publish
         raise KeyError(publication_id)
 
+    def commit_publication(self, lease: PublicationLease, commit: Callable[[], None]) -> None:
+        """No publications are enqueued by this minimal store."""
+
+        del commit
+        raise KeyError(lease.id)
+
     def heartbeat_publication(
         self, publication_id: str, worker_id: str, lease_duration: timedelta
     ) -> None:
@@ -408,8 +416,18 @@ class RecordingPipeline:
         self.finalized_file_ids: list[list[str]] = []
         self.finalized_document_rows: list[dict[str, Any]] = []
         self.relation_columns: list[list[ColumnRelation] | None] = []
+        self.published_batches: list[GraphWriteBatch] = []
         # Trace events the context stage adds, as a dataset profile would.
         self.context_trace: list[dict[str, Any]] = []
+
+    @contextmanager
+    def stage_graph_publication(
+        self, batch: GraphWriteBatch, publication_id: str, generation: int
+    ) -> Iterator[Callable[[], None]]:
+        """Record destination delivery only when its staged commit is invoked."""
+
+        assert publication_id and generation > 0
+        yield lambda: self.published_batches.append(batch)
 
     def prepare_documents(
         self, files: list[Any], *, record_failures: bool = True
@@ -479,7 +497,7 @@ class RecordingPipeline:
         *,
         write: bool = True,
     ) -> GraphWriteBatch:
-        assert write is True
+        assert write is False
         self.finalized_file_ids.append(
             [file_id for shard in shards for file_id in shard.prepared.file_ids]
         )
@@ -3296,3 +3314,29 @@ def test_document_rows_carry_provenance_with_extracted_as_the_default() -> None:
     )
 
     assert [row["provenance"] for row in rows] == ["extracted", "reused", "reextracted:entities"]
+
+
+def test_local_finalization_excludes_durable_quarantined_files(tmp_path: Path) -> None:
+    """A successful old shard of a quarantined document never reaches final assembly."""
+
+    settings = _settings(tmp_path)
+    store = _worker_store(settings)
+    assert store.run is not None
+    store.run = store.run.model_copy(update={"config": {"quarantined_file_ids": ["poison"]}})
+    for file_id in ["good", "poison"]:
+        item = ExtractedDocumentShard(
+            prepared=PreparedDocumentShard(file_ids=[file_id], files_seen=1, documents_processed=1),
+            observations=ExtractionObservations(chunk_count=0, window_count=0),
+        )
+        store.put(
+            "run-test",
+            ArtifactKind.EXTRACTED_DOCUMENT,
+            item.model_dump_json().encode(),
+            "application/json",
+            metadata={"file_ids": [file_id]},
+        )
+    store.lease = _lease(_task(TaskStage.FINALIZE_GRAPH))
+    pipeline = RecordingPipeline()
+    result = _worker(settings, store, pipeline, TaskStage.FINALIZE_GRAPH).process_one()
+    assert result.succeeded, result.error
+    assert pipeline.finalized_file_ids == [["good"]]

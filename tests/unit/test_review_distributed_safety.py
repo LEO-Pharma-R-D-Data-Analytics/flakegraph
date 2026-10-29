@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -20,6 +22,7 @@ from kg_processor.domain.distributed import (
     TaskStage,
 )
 from kg_processor.domain.finalization import GraphDatasetManifest
+from kg_processor.domain.graph import GraphWriteBatch
 
 
 def test_finalizer_rejects_arbitrary_environment_credential_references(tmp_path: Path) -> None:
@@ -148,6 +151,13 @@ class _PublicationStore:
 class _Publisher:
     def __init__(self) -> None:
         self.payloads: list[dict[str, object]] = []
+
+    def stage_batch_publication(
+        self, batch: GraphWriteBatch, task_payload: Mapping[str, object]
+    ) -> AbstractContextManager[Callable[[], None]]:
+        """This fixture covers manifest publication exclusively."""
+
+        raise AssertionError("A manifest command cannot stage a batch")
 
     def publish(self, manifest: GraphDatasetManifest, task_payload: Any) -> None:
         assert manifest.run_id == "run-1"

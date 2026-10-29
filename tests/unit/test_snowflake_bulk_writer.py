@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from io import BytesIO
 from pathlib import Path
@@ -26,6 +27,7 @@ from kg_processor.adapters.writers.snowflake_direct import (
 )
 from kg_processor.adapters.writers.snowflake_manifest import SnowflakeManifestWriter, _empty_batch
 from kg_processor.domain.finalization import DatasetFile, DatasetTableManifest, GraphDatasetManifest
+from kg_processor.domain.ids import stable_id
 
 
 def test_manifest_batch_preserves_configured_relation_weight_cap() -> None:
@@ -70,8 +72,8 @@ def test_bulk_load_files_write_string_parquet_rows(tmp_path: Path) -> None:
     chunk_file = next(item for item in load_files if item.table_name == "KG_CHUNK")
     chunk_frame = pd.read_parquet(chunk_file.local_path)
     assert chunk_frame.loc[0, "SECTION_PATH"] == '["Intro"]'
-    assert chunk_frame.loc[0, "BLOCK_IDS"] == '["block_1"]'
-    assert chunk_frame.loc[0, "ASSET_IDS"] == '["asset_1"]'
+    assert chunk_frame.loc[0, "BLOCK_IDS"] == json.dumps([stable_id("block", "graph", "block_1")])
+    assert chunk_frame.loc[0, "ASSET_IDS"] == json.dumps([stable_id("asset", "graph", "asset_1")])
     community_file = next(item for item in load_files if item.table_name == "KG_COMMUNITY")
     community_frame = pd.read_parquet(community_file.local_path)
     assert community_frame.loc[0, "RATING_EXPLANATION"] == "Important Alice cluster."

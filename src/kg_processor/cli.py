@@ -675,15 +675,22 @@ def distributed_delete(
 def distributed_retry(
     run_id: Annotated[str, typer.Option("--run-id")],
     config: Annotated[Path | None, typer.Option("--config", "-c")] = None,
+    skip_file_id: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--skip-file-id",
+            help="Quarantine a failed document; repeat for multiple files.",
+        ),
+    ] = None,
 ) -> None:
-    """Requeue a failed run's failed tasks, or resume a cancelled run where it stopped."""
+    """Retry stopped work, excluding explicitly quarantined failed documents."""
 
     from kg_processor.factories import build_distributed_store
 
     settings = Settings.load(config)
     store = build_distributed_store(settings)
     store.initialize()
-    store.retry_run(run_id)
+    store.retry_run(run_id, skipped_file_ids=skip_file_id)
     _echo_json(store.get_run_summary(run_id).model_dump(mode="json"))
 
 

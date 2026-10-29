@@ -391,3 +391,43 @@ def _batch(label: str) -> GraphWriteBatch:
         extraction_trace=[{"stage": "test", "label": label}],
         graph_metrics={"counts": {"nodes": 1}, "quality": {"ok": True}},
     )
+
+
+def test_staged_publication_requires_commit_and_rejects_older_generation(tmp_path: Path) -> None:
+    """A delayed finalizer cannot replace a newer committed destination snapshot."""
+
+    output = tmp_path / "out"
+    writer = LocalArtifactsWriter(output)
+    writer.write(_batch("original"))
+    with writer.stage_publication(_batch("older"), publication_id="older", generation=1) as older:
+        assert json.loads((output / "run_report.json").read_text())["job_id"] == "original"
+        with writer.stage_publication(
+            _batch("newer"), publication_id="newer", generation=2
+        ) as newer:
+            newer()
+        with pytest.raises(RuntimeError, match="newer publication"):
+            older()
+    assert json.loads((output / "run_report.json").read_text())["job_id"] == "newer"
+    assert not list(tmp_path.glob(".out.tmp-*"))
+
+
+def test_staged_publication_retries_an_interrupted_destination_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reserved generation can resume after replacement fails before completion."""
+
+    output = tmp_path / "out"
+    writer = LocalArtifactsWriter(output)
+    original = local_artifacts._replace_snapshot
+    with writer.stage_publication(_batch("retry"), publication_id="retry", generation=1) as commit:
+
+        def fail_swap(*args: object) -> None:
+            raise OSError("interrupted swap")
+
+        monkeypatch.setattr(local_artifacts, "_replace_snapshot", fail_swap)
+        with pytest.raises(OSError, match="interrupted"):
+            commit()
+    monkeypatch.setattr(local_artifacts, "_replace_snapshot", original)
+    with writer.stage_publication(_batch("retry"), publication_id="retry", generation=1) as commit:
+        commit()
+    assert json.loads((output / "run_report.json").read_text())["job_id"] == "retry"

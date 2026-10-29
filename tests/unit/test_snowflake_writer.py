@@ -94,16 +94,16 @@ def test_build_snowflake_rows_maps_graph_batch() -> None:
     other_graph_rows = build_snowflake_rows(batch.model_copy(update={"graph_id": "other_graph"}))
     assert other_graph_rows["KG_DOCUMENT"][0]["ID"] != rows["KG_DOCUMENT"][0]["ID"]
     assert rows["KG_PAGE"][0]["GRAPH_ID"] == "graph"
-    assert rows["KG_BLOCK"][0]["ID"] == "block_1"
+    assert rows["KG_BLOCK"][0]["ID"] == stable_id("block", "graph", "block_1")
     assert rows["KG_BLOCK"][0]["BBOX"] == [0.0, 1.0, 2.0, 3.0]
     assert rows["KG_BLOCK"][0]["METADATA"] == {"layout": "body"}
-    assert rows["KG_ASSET"][0]["ID"] == "asset_1"
+    assert rows["KG_ASSET"][0]["ID"] == stable_id("asset", "graph", "asset_1")
     assert rows["KG_ASSET"][0]["GRAPH_ID"] == "graph"
     assert rows["KG_ASSET"][0]["METADATA"] == {"layout": "figure"}
     assert rows["KG_CHUNK"][0]["DOCUMENT_ID"] == rows["KG_DOCUMENT"][0]["ID"]
     assert rows["KG_CHUNK"][0]["SECTION_PATH"] == ["Intro"]
-    assert rows["KG_CHUNK"][0]["BLOCK_IDS"] == ["block_1"]
-    assert rows["KG_CHUNK"][0]["ASSET_IDS"] == ["asset_1"]
+    assert rows["KG_CHUNK"][0]["BLOCK_IDS"] == [stable_id("block", "graph", "block_1")]
+    assert rows["KG_CHUNK"][0]["ASSET_IDS"] == [stable_id("asset", "graph", "asset_1")]
     assert rows["KG_CHUNK"][0]["OCR_GENERATION_ID"] == "ocr-run-1"
     assert rows["KG_CHUNK"][0]["EMBEDDING"] == [0.1, 0.2]
     assert rows["KG_NODE"][0]["SOURCE_CHUNK_IDS"] == ["chunk_1"]
@@ -316,11 +316,14 @@ def test_file_batch_node_reconciliation_uses_durable_per_file_support() -> None:
 
     statements = build_node_reconciliation_statements(batch)
 
-    assert len(statements) == 4
+    assert len(statements) == 6
     assert "FROM KG_ENTITY_SOURCE source JOIN KG_EVIDENCE evidence" in statements[0][0]
-    assert "SET DEGREE = 0, RANK = 0" in statements[1][0]
-    assert "COUNT(DISTINCT EDGE_ID)" in statements[2][0]
-    assert "NOT EXISTS" in statements[3][0]
+    assert "SET DEGREE = 0, RANK = 0" in statements[3][0]
+    assert "COUNT(DISTINCT EDGE_ID)" in statements[4][0]
+    assert "NOT EXISTS" in statements[5][0]
+    assert "SET ALIASES = ARRAY_CONSTRUCT()" in statements[1][0]
+    assert "LATERAL FLATTEN(INPUT => source.ALIASES)" in statements[2][0]
+    assert "ARRAY_EXCEPT(source.ALIASES, ARRAY_CONSTRUCT(target.NAME))" in statements[2][0]
     assert all("graph" in params for _sql, params in statements)
 
 

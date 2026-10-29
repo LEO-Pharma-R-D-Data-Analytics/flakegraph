@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -140,6 +142,53 @@ class LocalArtifactsWriter:
 
         self._publish(lambda path: _write_dataset_snapshot(path, manifest, reader))
 
+    @contextmanager
+    def stage_publication(
+        self, batch: GraphWriteBatch, *, publication_id: str, generation: int
+    ) -> Iterator[Callable[[], None]]:
+        """Prepare a snapshot before a separately fenced, atomic destination swap.
+
+        The generation ledger lives beside the destination so swapping snapshots
+        never drops the fence. A filesystem lock serializes commits from workers
+        sharing the path; an older publication cannot overwrite a newer one.
+        """
+
+        if generation < 1 or not publication_id:
+            raise ValueError("publication requires an identity and positive generation")
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.output_path.parent / f".{self.output_path.name}.tmp-{uuid.uuid4().hex}"
+        ledger_path = self.output_path.parent / f".{self.output_path.name}.publication.json"
+        lock_path = self.output_path.parent / f".{self.output_path.name}.publication.lock"
+        try:
+            temp_path.mkdir()
+            _write_snapshot(temp_path, batch)
+
+            def commit() -> None:
+                """Swap this prepared snapshot while retaining the monotonic fence."""
+
+                with _publication_path_lock(lock_path):
+                    previous = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
+                    previous_generation = int(previous.get("generation", 0))
+                    if previous_generation > generation:
+                        raise RuntimeError("a newer publication already owns the destination")
+                    if previous_generation == generation:
+                        if previous.get("publication_id") != publication_id:
+                            raise RuntimeError("publication generation belongs to another command")
+                        if previous.get("committed"):
+                            return
+                    assert_replaceable_output(self.output_path, _SNAPSHOT_FILES)
+                    # Persisting the fence first makes a crash fail closed: a
+                    # late older command can never replace a newer destination.
+                    fence = {"generation": generation, "publication_id": publication_id}
+                    _write_publication_ledger(ledger_path, {**fence, "committed": False})
+                    _replace_snapshot(temp_path, self.output_path)
+                    _write_publication_ledger(ledger_path, {**fence, "committed": True})
+
+            yield commit
+        finally:
+            if temp_path.exists():
+                _remove_path(temp_path)
+
     def _publish(self, fill: Callable[[Path], None]) -> None:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         assert_replaceable_output(self.output_path, _SNAPSHOT_FILES)
@@ -151,6 +200,44 @@ class LocalArtifactsWriter:
         finally:
             if temp_path.exists():
                 _remove_path(temp_path)
+
+
+def _write_publication_ledger(path: Path, record: dict[str, Any]) -> None:
+    """Replace the destination fence atomically so interrupted writes fail closed."""
+
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(record))
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def _publication_path_lock(path: Path) -> Iterator[None]:
+    """Serialize publication swaps across processes without affecting normal exports."""
+
+    with path.open("a+b") as lock:
+        if sys.platform == "win32":
+            import msvcrt  # noqa: PLC0415 - only available on Windows.
+
+            lock.write(b"\0")
+            lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl  # noqa: PLC0415 - only available on Unix.
+
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def _write_snapshot(output_path: Path, batch: GraphWriteBatch) -> None:

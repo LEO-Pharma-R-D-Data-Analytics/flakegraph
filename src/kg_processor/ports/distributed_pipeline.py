@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from typing import Protocol
 
 from kg_processor.domain.documents import InputFile
@@ -23,6 +25,12 @@ from kg_processor.domain.stages import (
 
 class DistributedPipeline(Protocol):
     """Expose only the coarse serializable stages a distributed worker may execute."""
+
+    def stage_graph_publication(
+        self, batch: GraphWriteBatch, publication_id: str, generation: int
+    ) -> AbstractContextManager[Callable[[], None]]:
+        """Stage a finalized batch and expose its destination commit separately."""
+        ...
 
     def prepare_documents(
         self,

@@ -7,7 +7,8 @@ same row mapping and table column specs for production-sized loads.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Callable, Mapping, Sequence, Set
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -178,6 +179,7 @@ TABLE_COLUMNS: dict[str, tuple[ColumnSpec, ...]] = {
         ColumnSpec("FILE_ID"),
         ColumnSpec("PER_FILE_DESCRIPTION"),
         ColumnSpec("MENTION_COUNT"),
+        ColumnSpec("ALIASES", "array"),
     ),
     "KG_COMMUNITY": (
         ColumnSpec("ID"),
@@ -367,6 +369,13 @@ class SnowflakeDirectWriter:
         finally:
             connection.close()
 
+    def stage_publication(
+        self, batch: GraphWriteBatch, *, publication_id: str, generation: int
+    ) -> AbstractContextManager[Callable[[], None]]:
+        """Reject direct SQL publication, which distributed submission does not support."""
+
+        raise ValueError("distributed publication requires local_artifacts or snowflake_bulk")
+
 
 def build_snowflake_rows(batch: GraphWriteBatch) -> dict[str, list[dict[str, object]]]:
     """Map domain artifacts into the uppercase rows expected by generated DDL.
@@ -529,6 +538,18 @@ def build_node_reconciliation_statements(
         "WHEN MATCHED THEN UPDATE SET DESCRIPTION = source.DESCRIPTION, "
         "SOURCE_CHUNK_IDS = source.SOURCE_CHUNK_IDS, UPDATED_AT = CURRENT_TIMESTAMP()"
     )
+    aliases_sql = (
+        "MERGE INTO KG_NODE target USING ("
+        "SELECT source.NODE_ID, ARRAY_AGG(DISTINCT alias.VALUE::STRING) "
+        "WITHIN GROUP (ORDER BY alias.VALUE::STRING) AS ALIASES "
+        "FROM KG_ENTITY_SOURCE source, "
+        "LATERAL FLATTEN(INPUT => source.ALIASES) alias "
+        "WHERE source.GRAPH_ID = ? GROUP BY source.NODE_ID"
+        ") source ON target.ID = source.NODE_ID "
+        "WHEN MATCHED THEN UPDATE SET ALIASES = "
+        "ARRAY_EXCEPT(source.ALIASES, ARRAY_CONSTRUCT(target.NAME)), "
+        "UPDATED_AT = CURRENT_TIMESTAMP()"
+    )
     reset_degrees_sql = (
         "UPDATE KG_NODE SET DEGREE = 0, RANK = 0, UPDATED_AT = CURRENT_TIMESTAMP() "
         "WHERE GRAPH_ID = ?"
@@ -550,6 +571,8 @@ def build_node_reconciliation_statements(
     )
     return [
         (support_sql, [batch.graph_id]),
+        ("UPDATE KG_NODE SET ALIASES = ARRAY_CONSTRUCT() WHERE GRAPH_ID = ?", [batch.graph_id]),
+        (aliases_sql, [batch.graph_id]),
         (reset_degrees_sql, [batch.graph_id]),
         (degree_sql, [batch.graph_id, batch.graph_id]),
         (orphan_delete_sql, [batch.graph_id]),
@@ -706,6 +729,11 @@ def _document_row(graph_id: str, row: Mapping[str, object]) -> dict[str, object]
         "MIME_TYPE": str(row["mime_type"]),
         "SIZE_BYTES": row.get("size_bytes"),
         "OCR_PROVIDER": row.get("ocr_provider"),
+        "KIND": row.get("kind"),
+        "SUMMARY": row.get("summary"),
+        "RELATED_FILE_IDS": row.get("related_file_ids"),
+        "FOLDER": row.get("folder"),
+        "PROVENANCE": row.get("provenance"),
     }
 
 
@@ -714,6 +742,8 @@ def _chunk_row(graph_id: str, row: Chunk) -> dict[str, object]:
 
     converted = _upper_model(row.model_dump(mode="json"), graph_id)
     converted["DOCUMENT_ID"] = stable_id("document", graph_id, str(converted["FILE_ID"]))
+    converted["BLOCK_IDS"] = [stable_id("block", graph_id, value) for value in row.block_ids]
+    converted["ASSET_IDS"] = [stable_id("asset", graph_id, value) for value in row.asset_ids]
     return converted
 
 
@@ -736,7 +766,7 @@ def _page_row(graph_id: str, row: Mapping[str, object]) -> dict[str, object]:
 
 def _asset_row(graph_id: str, row: Mapping[str, object]) -> dict[str, object]:
     return {
-        "ID": str(row["id"]),
+        "ID": stable_id("asset", graph_id, str(row["id"])),
         "GRAPH_ID": graph_id,
         "FILE_ID": str(row["file_id"]),
         "KIND": str(row["kind"]),
@@ -748,7 +778,7 @@ def _asset_row(graph_id: str, row: Mapping[str, object]) -> dict[str, object]:
 
 def _block_row(graph_id: str, row: Mapping[str, object]) -> dict[str, object]:
     return {
-        "ID": str(row["id"]),
+        "ID": stable_id("block", graph_id, str(row["id"])),
         "GRAPH_ID": graph_id,
         "FILE_ID": str(row["file_id"]),
         "PAGE_NUMBER": row.get("page_number"),

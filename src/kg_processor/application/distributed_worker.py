@@ -147,8 +147,10 @@ def _run_ontology(settings: Settings) -> OntologyProfile:
     ).profile
 
 
-def settings_for_run(base: Settings, run_config: dict[str, Any]) -> Settings:
-    """Apply a run's stored ontology to a worker's own settings.
+def settings_for_run(
+    base: Settings, run_config: dict[str, Any], *, graph_id: str | None = None
+) -> Settings:
+    """Apply a run's authoritative graph identity and stored ontology.
 
     The run's configuration is the snapshot the planner stored. Its ontology
     profile, when carried inline, is what the run's graph is to be built with;
@@ -157,6 +159,9 @@ def settings_for_run(base: Settings, run_config: dict[str, Any]) -> Settings:
     when the run changes nothing, so callers can tell the two apart.
     """
 
+    identity = graph_id if graph_id is not None else run_config.get("graph_id")
+    if isinstance(identity, str) and identity != base.job.graph_id:
+        base = base.model_copy(update={"job": base.job.model_copy(update={"graph_id": identity})})
     ontology = run_config.get("ontology")
     profile = ontology.get("profile") if isinstance(ontology, dict) else None
     if not isinstance(profile, dict):
@@ -376,9 +381,9 @@ class DistributedWorker:
     def _process_one_publication(self) -> WorkerIteration | None:
         """Deliver one durable destination command, or return None when none is queued."""
 
-        store = self.task_store
-        if self.manifest_publisher is None:
+        if not self._publication_enabled():
             return None
+        store = self.task_store
         lease = store.claim_publication(self.worker_id, self.lease_duration)
         if lease is None:
             return None
@@ -396,7 +401,31 @@ class DistributedWorker:
                     self._publish_manifest_lease(publication)
                     heartbeat.raise_if_unhealthy()
 
-                store.publish_claimed(lease.id, self.worker_id, publish_with_health_check)
+                stored = self.artifact_store.get(lease.artifact_id)
+                if stored.ref.metadata.get("schema") == GraphWriteBatch.__name__:
+                    batch = GraphWriteBatch.model_validate_json(stored.payload)
+                    if self.manifest_publisher is not None:
+                        staging = self.manifest_publisher.stage_batch_publication(
+                            batch,
+                            {
+                                **lease.task_payload,
+                                "publication": {
+                                    "id": lease.id,
+                                    "generation": lease.generation,
+                                    "attempt": lease.attempt,
+                                },
+                            },
+                        )
+                    else:
+                        pipeline = self._run_context(lease.run_id).pipeline
+                        staging = pipeline.stage_graph_publication(
+                            batch, lease.id, lease.generation
+                        )
+                    with staging as commit:
+                        heartbeat.raise_if_unhealthy()
+                        store.commit_publication(lease, commit)
+                else:
+                    store.publish_claimed(lease.id, self.worker_id, publish_with_health_check)
             return WorkerIteration(
                 claimed=True,
                 task_id=lease.id,
@@ -481,7 +510,7 @@ class DistributedWorker:
                 name="flakegraph-publisher",
                 daemon=True,
             )
-            if self.manifest_publisher is not None
+            if self._publication_enabled()
             else None
         )
         if publisher is not None:
@@ -532,6 +561,11 @@ class DistributedWorker:
         if publisher is not None:
             publisher.join()
         return completed
+
+    def _publication_enabled(self) -> bool:
+        """Serve configured publication adapters and local-finalizer batch outboxes."""
+
+        return self.manifest_publisher is not None or TaskStage.FINALIZE_GRAPH in self.stages
 
     def _claimable_stages(self, running: Iterable[TaskStage]) -> set[TaskStage]:
         """The stages a free slot may claim, given the stages already running here.
@@ -606,14 +640,17 @@ class DistributedWorker:
             cached = self._run_contexts.get(run_id)
         if cached is not None:
             return cached
+        definition = self.task_store.get_run_summary(run_id).run
         run_settings = settings_for_run(
-            self.settings, self.task_store.get_run_summary(run_id).run.config
+            self.settings, definition.config, graph_id=definition.graph_id
         )
-        pipeline = (
-            self.pipeline
-            if run_settings is self.settings or self._pipeline_for is None
-            else self._pipeline_for(run_settings)
-        )
+        pipeline = self.pipeline
+        if run_settings is not self.settings:
+            configure = self._pipeline_for or getattr(self.pipeline, "for_settings", None)
+            if configure is not None:
+                pipeline = configure(run_settings)
+            elif run_settings.job.graph_id != self.settings.job.graph_id:
+                raise ValueError("a worker serving another graph requires a configurable pipeline")
         with self._lock:
             # Two slots can resolve one run at once; the first to finish is
             # kept, so every slot of a run executes on the same pipeline.
@@ -1525,6 +1562,10 @@ class DistributedWorker:
         stage_kinds = {ArtifactKind.PREPARED_DOCUMENT, ArtifactKind.EXTRACTED_DOCUMENT}
         inputs = self.artifact_store.list_run_artifacts(lease.task.run_id, stage_kinds)
         inputs.extend(self._inherited_artifact_refs(lease, stage_kinds))
+        quarantined = self._quarantined_file_ids(lease.task.run_id)
+        inputs = [
+            ref for ref in inputs if not quarantined.intersection(ref.metadata.get("file_ids", []))
+        ]
         manifest = SparkGraphFinalizer(run.settings, report).finalize(
             SparkFinalizationRequest(
                 run_id=lease.task.run_id,
@@ -1574,8 +1615,14 @@ class DistributedWorker:
         document_shards = [
             ExtractedDocumentShard.model_validate_json(item.payload) for item in inputs
         ]
+        quarantined = self._quarantined_file_ids(lease.task.run_id)
+        document_shards = [
+            shard
+            for shard in document_shards
+            if not quarantined.intersection(shard.prepared.file_ids)
+        ]
         document_shards.sort(key=lambda shard: tuple(shard.prepared.file_ids))
-        if not document_shards:
+        if not document_shards and not quarantined:
             raise ValueError("finalize_graph requires at least one extracted document")
         provenance = document_provenance(lease.task.payload)
         for shard in document_shards:
@@ -1584,7 +1631,7 @@ class DistributedWorker:
         report(finalization_progress("read_artifacts", completed=1, total=1))
         report(finalization_progress("materialize_inputs", completed=1, total=1))
         report(finalization_progress("resolve_entities", completed=0, total=1))
-        batch = run.pipeline.finalize_document_shards(document_shards, write=True)
+        batch = run.pipeline.finalize_document_shards(document_shards, write=False)
         for phase, _label in FINALIZATION_PHASES[4:11]:
             report(finalization_progress(phase, completed=1, total=1))
         report(finalization_progress("persist_manifest", completed=0, total=1))
@@ -1602,6 +1649,12 @@ class DistributedWorker:
         )
         report(finalization_progress("persist_manifest", completed=1, total=1))
         return ref.id
+
+    def _quarantined_file_ids(self, run_id: str) -> set[str]:
+        """Read durable retry exclusions afresh rather than from the settings cache."""
+
+        config = self.task_store.get_run_summary(run_id).run.config
+        return {str(value) for value in config.get("quarantined_file_ids", [])}
 
     def _inherited_artifact_refs(
         self,

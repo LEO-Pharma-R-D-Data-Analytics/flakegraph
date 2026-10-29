@@ -18,7 +18,7 @@ from kg_processor.application.distributed_worker import (
     WorkerIteration,
 )
 from kg_processor.config.settings import Settings
-from kg_processor.domain.distributed import TaskDefinition, TaskLease, TaskStage
+from kg_processor.domain.distributed import PublicationLease, TaskDefinition, TaskLease, TaskStage
 from kg_processor.factories import build_distributed_store, worker_pool_connections
 from kg_processor.ports.artifact_store import ArtifactStore
 from kg_processor.ports.distributed_pipeline import DistributedPipeline
@@ -40,6 +40,17 @@ class _SlotStore:
         self.completed: list[str] = []
         self.failed: dict[str, dict[str, Any]] = {}
         self.sweeps = 0
+        self.publication_claims = 0
+
+    def claim_publication(
+        self, worker_id: str, lease_duration: timedelta
+    ) -> PublicationLease | None:
+        """Expose the empty outbox that a finalizer-only slot worker still polls."""
+
+        del worker_id, lease_duration
+        with self._lock:
+            self.publication_claims += 1
+        return None
 
     def record_served_configuration(self, stages: set[TaskStage], config_digest: str) -> None:
         del stages, config_digest
@@ -349,7 +360,9 @@ def test_a_process_runs_one_finalization_at_a_time(tmp_path: Path) -> None:
         daemon=True,
     )
     runner.start()
-    _until(lambda: {"window-0", "window-1"} <= set(store.completed))
+    _until(
+        lambda: {"window-0", "window-1"} <= set(store.completed) and store.publication_claims > 0
+    )
 
     assert store.claimed.count("finalize-1") == 0
     assert TaskStage.FINALIZE_GRAPH not in store.claimed_stages[-1]
@@ -386,8 +399,10 @@ def test_publications_drain_beside_the_task_slots(tmp_path: Path) -> None:
 
     worker._process_one_publication = publish_one  # type: ignore[method-assign]
 
-    completed = worker.run_until_stopped(published.is_set)
+    deadline = monotonic() + _WAIT_SECONDS
+    completed = worker.run_until_stopped(lambda: published.is_set() or monotonic() > deadline)
 
+    assert published.is_set(), "the configured publisher never drained its command"
     assert sorted(completed_during_publication) == ["task-0", "task-1"]
     assert completed == 3
 
@@ -415,6 +430,7 @@ def test_the_abandoned_task_sweep_runs_once_per_lease_period(
     for _ in range(5):
         assert worker.process_one().claimed is False
     assert store.sweeps == 1
+    assert store.publication_claims == 0
 
     now[0] += 59
     worker.process_one()

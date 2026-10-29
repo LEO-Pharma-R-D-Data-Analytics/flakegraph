@@ -6,9 +6,11 @@ import os
 from collections import Counter, deque
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
+from typing import Any
 from uuid import uuid4
 
 import psycopg
@@ -26,6 +28,7 @@ from kg_processor.config.settings import Settings
 from kg_processor.domain.distributed import (
     ArtifactKind,
     PriorityBand,
+    PublicationLease,
     RevisionRequest,
     RunDefinition,
     RunSnapshot,
@@ -2091,3 +2094,152 @@ def _task(
         dependency_ids=dependency_ids or [],
         max_attempts=max_attempts,
     )
+
+
+def test_retry_quarantines_failed_document_descendants_without_requeueing_them(
+    isolated_postgres_dsn: str,
+) -> None:
+    """A failed window can be quarantined by file ID while other work remains retryable."""
+
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    store.create_run(_run(run_id))
+    prepare = _task(run_id, "prepare", TaskStage.PREPARE_DOCUMENT, "poison")
+    window = _task(run_id, "window", TaskStage.EXTRACT_ENTITY_WINDOW, "window-id", max_attempts=1)
+    window = window.model_copy(update={"dependency_ids": [prepare.id]})
+    compact = _task(run_id, "compact", TaskStage.COMPACT_DOCUMENT, "poison")
+    compact = compact.model_copy(update={"dependency_ids": [window.id]})
+    good = _task(run_id, "good", TaskStage.PREPARE_DOCUMENT, "good")
+    final = _task(run_id, "final", TaskStage.FINALIZE_GRAPH, "graph")
+    store.add_tasks(run_id, [prepare, window, compact, good, final])
+    store.activate_run(run_id)
+    claim = store.claim_task("worker", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
+    assert claim is not None
+    if claim.task.id == good.id:
+        store.complete_task(good.id, "worker", [])
+        claim = store.claim_task("worker", {TaskStage.PREPARE_DOCUMENT}, timedelta(minutes=1))
+        assert claim is not None
+    assert claim.task.id == prepare.id
+    store.complete_task(prepare.id, "worker", [])
+    claim = store.claim_task("worker", {TaskStage.EXTRACT_ENTITY_WINDOW}, timedelta(minutes=1))
+    assert claim is not None
+    store.fail_task(claim.task.id, "worker", {"message": "poison window"}, timedelta(0))
+
+    with pytest.raises(ValueError, match="only files with a failed task"):
+        store.retry_run(run_id, ["good"])
+    assert store.get_run(run_id).run.status is RunStatus.FAILED
+    store.retry_run(run_id, ["poison"])
+    snapshot = store.get_run(run_id)
+    assert snapshot.run.config["quarantined_file_ids"] == ["poison"]
+    by_id = {item.task.id: item for item in snapshot.tasks}
+    assert by_id[window.id].status is TaskStatus.SUCCEEDED
+    assert by_id[compact.id].status is TaskStatus.SUCCEEDED
+    assert by_id[window.id].attempts == 1
+    assert (
+        store.claim_task("worker", {TaskStage.EXTRACT_ENTITY_WINDOW}, timedelta(minutes=1)) is None
+    )
+    # Successful prerequisites retain their original attempt and immutable outputs.
+    assert by_id[prepare.id].attempts == 1
+    assert store.get_run_summary(run_id).resolved_failures
+
+
+def test_staged_publication_commit_rejects_cancelled_or_superseded_lease(
+    isolated_postgres_dsn: str,
+) -> None:
+    """The destination callback is never entered once ownership or graph head changes."""
+
+    store = _store(isolated_postgres_dsn)
+
+    def finalized_run(run_id: str) -> PublicationLease:
+        store.create_run(_run(run_id))
+        task = _task(run_id, "final", TaskStage.FINALIZE_GRAPH, "graph")
+        task = task.model_copy(update={"payload": {"output": {"provider": "local_artifacts"}}})
+        store.add_tasks(run_id, [task])
+        store.activate_run(run_id)
+        claim = store.claim_task("worker", {TaskStage.FINALIZE_GRAPH}, timedelta(minutes=1))
+        assert claim is not None
+        artifact = store.put(run_id, ArtifactKind.GRAPH_RESULT, b"{}", "application/json")
+        store.complete_task(task.id, "worker", [artifact.id])
+        publication = store.claim_publication("publisher", timedelta(minutes=1))
+        assert publication is not None
+        return publication
+
+    stale = finalized_run(f"run_{uuid4().hex}")
+    store.cancel_run(stale.run_id)
+    calls: list[str] = []
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        store.commit_publication(stale, lambda: calls.append("cancelled"))
+    first = finalized_run(f"run_{uuid4().hex}")
+    second = finalized_run(f"run_{uuid4().hex}")
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        store.commit_publication(first, lambda: calls.append("superseded"))
+    store.commit_publication(second, lambda: calls.append("latest"))
+    assert calls == ["latest"]
+    assert store.get_run_summary(second.run_id).run.status is RunStatus.SUCCEEDED
+
+
+def test_staged_publication_preserves_fence_during_slow_destination_commit(
+    isolated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transaction-local idle exemption keeps locks while external replacement runs."""
+
+    store = _store(isolated_postgres_dsn)
+    run_id = f"run_{uuid4().hex}"
+    store.create_run(_run(run_id))
+    task = _task(run_id, "final", TaskStage.FINALIZE_GRAPH, "graph").model_copy(
+        update={"payload": {"output": {"provider": "local_artifacts"}}}
+    )
+    store.add_tasks(run_id, [task])
+    store.activate_run(run_id)
+    claim = store.claim_task("worker", {TaskStage.FINALIZE_GRAPH}, timedelta(minutes=1))
+    assert claim is not None
+    artifact = store.put(run_id, ArtifactKind.GRAPH_RESULT, b"{}", "application/json")
+    store.complete_task(task.id, "worker", [artifact.id])
+    lease = store.claim_publication("publisher", timedelta(minutes=1))
+    assert lease is not None
+    original = store._connection
+    settings: dict[str, str] = {}
+    active: list[psycopg.Connection[dict[str, Any]]] = []
+
+    @contextmanager
+    def short_idle() -> Iterator[psycopg.Connection[dict[str, Any]]]:
+        """Make loss of an unprotected fence observable without a minute-long test."""
+
+        with original() as connection:
+            connection.execute("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
+            connection.execute("SET LOCAL statement_timeout = '5s'")
+            active.append(connection)
+            yield connection
+
+    def commit() -> None:
+        """Outlast the tiny idle budget and prove the run fence still excludes a rival."""
+
+        sleep(0.25)
+        row = (
+            active[-1]
+            .execute("""
+            SELECT current_setting('idle_in_transaction_session_timeout') AS idle,
+                   current_setting('statement_timeout') AS statement
+        """)
+            .fetchone()
+        )
+        assert row is not None
+        settings.update(row)
+        with (
+            psycopg.connect(isolated_postgres_dsn, autocommit=True) as rival,
+            pytest.raises(psycopg.errors.LockNotAvailable),
+        ):
+            rival.execute(
+                "SELECT id FROM flakegraph_run WHERE id = %s FOR UPDATE NOWAIT", (run_id,)
+            )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_connection", short_idle)
+        store.commit_publication(lease, commit)
+    assert settings == {"idle": "0", "statement": "5s"}
+    assert store.get_run_summary(run_id).run.status is RunStatus.SUCCEEDED
+    with original() as connection:
+        restored = connection.execute(
+            "SELECT current_setting('idle_in_transaction_session_timeout') AS idle"
+        ).fetchone()
+    assert restored == {"idle": "1min"}

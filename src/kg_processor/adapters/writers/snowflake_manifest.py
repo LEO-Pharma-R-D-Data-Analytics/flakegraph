@@ -6,7 +6,8 @@ from __future__ import annotations
 import os
 import tempfile
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,6 +22,7 @@ from kg_processor.adapters.snowflake import (
     stage_path,
 )
 from kg_processor.adapters.writers.snowflake_bulk import (
+    SnowflakeBulkWriter,
     best_effort_remove_stage_prefix,
     build_bulk_load_prefix,
     build_bulk_merge_statement,
@@ -305,6 +307,40 @@ class TaskConfiguredManifestPublisher:
         writer = manifest_writer_from_task(self.settings, task_payload, self.blob_store)
         if writer is not None:
             writer.write(manifest)
+
+    def stage_batch_publication(
+        self, batch: GraphWriteBatch, task_payload: Mapping[str, object]
+    ) -> AbstractContextManager[Callable[[], None]]:
+        """Compose only the destination writer, whichever engine computed the batch.
+
+        A Spark worker's stage pipeline deliberately omits local-finalization
+        dependencies. Publication commands may have been computed by either
+        engine, so their destination cannot depend on that pipeline's writer.
+        """
+
+        publication = task_payload.get("publication")
+        if not isinstance(publication, Mapping):
+            raise ValueError("batch publication requires a durable publication fence")
+        publication_id = _required_text(publication, "id")
+        generation = int(publication.get("generation") or 0)
+        if generation < 1:
+            raise ValueError("publication generation must be positive")
+        selected = manifest_writer_from_task(self.settings, task_payload, self.blob_store)
+        if selected is None:
+            from kg_processor.adapters.writers.local_artifacts import (  # noqa: PLC0415
+                LocalArtifactsWriter,
+            )
+
+            return LocalArtifactsWriter(self.settings.writer.output_path).stage_publication(
+                batch, publication_id=publication_id, generation=generation
+            )
+        return SnowflakeBulkWriter(
+            selected.config,
+            selected.embedding_dimension,
+            selected.bulk_stage,
+            connector_factory=selected.connector_factory,
+            target_file_size_bytes=selected.target_file_size_bytes,
+        ).stage_publication(batch, publication_id=publication_id, generation=generation)
 
 
 def manifest_writer_from_task(

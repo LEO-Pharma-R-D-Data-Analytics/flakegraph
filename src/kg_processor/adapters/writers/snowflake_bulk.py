@@ -10,8 +10,8 @@ from __future__ import annotations
 import re
 import tempfile
 import uuid
-from collections.abc import Iterator, Mapping, Sequence, Set
-from contextlib import suppress
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
@@ -110,7 +110,21 @@ class SnowflakeBulkWriter:
     def write(self, batch: GraphWriteBatch) -> None:
         """Stage graph rows as Parquet, COPY them, and MERGE into final tables."""
 
-        prefix = build_bulk_load_prefix(batch, self.load_id)
+        with self.stage_publication(batch) as commit:
+            commit()
+
+    @contextmanager
+    def stage_publication(
+        self,
+        batch: GraphWriteBatch,
+        *,
+        publication_id: str | None = None,
+        generation: int | None = None,
+    ) -> Iterator[Callable[[], None]]:
+        """Stage the batch before yielding the final replacement transaction."""
+
+        load_id = f"PUB{generation}" if generation is not None else self.load_id
+        prefix = build_bulk_load_prefix(batch, load_id)
         connection = self.connector_factory(**self.config.connect_kwargs())
         cursor = connection.cursor()
         try:
@@ -127,7 +141,7 @@ class SnowflakeBulkWriter:
                     Path(tmp),
                     self.bulk_stage,
                     prefix,
-                    self.load_id,
+                    load_id,
                     self.target_file_size_bytes,
                 )
                 load_files_by_table = _load_files_by_table(load_files)
@@ -156,25 +170,62 @@ class SnowflakeBulkWriter:
                         )
                 # Staging above is per statement; from here the replacement
                 # of the graph is one transaction.
-                with snowflake_transaction(connection) as transaction:
-                    for sql, params in build_reindex_delete_statements(batch):
-                        transaction.execute(sql, params)
-                    for table_name, table_load_files in load_files_by_table.items():
-                        columns = TABLE_COLUMNS[table_name]
-                        load_table_name = table_load_files[0].load_table_name
-                        transaction.execute(
-                            build_bulk_merge_statement(
-                                table_name,
-                                load_table_name,
-                                columns,
-                                self.embedding_dimension,
-                                preserve_on_match=preserved_columns(batch, table_name),
+                if generation is not None:
+                    if generation < 1 or not publication_id:
+                        raise ValueError("publication requires an identity and positive generation")
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS KG_GRAPH_PUBLICATION_FENCE ("
+                        "GRAPH_ID STRING PRIMARY KEY, GENERATION NUMBER NOT NULL, "
+                        "PUBLICATION_ID STRING NOT NULL, "
+                        "UPDATED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP())"
+                    )
+
+                def commit() -> None:
+                    """Publish only after the caller validates the durable lease."""
+
+                    with snowflake_transaction(connection) as transaction:
+                        if generation is not None:
+                            transaction.execute(
+                                "MERGE INTO KG_GRAPH_PUBLICATION_FENCE target USING ("
+                                "SELECT ? AS GRAPH_ID, ? AS GENERATION, ? AS PUBLICATION_ID"
+                                ") source ON target.GRAPH_ID = source.GRAPH_ID "
+                                "WHEN MATCHED AND target.GENERATION < source.GENERATION "
+                                "THEN UPDATE SET GENERATION = source.GENERATION, "
+                                "PUBLICATION_ID = source.PUBLICATION_ID "
+                                "WHEN NOT MATCHED THEN INSERT "
+                                "(GRAPH_ID, GENERATION, PUBLICATION_ID) "
+                                "VALUES (source.GRAPH_ID, source.GENERATION, "
+                                "source.PUBLICATION_ID)",
+                                (batch.graph_id, generation, publication_id),
                             )
-                        )
-                    for sql, params in build_edge_reconciliation_statements(batch):
-                        transaction.execute(sql, params)
-                    for sql, params in build_node_reconciliation_statements(batch):
-                        transaction.execute(sql, params)
+                            transaction.execute(
+                                "SELECT PUBLICATION_ID FROM KG_GRAPH_PUBLICATION_FENCE "
+                                "WHERE GRAPH_ID = ? AND GENERATION = ?",
+                                (batch.graph_id, generation),
+                            )
+                            fence = transaction.fetchone()
+                            if fence is None or str(fence[0]) != publication_id:
+                                raise RuntimeError("a newer publication owns the destination")
+                        for sql, params in build_reindex_delete_statements(batch):
+                            transaction.execute(sql, params)
+                        for table_name, table_load_files in load_files_by_table.items():
+                            columns = TABLE_COLUMNS[table_name]
+                            load_table_name = table_load_files[0].load_table_name
+                            transaction.execute(
+                                build_bulk_merge_statement(
+                                    table_name,
+                                    load_table_name,
+                                    columns,
+                                    self.embedding_dimension,
+                                    preserve_on_match=preserved_columns(batch, table_name),
+                                )
+                            )
+                        for sql, params in build_edge_reconciliation_statements(batch):
+                            transaction.execute(sql, params)
+                        for sql, params in build_node_reconciliation_statements(batch):
+                            transaction.execute(sql, params)
+
+                yield commit
         finally:
             best_effort_remove_stage_prefix(cursor, connection, self.bulk_stage, prefix)
             cursor.close()
