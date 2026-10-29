@@ -1007,6 +1007,15 @@ status` reports them as `resolved_failures`, and the console's run details list
 them under "Resolved failures", so a run that later succeeded still shows what
 it recovered from. A cancelled run resumed by retry has no failure to keep.
 
+To omit a persistently failing document, repeat `--skip-file-id <file-id>` on
+`distributed retry`. The console's Quarantine action saves the same exclusions
+for Retry. A file is eligible only when its document task tree contains a failed
+task; unrelated, successful, or merely active files are refused. Exclusions are
+durable in `quarantined_file_ids`: retry retires unfinished tasks for those files
+and finalization omits their artifacts, including inherited revision inputs.
+Successful artifacts remain immutable audit records. Other stopped work retries
+normally; the empty-graph quality safeguard still applies.
+
 After completion:
 
 ```bash
@@ -1320,14 +1329,19 @@ receiver); until one exists the alerts are visible on the overview dashboard.
 - `distributed cancel` stops unfinished work without deleting successful artifacts.
 - `distributed retry --run-id <run-id>` requeues terminally failed tasks after
   the underlying provider, configuration, or storage issue is corrected, and
-  resumes a cancelled run where it stopped.
+  resumes a cancelled run where it stopped. Repeat `--skip-file-id <file-id>`
+  to quarantine eligible failed documents and exclude them from finalization.
 - `distributed delete --graph-id <graph-id>` deletes a graph for good: every
   run of it, their coordination rows, and every object under their prefixes
   in the artifact store (stage outputs, Spark checkpoints, the published
   parquet). A graph is deleted whole because a revision is built from the
   stored outputs of the versions before it. It is refused while any run of the
   graph is queued or running; an interrupted delete is finished by running it
-  again. The console's Delete does this and also removes its own records.
+  again. The console dispatches durable deletion to its selected runtime and
+  removes the graph's console records across runtimes. For a terminal graph
+  stored in several backends, remove the other durable backend data through
+  that backend's CLI before console cleanup. The console refuses deletion if
+  any affected runtime has an active catalog run.
 - Worker and executor loss is recovered through task leases or Spark partition
   recomputation; incomplete finalization never publishes a graph version.
 - Set pod termination grace longer than the task lease when graceful completion

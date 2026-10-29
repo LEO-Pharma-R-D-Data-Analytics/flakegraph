@@ -28,7 +28,7 @@ corresponding Bottou and Mikolov PDFs hosted by the same site.
 | Path | Purpose |
 | --- | --- |
 | `download.py` | Discovers, validates, and downloads the non-redistributed corpus. |
-| `ontology-v2.yaml` | Scientific-paper entity and relation vocabulary, with the reading guidance and counter-examples the extraction prompts no longer carry. Use it for new runs. |
+| `ontology-v2.yaml` | Scientific-paper entity and relation vocabulary, reading guidance, and counter-examples. Use it with `configs/kubernetes-vllm-v2.yaml` for new runs. |
 | `configs/kubernetes-vllm-v2.yaml` | Queue-backed Qwen and MinerU fleet profile using `ontology-v2.yaml`. |
 | `ontology.yaml`, `configs/kubernetes-vllm.yaml` | The vocabulary and profile the published `results/` were measured with, kept unchanged so their checksums stay true. |
 | `gold.json` | Selected reference graph and short evidence anchors. |

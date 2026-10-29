@@ -122,7 +122,13 @@ What a request may name:
 - A graph id is claimed by its first submitter; an id any runtime already
   knows cannot be claimed again through another.
 - A credential the request references is a name, never a value, and must be a
-  `KG_*` variable set on the console. The pipeline is spawned with an
+  `KG_*` variable set on the console. It may reach only the endpoint paired
+  with that variable in an operator-managed YAML profile under `configs/`,
+  the mounted fleet profile, or a complete endpoint/key environment pair.
+  Model and data settings remain configurable within that destination.
+  Generated run configurations do not authorize new credential destinations.
+  Environment placeholders (`${…}`) belong to operator profiles; request
+  values cannot interpolate the console environment. The pipeline is spawned with an
   allow-listed environment (`KG_*`, cache and SDK families, `PATH`, `HOME`,
   the coordination `DATABASE_URL`), never with the console's own variables
   such as `FLAKEGRAPH_ASK_API_KEY`.
@@ -157,11 +163,12 @@ assignments, the staff incident list, perspectives, reviews, pins, watches and
 estimates show only the viewer's graphs, and API keys only the viewer's own.
 The catalog lists one row per graph: its versions and retried runs are one
 graph. Only the owner deletes a graph, after a confirmation that names what
-goes, and it cannot be undone: every run of it and everything stored for them
-(on a fleet, the coordination rows and every object in the artifact store;
-anywhere, the console's run records, local copies, name, gold file and
-workspace items), and the upload folders no other graph was built from. A
-graph with a run still under way waits until that run is cancelled.
+goes, and it cannot be undone. Deletion removes the selected runtime's durable
+data, the graph's console run records across runtimes, local copies, name, gold
+file, workspace items, and upload folders no other graph uses. A graph with
+an active catalog run in any runtime waits until that run is cancelled.
+For terminal graphs stored in multiple backends, delete other backends' durable
+data through their CLI before removing the console records.
 
 File-backed state uses one console process per state root. Workspace changes
 are serialized across request handlers in that process.

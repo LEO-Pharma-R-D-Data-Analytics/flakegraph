@@ -56,6 +56,13 @@ or grant a dedicated service-compatible pool such as `KG_PROCESSOR_CPU_POOL`.
 
 ## Configuration
 
+Incremental node aliases are rebuilt from retained `KG_ENTITY_SOURCE.ALIASES`
+values. Schema initialization adds this column but does not backfill source rows
+written without per-document aliases. Reprocess legacy supporting documents
+before relying on complete aliases after a partial reindex; a full reindex
+rebuilds those source contributions. Dropped documents' aliases are removed
+when their supporting source rows are removed.
+
 Start from [configs/snowflake-cortex.yaml](../configs/snowflake-cortex.yaml) and
 provide account-specific values through environment variables:
 

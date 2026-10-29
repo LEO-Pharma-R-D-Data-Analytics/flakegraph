@@ -168,10 +168,10 @@ recursively split at a higher resolution, to a bounded depth. The Spark engine
 uses GraphFrames label propagation over the same relation-plus-projection
 graph, which suits partitioned execution.
 
-The default changed from Leiden to Louvain when the package was prepared for
-release under Apache-2.0. On the bundled fixtures the two agree; on a real
-corpus the partitions differ in detail, so graphs built before and after the
-change should not be compared community by community.
+Community membership depends on the partitioning algorithm. Louvain and
+Leiden can agree on small fixtures while producing different partitions on
+larger corpora, so graphs built with different algorithms should not be
+compared community by community.
 
 ## Execution Modes
 
@@ -196,19 +196,29 @@ flowchart TD
     snowflake --> tables["KG_* tables and stages"]
     control["Console"] --> local
     control --> fleet
-    control --> snowflake
+    control --> rehearsal["Snowflake console rehearsal stub"]
     localOutput --> control
-    remoteOutput --> control
+    remoteOutput --> export["CLI graph export"]
+    tables --> export
+    export --> control
     queue --> control
-    tables --> control
 ```
 
 The console does not implement a second pipeline. Local and fleet
-backends call the stable CLI contracts; the Snowflake backend reads and writes
-the canonical job and graph tables through a Snowflake connection. The console
-is a separate Next.js application with its own runtime and dependencies, so the
-processing image carries none of it and either can be deployed without the
-other.
+backends call the stable CLI contracts. The console's Snowflake runtime is a
+JSON-backed rehearsal stub: it queues local run records and reads local graph
+artifacts; it does not submit work to Snowflake or read canonical Snowflake
+tables, including in hosted mode. See the [console runtime documentation](../react/README.md)
+and [Snowflake deployment limitations](../deploy/snowflake-native-app/README.md).
+The Python Cortex providers and Snowflake writers use Snowflake connections
+independently of that console stub. The console is a separate Next.js
+application with its own runtime and dependencies, so the processing image
+carries none of it and either can be deployed without the other.
+
+The console materializes fleet output and completed local runs with Snowflake
+output into run-specific local inspection artifacts through the CLI. Graph
+inspection and retrieval use those copies; this does not give the Snowflake
+rehearsal runtime a live database connection.
 
 ### Local
 
