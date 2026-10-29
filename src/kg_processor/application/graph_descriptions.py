@@ -67,13 +67,16 @@ def synthesize_entity_descriptions(
     sources_by_node_id = _sources_by_node_id(entity_sources)
     requests: list[tuple[GraphNode, list[str], list[str], DescriptionMergeRequest]] = []
     for node in nodes:
+        # Same-named nodes are told apart by the chunks that support each of
+        # them; descriptions keep the order in which they were observed.
+        chunk_ids = set(node.source_chunk_ids)
         descriptions = list(
             dict.fromkeys(
                 description
-                for chunk_id in node.source_chunk_ids
-                for description in descriptions_by_key.get(
-                    (node.normalized_name, node.primary_type, chunk_id), []
+                for chunk_id, description in descriptions_by_key.get(
+                    (node.normalized_name, node.primary_type), []
                 )
+                if chunk_id in chunk_ids
             )
         )
         if len(descriptions) < min_observations:
@@ -170,19 +173,14 @@ def _trace_event(
 
 def _descriptions_by_node_key(
     observations: list[ExtractedEntity],
-) -> dict[tuple[str, str, str], list[str]]:
-    grouped: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    grouped: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
     for observation in observations:
         description = observation.description.strip()
         if not description:
             continue
-        key = (
-            normalize_entity_name(observation.name),
-            observation.type,
-            observation.source_chunk_id,
-        )
-        if description not in grouped[key]:
-            grouped[key].append(description)
+        key = (normalize_entity_name(observation.name), observation.type)
+        grouped[key].append((observation.source_chunk_id, description))
     return dict(grouped)
 
 

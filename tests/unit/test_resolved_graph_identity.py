@@ -169,7 +169,7 @@ def test_resolved_homonyms_keep_component_ids_provenance_and_endpoints(
                 for item in assembly.evidence
                 if item.subject_id == node.id
             )
-        # Unqualified same-name legacy endpoints are ambiguous and must not pick
+        # Same-name endpoints without a component are ambiguous and must not pick
         # whichever homonym happened to be assembled last.
         ambiguous = extraction.relations[0].model_copy(update={"source_component_id": None})
         rejected = assemble_graph_with_decisions("graph", chunks, entities, [ambiguous], 10)

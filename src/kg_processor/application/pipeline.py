@@ -1613,7 +1613,7 @@ class KgProcessorPipeline:
             self.settings.llm,
         )
         cached = self.cache.get_extraction_result(cache_key) if self.cache is not None else None
-        if cached is not None and not _extraction_degraded(cached):
+        if cached is not None:
             return cached, cache_key.id, True, _cached_document_context_trace(cached)
         document_context_entities, context_trace = self._extract_document_context_entities(
             chunks, documents
@@ -1664,10 +1664,9 @@ class KgProcessorPipeline:
             ),
             dataset_columns=dataset_columns(context_trace),
         )
-        context_degraded = any(
-            str(event.get("stage", "")).endswith("_error") for event in context_trace
-        )
-        if self.cache is not None and not context_degraded and not _extraction_degraded(extraction):
+        # The extraction trace begins with the document-context trace, so one
+        # check covers context and body provider failures alike.
+        if self.cache is not None and not _extraction_degraded(extraction):
             self.cache.put_extraction_result(cache_key, extraction)
         return extraction, cache_key.id, False, context_trace
 
@@ -2113,7 +2112,7 @@ def _require_one_window(window_count: int, phase: str) -> None:
 
 
 def _extraction_degraded(extraction: ExtractionResult) -> bool:
-    """Keep provider failures retryable, including entries written by older runs.
+    """Keep provider failures retryable by never caching their partial results.
 
     Successful responses whose records fail validation are complete decisions,
     so their discarded-window events remain eligible for caching.

@@ -256,7 +256,7 @@ def assemble_graph_with_decisions(
     """Merge grounded observations into canonical graph rows and audit decisions.
 
     Resolved components retain identity even when their display names coincide;
-    legacy observations group by normalized name and type. Relation assembly
+    observations without a component group by normalized name and type. Relation assembly
     then consolidates repeated triples while retaining per-source assertions,
     exact evidence, bounded weights, and reasons for every dropped observation.
     With ``type_resolution``, held relations the entity nodes admit join the

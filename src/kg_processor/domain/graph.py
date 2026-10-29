@@ -79,8 +79,8 @@ class Quantity(BaseModel):
 class ExtractedRelation(BaseModel):
     """One grounded relationship observation before canonical graph assembly.
 
-    Resolved component IDs determine identity when present; legacy observations
-    use canonical endpoint names and types. The optional endpoint
+    Resolved component IDs determine identity when present; observations without
+    them use canonical endpoint names and types. The optional endpoint
     surfaces preserve the exact aliases, abbreviations, or document-context
     phrases that were verified in this observation's evidence.
     """

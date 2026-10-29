@@ -288,17 +288,6 @@ def test_failed_body_windows_are_retried_after_provider_recovery(
     assert provider.calls == []
     assert _topology(cached) == _topology(recovered)
 
-    # Older versions wrote partial results. A persisted failure must also force
-    # a read miss, rather than stranding those entries after a write-only fix.
-    cache_file = next((tmp_path / "cache/extraction").glob("*.json"))
-    saved = json.loads(cache_file.read_text())
-    saved["provider_metadata"]["trace"].append({"stage": "window_error", "window_id": "old"})
-    cache_file.write_text(json.dumps(saved), encoding="utf-8")
-    provider.calls.clear()
-    retried = _pipeline(settings, provider).run()
-    assert not retried.graph_metrics["cache"]["extraction_hit"]
-    assert provider.calls.count(f"{stage}_extraction") == 2
-    assert _topology(retried) == _topology(recovered)
 
 
 def test_successful_validation_rejections_remain_cacheable(tmp_path: Path) -> None:
