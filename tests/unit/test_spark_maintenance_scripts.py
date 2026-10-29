@@ -84,24 +84,27 @@ _READY = "engine|model-serving|2|2|3|3\nparser|document-parsing|2|2|3|3"
 
 
 @pytest.mark.parametrize(
-    "pod_rows,statefulsets,recovers",
+    "pod_rows,statefulsets,recovers,api_fails",
     [
-        ("", _READY, False),
-        ("pending-without-status", _READY, False),
-        ("pending-without-status", _READY, True),
-        ("", "parser|document-parsing|2|2|3|3", False),
-        ("", "", False),
-        ("", "engine|model-serving|2|1|3|3\nparser|document-parsing|2|2|3|3", False),
-        ("", "engine|model-serving|2|<no value>|3|3\nparser|document-parsing|2|2|3|3", False),
-        ("", "engine|model-serving|<no value>|2|3|3\nparser|document-parsing|2|2|3|3", False),
-        ("", "engine|model-serving|2|2|3|2\nparser|document-parsing|2|2|3|3", False),
-        ("", "engine|model-serving|2|1|3|3\nparser|document-parsing|2|2|3|3", True),
+        ("", _READY, True, True),
+        ("", _READY, False, True),
+        ("", _READY, False, False),
+        ("pending-without-status", _READY, False, False),
+        ("pending-without-status", _READY, True, False),
+        ("", "parser|document-parsing|2|2|3|3", False, False),
+        ("", "", False, False),
+        ("", "engine|model-serving|2|1|3|3\nparser|document-parsing|2|2|3|3", False, False),
+        ("", "engine|model-serving|2|<no value>|3|3\nparser|document-parsing|2|2|3|3", False, False),
+        ("", "engine|model-serving|<no value>|2|3|3\nparser|document-parsing|2|2|3|3", False, False),
+        ("", "engine|model-serving|2|2|3|2\nparser|document-parsing|2|2|3|3", False, False),
+        ("", "engine|model-serving|2|1|3|3\nparser|document-parsing|2|2|3|3", True, False),
     ],
 )
 def test_restore_waits_for_missing_pod_conditions_and_expected_serving_replicas(
     pod_rows: str,
     statefulsets: str,
     recovers: bool,
+    api_fails: bool,
 ) -> None:
     """The extracted wait uses mocked kubectl rows and a clock that advances without sleeping."""
 
@@ -126,6 +129,8 @@ ok() { printf '%s\n' "$1"; }
 sleep() { waits=$(( waits + 1 )); clock=3; printf 'waited\n'; }
 kubectl() {
   [[ "$1" == get ]] || return 99
+  # An unanswered request is retried until the deadline, never fatal at once.
+  [[ "$API_FAILS" == yes && ( "$RECOVERS" != yes || "$waits" -eq 0 ) ]] && return 1
   if [[ "$2" == pods ]]; then
     # Pod Ready is required even if containerStatuses is absent or empty.
     [[ "$*" == *'.status.conditions'* && "$*" == *'(eq .status "True")'* ]] || return 98
@@ -150,13 +155,14 @@ kubectl() {
             "STATEFULSET_ROWS": statefulsets,
             "READY_ROWS": _READY,
             "RECOVERS": "yes" if recovers else "no",
+            "API_FAILS": "yes" if api_fails else "no",
         },
         capture_output=True,
         text=True,
         timeout=5,
         check=False,
     )
-    immediate = not pod_rows and statefulsets == _READY
+    immediate = not pod_rows and statefulsets == _READY and not api_fails
     assert result.returncode == (0 if immediate or recovers else 1), result.stderr
     assert ("waited" in result.stdout) is (not immediate)
     assert ("all engine/parser replicas are Ready" in result.stdout) is (immediate or recovers)
