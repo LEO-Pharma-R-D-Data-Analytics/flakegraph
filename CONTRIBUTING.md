@@ -51,11 +51,11 @@ bun run test
   through `${KG_*}` placeholders only.
 - Dependency changes update `uv.lock` (`uv lock`) and, when they add a
   package, `THIRD_PARTY_NOTICES.md`. Required dependencies must use permissive
-  licences unless a reviewed weak-copyleft exception is recorded in the
-  [Copyleft Summary](THIRD_PARTY_NOTICES.md#copyleft-summary). The existing
-  exception covers the LGPL-licensed `psycopg`, `psycopg-binary`, and
-  `psycopg-pool` packages. Strong-copyleft dependencies belong in opt-in extras;
-  the `leiden` extra shows that pattern.
+  licences unless a weak-copyleft exception is recorded in the
+  [Copyleft Summary](THIRD_PARTY_NOTICES.md#copyleft-summary): the LGPL-3.0
+  `psycopg`, `psycopg-binary` and `psycopg-pool` packages and the MPL-2.0
+  `certifi` bundle. Strong-copyleft dependencies belong in opt-in extras; the
+  `leiden` extra shows that pattern.
 - Every Python module under `src/kg_processor` starts with an
   `# SPDX-License-Identifier: Apache-2.0` header.
 

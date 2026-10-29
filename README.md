@@ -42,11 +42,12 @@ uv run flakegraph worker --config configs/app-defaults.yaml --progress rich
 uv run flakegraph inspect html --output out/app
 ```
 
-For console-managed runs, install the console's default extraction model and
-start the laptop console separately:
+For console-managed runs, install the console's default extraction and Ask
+models and start the laptop console separately:
 
 ```bash
 ollama pull qwen3:4b
+ollama pull qwen3:4b-instruct
 cd react && bun install && FLAKEGRAPH_DEMO_IDENTITIES=1 bun run dev
 ```
 

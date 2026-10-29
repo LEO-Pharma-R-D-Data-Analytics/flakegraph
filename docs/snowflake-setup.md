@@ -56,13 +56,6 @@ or grant a dedicated service-compatible pool such as `KG_PROCESSOR_CPU_POOL`.
 
 ## Configuration
 
-Incremental node aliases are rebuilt from retained `KG_ENTITY_SOURCE.ALIASES`
-values. Schema initialization adds this column but does not backfill source rows
-written without per-document aliases. Reprocess legacy supporting documents
-before relying on complete aliases after a partial reindex; a full reindex
-rebuilds those source contributions. Dropped documents' aliases are removed
-when their supporting source rows are removed.
-
 Start from [configs/snowflake-cortex.yaml](../configs/snowflake-cortex.yaml) and
 provide account-specific values through environment variables:
 
@@ -126,6 +119,14 @@ elsewhere, and Snowflake's value is retained separately as provenance. Set
 `KG_STAGE_CONTENT_HASH=false` to skip that read where cross-runtime comparison
 and gold evaluation are not needed; the recorded checksum is then Snowflake's
 own and is not comparable with other sources.
+
+## Node Aliases
+
+Each `snowflake_direct` or `snowflake_bulk` write rebuilds a graph's
+`KG_NODE.ALIASES` from the `KG_ENTITY_SOURCE.ALIASES` of the documents that
+support each node, so a document's aliases leave the graph together with the
+document. A source row without aliases contributes none; reprocessing its
+document restores them.
 
 ## Build And Push The SPCS Image
 
