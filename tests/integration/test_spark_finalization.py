@@ -33,12 +33,12 @@ from kg_processor.domain.extraction import (
 )
 from kg_processor.domain.finalization import GraphDatasetManifest
 from kg_processor.domain.graph import Chunk, GraphWriteBatch
+from kg_processor.domain.ids import sha256_hex
 from kg_processor.domain.ontology import (
     EntityTypeDefinition,
     OntologyProfile,
     RelationTypeDefinition,
 )
-from kg_processor.domain.ids import sha256_hex
 from kg_processor.domain.stages import ExtractedDocumentShard, PreparedDocumentShard
 
 SparkSession = pytest.importorskip("pyspark.sql").SparkSession

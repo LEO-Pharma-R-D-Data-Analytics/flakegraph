@@ -289,7 +289,6 @@ def test_failed_body_windows_are_retried_after_provider_recovery(
     assert _topology(cached) == _topology(recovered)
 
 
-
 def test_successful_validation_rejections_remain_cacheable(tmp_path: Path) -> None:
     _input(tmp_path, second_document=True)
     settings = _settings(tmp_path)
