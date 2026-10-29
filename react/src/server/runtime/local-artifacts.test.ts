@@ -128,7 +128,7 @@ describe("local runtime inspection of Snowflake output", () => {
     const graph = await Effect.runPromise(f.runtime.loadRunGraph(f.snapshot));
     expect(cli.run).toHaveBeenCalledExactlyOnceWith([
       "snowflake", "export", "--graph-id", "current-graph", "--output", destination, "--config", f.configPath,
-    ], { cwd: f.repositoryRoot });
+    ], { cwd: f.repositoryRoot, timeoutMs: expect.any(Number) });
     expect(graph.graphId).toBe("current-graph");
     expect(graph.nodes.map((node) => node.id)).toEqual(["n0", "n1"]);
     expect(graph.edges).toHaveLength(1);
@@ -150,6 +150,13 @@ describe("local runtime inspection of Snowflake output", () => {
     expect(graph.edges).toEqual([]);
     expect(graph.graphId).toBe(f.snapshot.graphId);
     expect(f.runtime.graphDirectory(f.snapshot)).toBe(path.join(f.stateRoot, "artifacts", "current-run"));
+  });
+
+  it.each(["running", "failed"])("does not export or keep the Snowflake graph of a %s run", async (status) => {
+    const f = await fixture("snowflake");
+    cli.run.mockImplementation(successfulExport);
+    await expect(Effect.runPromise(f.runtime.loadRunGraph({ ...f.snapshot, status }))).rejects.toThrow(/has not finished/);
+    expect(cli.run).not.toHaveBeenCalled();
   });
 
   it("refuses an uncached export when the run did not save its configuration", async () => {

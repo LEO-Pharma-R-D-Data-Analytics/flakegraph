@@ -33,6 +33,7 @@ import {
   type SourceSummary,
   type Viewer,
   isActiveStatus,
+  isSuccessStatus,
   validateGraphName,
 } from "../protocol/schema";
 import {
@@ -49,6 +50,7 @@ import { stringify as stringifyYaml } from "yaml";
 import { catalogWriterPrincipal } from "../workspace";
 
 const exportsInFlight = new Map<string, Promise<void>>();
+const SNOWFLAKE_EXPORT_TIMEOUT_MS = 60 * 60 * 1000;
 
 export class LocalRuntime implements ControlPlane {
   readonly runtime = "local" as const;
@@ -317,6 +319,10 @@ export class LocalRuntime implements ControlPlane {
         try: async () => {
           const directory = this.graphDirectory(snapshot)!;
           if (!graphArtifactsExist(directory)) {
+            // Only a finished run's Snowflake graph is complete enough to keep.
+            if (!isSuccessStatus(snapshot.status)) {
+              throw invalid(`Run ${snapshot.runId} has not finished writing its Snowflake graph`);
+            }
             let pending = exportsInFlight.get(directory);
             if (!pending) {
               pending = this.exportSnowflakeGraph(snapshot, directory).finally(() => exportsInFlight.delete(directory));
@@ -340,7 +346,7 @@ export class LocalRuntime implements ControlPlane {
     if (!record.configPath) throw invalid(`Run ${snapshot.runId} does not record its Snowflake configuration`);
     const result = await runFlakegraph([
       "snowflake", "export", "--graph-id", snapshot.graphId, "--output", directory, "--config", record.configPath,
-    ], { cwd: this.repositoryRoot });
+    ], { cwd: this.repositoryRoot, timeoutMs: SNOWFLAKE_EXPORT_TIMEOUT_MS });
     if (result.exitCode !== 0) {
       throw new Error(result.stderr.trim() || `Exporting the graph of ${snapshot.runId} failed`);
     }
