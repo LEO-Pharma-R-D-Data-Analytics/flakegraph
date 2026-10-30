@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from kg_processor.application.extraction_grounding import (
     contains_surface_groups,
+    delimited_row_span,
     find_quote,
     ground_evidence,
     ground_evidence_ocr_tolerant,
     name_words_in_quote,
     ocr_tolerant_surface_occurs,
     ocr_tolerant_surface_spans,
+    row_names,
     sentence_spans,
     surface_occurs,
 )
@@ -376,3 +378,41 @@ def test_a_change_of_case_separates_values_run_together_in_a_table_cell() -> Non
     assert found("We drafted it in PowerPoint and ApSNorthwind prose.", "Point") == []
     assert found("We drafted it in PowerPoint and ApSNorthwind prose.", "Northwind") == []
     assert found(row, "wind") == []
+
+
+def _row(source: str, quote: str) -> str | None:
+    start = source.index(quote)
+    span = delimited_row_span(source, start, start + len(quote))
+    return source[span[0] : span[1]] if span is not None else None
+
+
+def test_a_delimited_row_is_a_line_of_three_cells_or_more() -> None:
+    """Tildes, cell bars and tabs divide cells; HTML rows and semicolons do not count."""
+
+    delimited = "Name~Route; Form~Code\nZorvalide~ORAL; TABLET~ZV-12~5~mg\nNext line"
+    assert _row(delimited, "ORAL; TABLET") == "Zorvalide~ORAL; TABLET~ZV-12~5~mg"
+    assert _row("| Zorvalide | Oral |\n| Kestrine | Topical |", "Kestrine") == (
+        "| Kestrine | Topical |"
+    )
+    assert _row("Zorvalide\tOral\tTablet", "Oral") == "Zorvalide\tOral\tTablet"
+    # Two cells, a stretch across lines, an HTML row, and prose.
+    assert _row("Zorvalide | Oral", "Oral") is None
+    assert _row(delimited, "Code\nZorvalide") is None
+    assert _row("<tr><td>Zorvalide</td><td>Oral</td><td>5</td></tr>", "Oral") is None
+    assert _row("Each tablet holds ~5 mg of Zorvalide.", "Zorvalide") is None
+    assert _row("A tablet comprises: Zorvalide; a binder; a filler.", "binder") is None
+
+
+def test_a_row_names_a_thing_by_every_word_of_its_name_without_spaces_or_punctuation() -> None:
+    """Hyphens, brackets, dots and case may differ; a near-identical cell is another thing."""
+
+    assert row_names("TRIZORVANE CITRATE DIHYDRATE~ORAL~5", ["tri-Zorvane citrate dihydrate"])
+    assert row_names("HYDROGENATED KESTREL OIL~TOPICAL~2", ["(Hydrogenated) Kestrel Oil"])
+    assert row_names("Alpha-voranol~Oral~1", [".ALPHA.-VORANOL"])
+    # Words of one or two letters are left out; numbers never are.
+    assert row_names("Vitamin Q12~Oral~1", ["Vitamin Q 12"])
+    assert not row_names("Vitamin Q13~Oral~1", ["Vitamin Q 12"])
+    assert not row_names("ZORVANE PHOSPHATE, ANHYDROUS~ORAL~5", ["ZORVANE PHOSPHATE, MONOHYDRATE"])
+    assert not row_names("INTRAMUSCULAR; POWDER~ZV-12", ["INTRAVENOUS; POWDER"])
+    # An alias names the thing too.
+    assert row_names("ZV-12~ORAL~5", ["Zorvalide", "ZV12"])

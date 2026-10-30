@@ -42,6 +42,7 @@ from kg_processor.application.extraction_grounding import (
     MAX_PIECED_QUOTE_CHARACTERS,
     GroundedSpan,
     contains_surface_groups,
+    delimited_row_span,
     find_quote,
     ground_evidence,
     ground_evidence_ocr_tolerant,
@@ -49,6 +50,7 @@ from kg_processor.application.extraction_grounding import (
     name_words_in_quote,
     ocr_tolerant_surface_occurs,
     ocr_tolerant_surface_spans,
+    row_names,
     sentence_spans,
     surface_occurs,
     surface_spans,
@@ -1150,13 +1152,10 @@ class LlmRelationExtractor:
                     unfound.append((item, "llm_grounding_unconfirmed"))
                     continue
                 start, end, extended, ocr_tolerant = located_span
-                if extended:
-                    reasons["llm_grounding_extended"] += 1
-                if method == "llm_verified":
-                    reasons["llm_grounding_to_verifier"] += 1
                 grounded = GroundedSpan(
                     item.chunk.content[start:end], start, end, ocr_tolerant=ocr_tolerant
                 )
+                unnamed_in_row = reasons["row_endpoint_unnamed"]
                 observation = _grounded_observation(
                     window,
                     item.candidate,
@@ -1172,11 +1171,22 @@ class LlmRelationExtractor:
                     evidence_method=method,
                     proposed_relation_type=item.proposed_relation_type,
                 )
-                if observation is not None:
-                    reasons["llm_grounding_located"] += 1
-                    located.append((observation, item.key))
-                else:
-                    unfound.append((item, "ungrounded_quote"))
+                if observation is None:
+                    unfound.append(
+                        (
+                            item,
+                            "row_endpoint_unnamed"
+                            if reasons["row_endpoint_unnamed"] > unnamed_in_row
+                            else "ungrounded_quote",
+                        )
+                    )
+                    continue
+                if extended:
+                    reasons["llm_grounding_extended"] += 1
+                if method == "llm_verified":
+                    reasons["llm_grounding_to_verifier"] += 1
+                reasons["llm_grounding_located"] += 1
+                located.append((observation, item.key))
         return located, unfound
 
 
@@ -1227,10 +1237,12 @@ def _grounded_observation(  # noqa: PLR0913 - one grounded candidate's full cont
 
     None when an endpoint cannot be named inside the evidence, except for
     evidence the verifier must confirm (llm_verified), whose unnamed ends are
-    identified by name. String-grounded and LLM-located evidence pass the same
-    surface and cue checks, so the two paths cannot drift apart. Evidence found
-    through the OCR-tolerant view is labelled ``ocr_tolerant`` whichever path
-    found it.
+    identified by name. Evidence within one delimited row names both ends in
+    that row, whatever its method, unless the unnamed one is the document's
+    subject.
+    String-grounded and LLM-located evidence pass the same surface, row, and cue
+    checks, so the two paths cannot drift apart. Evidence found through the
+    OCR-tolerant view is labelled ``ocr_tolerant`` whichever path found it.
     """
 
     if implicit_document_source:
@@ -1241,6 +1253,9 @@ def _grounded_observation(  # noqa: PLR0913 - one grounded candidate's full cont
     repaired_target_surface = _grounded_endpoint_surface(
         grounded.quote, target, target_surface, ocr_tolerant=grounded.ocr_tolerant
     )
+    if _row_leaves_endpoint_unnamed(chunk, grounded, (source, target)):
+        reasons["row_endpoint_unnamed"] += 1
+        return None
     if repaired_source_surface is None and (
         implicit_document_source or evidence_method == "llm_verified"
     ):
@@ -1304,6 +1319,31 @@ def _grounded_observation(  # noqa: PLR0913 - one grounded candidate's full cont
         quantities=quantities,
         proposed_relation_type=proposed_relation_type,
         assertion=candidate.assertion,
+    )
+
+
+def _row_leaves_endpoint_unnamed(
+    chunk: Chunk,
+    grounded: GroundedSpan,
+    ends: tuple[EntityMention, EntityMention],
+) -> bool:
+    """Whether the evidence lies in one delimited row that does not name an endpoint.
+
+    A row states the facts of the things it names, and the rows beside it hold
+    near-identical things - another salt of a substance, another route or
+    form. A local surface the model gave can match a shorter or neighbouring
+    cell, so only an endpoint's own name or alias names it in the row. The
+    document's subject alone may go unnamed: a certificate names it once, in
+    its header, and every row below is about it.
+    """
+
+    row = delimited_row_span(chunk.content, grounded.start_offset, grounded.end_offset)
+    if row is None:
+        return False
+    text = chunk.content[row[0] : row[1]]
+    return any(
+        not entity.is_document_subject and not row_names(text, [entity.name, *entity.aliases])
+        for entity in ends
     )
 
 

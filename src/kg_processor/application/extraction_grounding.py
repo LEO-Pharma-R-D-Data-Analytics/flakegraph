@@ -28,6 +28,14 @@ _MIN_INFLECTED_WORD_LENGTH = 3
 # Layout the text carries between words: HTML tags and table cell bars. A quote
 # may read across table cells as prose; these count as whitespace for it.
 _LAYOUT_MARKUP_RE = re.compile(r"<[^<>\n]{1,200}>|\|")
+# A delimited row is a line that tildes, cell bars or tabs divide into at
+# least three cells: this many of one divider. Prose uses a tilde singly
+# ("~5 mg"), and semicolons divide its clauses more often than cells.
+_ROW_DIVIDERS = ("~", "|", "\t")
+_MIN_ROW_DIVIDERS = 2
+# A name's words of one or two letters are left out when a row is read for
+# it; a number never is.
+_MAX_SKIPPED_ROW_WORD = 2
 _MIN_QUOTE_PIECE_CHARACTERS = 3
 _MIN_QUOTE_PIECES = 2
 # A quote given in pieces grounds on the stretch of source that holds all of
@@ -391,6 +399,52 @@ def sentence_spans(source: str) -> list[GroundedSpan]:
         if boundary is not None:
             start = boundary.end()
     return spans
+
+
+def delimited_row_span(source: str, start: int, end: int) -> tuple[int, int] | None:
+    """The delimited row of ``source`` that holds ``source[start:end]``, if one does.
+
+    A delimited row is one line that tildes, cell bars or tabs divide into at
+    least three cells. A stretch that spans lines, or lies in a line no such
+    dividers divide, lies in no row.
+    """
+
+    line_start = source.rfind("\n", 0, start) + 1
+    line_end = source.find("\n", start)
+    line_end = len(source) if line_end < 0 else line_end
+    if end > line_end:
+        return None
+    line = source[line_start:line_end]
+    if any(line.count(divider) >= _MIN_ROW_DIVIDERS for divider in _ROW_DIVIDERS):
+        return line_start, line_end
+    return None
+
+
+def row_names(row: str, names: list[str]) -> bool:
+    """Whether a delimited row names one of ``names``, word by word.
+
+    Every word of the name - a run of letters or of digits, leaving out words
+    of one or two letters but never a number - occurs in the row, both read
+    case-insensitively without spaces or punctuation: "tri-Zorvane citrate"
+    is named in "TRIZORVANE CITRATE~ORAL", ".ALPHA.-VORANOL" in
+    "Alpha-voranol". A name of short words only must occur whole that way.
+    """
+
+    compact_row = _compact_words(row)
+    for name in names:
+        words = _LETTER_DIGIT_RUN_RE.findall(unicodedata.normalize("NFKC", name).casefold())
+        wanted = [
+            word for word in words if word.isdigit() or len(word) > _MAX_SKIPPED_ROW_WORD
+        ] or ["".join(words)]
+        if all(word in compact_row for word in wanted):
+            return True
+    return False
+
+
+def _compact_words(text: str) -> str:
+    """The text's letters and digits, case-folded, with nothing between them."""
+
+    return "".join(_LETTER_DIGIT_RUN_RE.findall(unicodedata.normalize("NFKC", text).casefold()))
 
 
 def find_quote(source: str, quote: str) -> GroundedSpan | None:
