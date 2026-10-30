@@ -354,7 +354,9 @@ image), where it sits (`folder`, relative to the source root), a dataset's
 revision `reused`, `revalidated` or `reextracted:<stage>`; a catalogue
 dataset's column relations are recorded on its `dataset_profile` trace event;
 an edge observation
-carries the `quantities` its relation states. Stable
+carries the `quantities` its relation states and its `assertion` (`reported`
+or `claimed`), and an edge is `claimed` only when all its observations are
+(`ASSERTION` on `KG_EDGE` and `KG_EDGE_OBSERVATION`). Stable
 IDs and source provenance make repeated writes and graph-version publication
 idempotent. A fleet graph is exported from its published tables a batch of rows
 at a time, so a graph too large to hold in memory as one batch still exports.

@@ -259,8 +259,9 @@ list, table, or layout are not related; a citation names a source, not the
 subject of the citing text; a table cell relates to its own row label and
 column header; composition wording ("made from", "derived from") is not
 containment unless the relation's guidance says so; a signature, author line,
-or name under a heading is not responsibility. A relation it does not support is
-rejected with the rule it fails - `verification_adjacency`,
+or name under a heading is not responsibility; a claimed relation is supported
+when its quote makes the claim (see Reported And Claimed Relations). A relation
+it does not support is rejected with the rule it fails - `verification_adjacency`,
 `verification_citation`, `verification_table_cell`, `verification_not_stated`,
 `verification_wrong_direction`, `verification_wrong_endpoint`, or
 `verification_composition` - or with `verification_contradicted` or
@@ -311,6 +312,22 @@ value whose text the evidence does not contain is dropped. Once an ontology has
 such a relation type, an entity whose name is only a value - "≤ 0.10 %",
 "154 - 162" - is rejected, except under a type marked `identifier`, whose names
 are codes or numbers (a batch or lot number).
+
+## Reported And Claimed Relations
+
+A text can state a relation as a fact, a finding, or an observation, or only
+claim, propose, or allow it: a stated use or purpose ("useful for", "may be
+used to", "intended for"), a claim, a proposal, or a hypothesis ("could
+inhibit"). Both are statements of the text and both are kept. The relation
+pass gives every relation an `assertion` - `reported`, or `claimed` for one the
+text only claims - and the observation carries it. The verifier sees it and
+judges a claimed relation by whether the quote makes that claim for its ends;
+a claim is not rejected for being unproven.
+
+An edge is `claimed` only when every observation of it is: one source that
+reports the relation makes the edge `reported`. Edge observations keep their
+own assertion, so a reader sees which sources claim and which report. The
+console marks claimed edges and can hide them in Explore.
 
 ## Folders And File Names
 
@@ -511,6 +528,8 @@ Finalization turns mergeable observations into a graph:
    the better-attested takes the plain ID and each other one an ID of its own.
 5. Map relation endpoints to canonical node IDs, remove disallowed self-loops,
    aggregate repeated triples, and preserve every supporting evidence record.
+   An edge's `assertion` is `claimed` only when every assertion of it is, and an
+   edge observation's only when every assertion of the edge in its chunk is.
    With `graph.relation_type_resolution`, held relations are admitted here:
    each endpoint may stay on the node its own mention resolved to or move to a
    node of the same canonical name and another type that mentions from at
