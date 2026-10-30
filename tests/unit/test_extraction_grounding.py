@@ -10,6 +10,7 @@ from kg_processor.application.extraction_grounding import (
     ocr_tolerant_surface_spans,
     sentence_spans,
     surface_occurs,
+    table_row_span,
 )
 
 
@@ -376,3 +377,28 @@ def test_a_change_of_case_separates_values_run_together_in_a_table_cell() -> Non
     assert found("We drafted it in PowerPoint and ApSNorthwind prose.", "Point") == []
     assert found("We drafted it in PowerPoint and ApSNorthwind prose.", "Northwind") == []
     assert found(row, "wind") == []
+
+
+def _row(source: str, quote: str) -> str | None:
+    start = source.index(quote)
+    span = table_row_span(source, start, start + len(quote))
+    return source[span[0] : span[1]] if span is not None else None
+
+
+def test_a_table_row_is_a_line_its_cells_divide_or_one_html_row() -> None:
+    """Tildes, semicolons, cell bars, tabs and cell tags divide cells; prose is no row."""
+
+    delimited = "Name~Route; Form~Code\nZorvalide~Oral; Tablet~ZV-12~5~mg\nNext line"
+    assert _row(delimited, "Oral; Tablet") == "Zorvalide~Oral; Tablet~ZV-12~5~mg"
+    assert _row("| Zorvalide | Oral |\n| Kestrine | Topical |", "Kestrine") == (
+        "| Kestrine | Topical |"
+    )
+    assert _row("Zorvalide\tOral", "Oral") == "Zorvalide\tOral"
+    assert _row("Zorvalide;Oral;Tablet", "Oral") == "Zorvalide;Oral;Tablet"
+    html_table = "<table><tr><td>Zorvalide</td><td>Oral</td></tr><tr><td>Kestrine</td></tr>"
+    assert _row(html_table, "Kestrine") == "<tr><td>Kestrine</td></tr>"
+    assert _row(html_table, "Oral</td></tr><tr><td>Kestrine") is None
+    # A stretch across lines, and prose that uses a tilde or a semicolon once.
+    assert _row(delimited, "Code\nZorvalide") is None
+    assert _row("Each tablet holds ~5 mg of Zorvalide.", "Zorvalide") is None
+    assert _row("Acme mills the binder; Northwind tests it.", "Northwind") is None

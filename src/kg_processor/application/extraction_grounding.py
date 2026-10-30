@@ -28,6 +28,14 @@ _MIN_INFLECTED_WORD_LENGTH = 3
 # Layout the text carries between words: HTML tags and table cell bars. A quote
 # may read across table cells as prose; these count as whitespace for it.
 _LAYOUT_MARKUP_RE = re.compile(r"<[^<>\n]{1,200}>|\|")
+# One HTML table row, which never runs into the next row's opening tag.
+_HTML_ROW_RE = re.compile(r"<tr\b[^>]*>(?:(?!<tr\b).)*?</tr>", re.IGNORECASE | re.DOTALL)
+# A line's cells are divided by a cell bar, a tab or a cell tag...
+_CELL_DIVIDER_RE = re.compile(r"\||\t|<t[dh]\b", re.IGNORECASE)
+# ...or by tildes or semicolons, at least this many of one: prose uses each
+# singly ("~5 mg", a clause break).
+_CELL_SEPARATORS = ("~", ";")
+_MIN_CELL_SEPARATORS = 2
 _MIN_QUOTE_PIECE_CHARACTERS = 3
 _MIN_QUOTE_PIECES = 2
 # A quote given in pieces grounds on the stretch of source that holds all of
@@ -391,6 +399,31 @@ def sentence_spans(source: str) -> list[GroundedSpan]:
         if boundary is not None:
             start = boundary.end()
     return spans
+
+
+def table_row_span(source: str, start: int, end: int) -> tuple[int, int] | None:
+    """The table row of ``source`` that holds ``source[start:end]``, if one does.
+
+    A row is one HTML table row, or one line whose cells a cell bar, a tab, a
+    cell tag, or at least two tildes or semicolons divide. A stretch that spans
+    rows or lines, or lies in a line no cells divide, lies in no row.
+    """
+
+    for match in _HTML_ROW_RE.finditer(source):
+        if match.start() <= start and end <= match.end():
+            return match.span()
+        if match.start() < end and start < match.end():
+            return None
+    line_start = source.rfind("\n", 0, start) + 1
+    line_end = source.find("\n", start)
+    line_end = len(source) if line_end < 0 else line_end
+    if end > line_end:
+        return None
+    line = source[line_start:line_end]
+    divided = _CELL_DIVIDER_RE.search(line) is not None or any(
+        line.count(separator) >= _MIN_CELL_SEPARATORS for separator in _CELL_SEPARATORS
+    )
+    return (line_start, line_end) if divided else None
 
 
 def find_quote(source: str, quote: str) -> GroundedSpan | None:

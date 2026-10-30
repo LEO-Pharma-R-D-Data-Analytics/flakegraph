@@ -151,6 +151,18 @@ describes - a paper's own title, the material a certificate or data sheet
 covers. When the document-context pass finds such an entity, a statement about
 it may leave its name out: its field or sentence grounds the target alone.
 
+Evidence that lies within one table row must name both endpoints in that row.
+A row is one HTML table row, or one line whose cells a cell bar, a tab, a cell
+tag, or at least two tildes or semicolons divide; prose uses each of those last
+two singly. An endpoint is named in the row as step 2 names it - by name,
+alias, or local surface - as written or as OCR printed it. A row states the
+facts of the things it names, and the rows beside it hold near-identical
+things: another salt of the same substance, another route or dosage form. A
+relation whose row leaves an endpoint unnamed is rejected as
+`row_endpoint_unnamed`, however its evidence was found; only the document's
+subject may go unnamed, as above. Folder links and `ontology_cue` evidence are
+not grounded this way and are not held to the rule.
+
 With `graph.llm_grounding_fallback`, relations still ungrounded get one more
 chance: one call per window shows the cited text as numbered units (the same
 sentences, rows, and lines) and the model answers only with unit numbers. Code
@@ -163,7 +175,8 @@ When the chosen units name neither endpoint nor reach one within those bounds -
 typically a table row about a subject the document names once, in its header -
 the relation is not dropped: its evidence is the stretch the units span,
 recorded as `llm_verified`, and it is kept only if the verifier supports it
-(`llm_grounding_to_verifier`). Relations with `llm_located` or `llm_verified`
+(`llm_grounding_to_verifier`). A single row chosen this way still names every
+endpoint but the document's subject, or the relation is `row_endpoint_unnamed`. Relations with `llm_located` or `llm_verified`
 evidence are always verified, even with `graph.verify_relations` off.
 
 With `graph.entity_grounding_fallback`, entities string grounding could not

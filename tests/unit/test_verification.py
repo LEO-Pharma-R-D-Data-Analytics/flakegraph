@@ -28,6 +28,7 @@ from kg_processor.domain.extraction import (
     EntityVerificationDecision,
     ExtractionObservations,
     ExtractionWindow,
+    RelationExtractionOutcome,
     RelationObservation,
     VerificationDecision,
     VerificationOutcome,
@@ -535,6 +536,133 @@ def test_a_relation_sent_to_the_verifier_is_kept_only_when_it_is_supported() -> 
     assert refused.relations == []
     [event] = [item for item in refused.trace if item["stage"] == "relation_verification"]
     assert [item["reason"] for item in event["rejected_records"]] == ["verification_not_stated"]
+
+
+# A table whose rows each name their own material and supplier.
+_ROWS = chunk(
+    "Material~Supplier~Grade\nTitanium white~Delta Minerals~Fine\nZinc white~Epsilon Oxides~Coarse",
+    chunk_id="rows",
+    chunk_index=2,
+    page_number=3,
+)
+_PROSE = chunk("Titanium white is milled; it is then sieved.", chunk_id="prose", chunk_index=2)
+
+
+def _cited(
+    source_chunk: Chunk,
+    source: EntityMention,
+    relation_type: str,
+    target: EntityMention,
+    *,
+    point_at: list[int],
+) -> RelationExtractionOutcome:
+    """Extract one relation whose quote is not in ``source_chunk``; the model points at units."""
+
+    relation = {
+        "source_entity_id": source.id,
+        "target_entity_id": target.id,
+        "source_surface": source.name,
+        "target_surface": target.name,
+        "relation_type": relation_type,
+        "description": f"{source.name} {relation_type} {target.name}.",
+        "source_chunk_id": source_chunk.id,
+        "quote": f"{source.name} {relation_type.lower()} {target.name}",
+        "confidence": 0.9,
+    }
+
+    class _CitingLlm(_VerifyingLlm):
+        def complete_structured(
+            self, request: StructuredCompletionRequest
+        ) -> StructuredCompletionResult:
+            if request.task_name == "relation_extraction":
+                return StructuredCompletionResult(payload={"relations": [relation]})
+            return super().complete_structured(request)
+
+    extractor = LlmRelationExtractor(_CitingLlm([], point_at=point_at), grounding_fallback=True)
+    return extractor.extract(
+        window(source_chunk),
+        [source, target],
+        _profile(),
+        model="fake",
+        timeout_seconds=30,
+        max_relations=10,
+    )
+
+
+def test_a_row_that_names_both_ends_grounds_their_relation() -> None:
+    outcome = _cited(
+        _ROWS,
+        _mention("Titanium white", "MATERIAL", _ROWS),
+        "SUPPLIED_BY",
+        _mention("Delta Minerals", "ORGANIZATION", _ROWS),
+        point_at=[2],
+    )
+
+    [relation] = outcome.relations
+    assert relation.quote == "Titanium white~Delta Minerals~Fine"
+    assert "row_endpoint_unnamed" not in outcome.trace["record_actions"]
+
+
+def test_a_row_that_names_only_one_end_is_rejected() -> None:
+    """The supplier is named elsewhere in the document; the row is another supplier's."""
+
+    outcome = _cited(
+        _ROWS,
+        _mention("Titanium white", "MATERIAL", _ROWS),
+        "SUPPLIED_BY",
+        _mention("Theta Colours", "ORGANIZATION", _OPENING),
+        point_at=[2],
+    )
+
+    assert outcome.relations == []
+    actions = outcome.trace["record_actions"]
+    assert actions["row_endpoint_unnamed"] == 1
+    assert "llm_grounding_to_verifier" not in actions
+    assert [(item["reason"], item["target"]) for item in outcome.trace["rejected_records"]] == [
+        ("row_endpoint_unnamed", "Theta Colours")
+    ]
+
+
+def test_a_row_about_the_document_subject_may_leave_its_name_out() -> None:
+    """A data sheet names its subject once, in its header; each row below is about it."""
+
+    subject = _mention(
+        "Acme Paint", "PRODUCT", _OPENING, is_document_context=True, is_document_subject=True
+    )
+
+    contains = _cited(
+        _ROWS, subject, "CONTAINS", _mention("Titanium white", "MATERIAL", _ROWS), point_at=[]
+    )
+    [relation] = contains.relations
+    assert relation.quote == "Titanium white~Delta Minerals~Fine"
+    assert relation.source_surface == "Acme Paint"
+    assert contains.trace["record_actions"]["implicit_document_source"] == 1
+
+    supplies = _cited(
+        _ROWS, _mention("Delta Minerals", "ORGANIZATION", _ROWS), "SUPPLIES", subject, point_at=[2]
+    )
+    [relation] = supplies.relations
+    assert relation.evidence_method == "llm_verified"
+    assert relation.quote == "Titanium white~Delta Minerals~Fine"
+    assert relation.target_surface == "Acme Paint"
+    assert supplies.trace["rejected_records"] == []
+
+
+def test_prose_that_leaves_an_end_unnamed_still_goes_to_the_verifier() -> None:
+    """A clause break is no cell: the row rule leaves a sentence to the verifier."""
+
+    outcome = _cited(
+        _PROSE,
+        _mention("Titanium white", "MATERIAL", _PROSE),
+        "SUPPLIED_BY",
+        _mention("Theta Colours", "ORGANIZATION", _OPENING),
+        point_at=[1],
+    )
+
+    [relation] = outcome.relations
+    assert relation.evidence_method == "llm_verified"
+    assert relation.quote == _PROSE.content
+    assert outcome.trace["record_actions"]["llm_grounding_to_verifier"] == 1
 
 
 def _combined(llm: _VerifyingLlm) -> ExtractionObservations:
