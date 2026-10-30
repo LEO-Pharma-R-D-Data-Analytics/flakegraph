@@ -545,28 +545,38 @@ _ROWS = chunk(
     chunk_index=2,
     page_number=3,
 )
-_PROSE = chunk("Titanium white is milled; it is then sieved.", chunk_id="prose", chunk_index=2)
+_PROSE = chunk(
+    "A titanium white grade comprises: a binder; a filler; a dispersant.",
+    chunk_id="prose",
+    chunk_index=2,
+)
 
 
-def _cited(
+def _cited(  # noqa: PLR0913 - one relation as the model states it.
     source_chunk: Chunk,
     source: EntityMention,
     relation_type: str,
     target: EntityMention,
     *,
     point_at: list[int],
+    source_surface: str | None = None,
+    quote: str | None = None,
 ) -> RelationExtractionOutcome:
-    """Extract one relation whose quote is not in ``source_chunk``; the model points at units."""
+    """Extract one relation the model cites in ``source_chunk``.
+
+    Without a ``quote`` the model's quote is not in the chunk, and when asked
+    the model points at the units ``point_at`` numbers.
+    """
 
     relation = {
         "source_entity_id": source.id,
         "target_entity_id": target.id,
-        "source_surface": source.name,
+        "source_surface": source_surface or source.name,
         "target_surface": target.name,
         "relation_type": relation_type,
         "description": f"{source.name} {relation_type} {target.name}.",
         "source_chunk_id": source_chunk.id,
-        "quote": f"{source.name} {relation_type.lower()} {target.name}",
+        "quote": quote or f"{source.name} {relation_type.lower()} {target.name}",
         "confidence": 0.9,
     }
 
@@ -601,6 +611,50 @@ def test_a_row_that_names_both_ends_grounds_their_relation() -> None:
     [relation] = outcome.relations
     assert relation.quote == "Titanium white~Delta Minerals~Fine"
     assert "row_endpoint_unnamed" not in outcome.trace["record_actions"]
+
+
+def test_a_row_names_an_end_by_its_name_whatever_its_hyphens_and_case() -> None:
+    """The model's surface matches as written; the name matches without punctuation."""
+
+    rows = chunk("Material~Supplier~Grade\nTRIZORVANE CITRATE DIHYDRATE~Delta Minerals~Fine")
+    outcome = _cited(
+        rows,
+        _mention("tri-Zorvane citrate dihydrate", "MATERIAL", rows),
+        "SUPPLIED_BY",
+        _mention("Delta Minerals", "ORGANIZATION", rows),
+        point_at=[],
+        source_surface="TRIZORVANE CITRATE DIHYDRATE",
+        quote="TRIZORVANE CITRATE DIHYDRATE~Delta Minerals",
+    )
+
+    [relation] = outcome.relations
+    assert relation.evidence_method == "llm"
+    assert relation.quote == "TRIZORVANE CITRATE DIHYDRATE~Delta Minerals"
+
+
+def test_a_surface_that_matches_the_neighbouring_rows_cell_is_rejected() -> None:
+    """The quote grounds as written, but its row is another salt of the same substance."""
+
+    rows = chunk(
+        "Material~Supplier~Grade\n"
+        "Zorvane phosphate, anhydrous~Delta Minerals~Fine\n"
+        "Zorvane phosphate, monohydrate~Epsilon Oxides~Coarse"
+    )
+    outcome = _cited(
+        rows,
+        _mention("Zorvane phosphate, monohydrate", "MATERIAL", rows),
+        "SUPPLIED_BY",
+        _mention("Delta Minerals", "ORGANIZATION", rows),
+        point_at=[],
+        source_surface="Zorvane phosphate",
+        quote="Zorvane phosphate, anhydrous~Delta Minerals",
+    )
+
+    assert outcome.relations == []
+    assert outcome.trace["record_actions"]["row_endpoint_unnamed"] == 1
+    assert [(item["reason"], item["source"]) for item in outcome.trace["rejected_records"]] == [
+        ("row_endpoint_unnamed", "Zorvane phosphate, monohydrate")
+    ]
 
 
 def test_a_row_that_names_only_one_end_is_rejected() -> None:
@@ -648,12 +702,29 @@ def test_a_row_about_the_document_subject_may_leave_its_name_out() -> None:
     assert supplies.trace["rejected_records"] == []
 
 
+def test_an_html_row_that_leaves_an_end_unnamed_still_goes_to_the_verifier() -> None:
+    """An HTML table's subject is often its header, and a cell may list several values."""
+
+    table = chunk("<table><tr><td>Titanium white</td><td>Fine</td></tr></table>", chunk_id="table")
+    outcome = _cited(
+        table,
+        _mention("Titanium white", "MATERIAL", table),
+        "SUPPLIED_BY",
+        _mention("Theta Colours", "ORGANIZATION", _OPENING),
+        point_at=[1],
+    )
+
+    [relation] = outcome.relations
+    assert relation.evidence_method == "llm_verified"
+    assert "row_endpoint_unnamed" not in outcome.trace["record_actions"]
+
+
 def test_prose_that_leaves_an_end_unnamed_still_goes_to_the_verifier() -> None:
-    """A clause break is no cell: the row rule leaves a sentence to the verifier."""
+    """Semicolons that divide a sentence's list are not cells."""
 
     outcome = _cited(
         _PROSE,
-        _mention("Titanium white", "MATERIAL", _PROSE),
+        _mention("titanium white", "MATERIAL", _PROSE),
         "SUPPLIED_BY",
         _mention("Theta Colours", "ORGANIZATION", _OPENING),
         point_at=[1],

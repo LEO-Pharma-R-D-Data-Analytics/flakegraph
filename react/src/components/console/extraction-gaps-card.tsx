@@ -273,7 +273,7 @@ const REASON_HELP: Record<string, string> = {
     "The quote was not in the text, and the lines the model then pointed at do not name both ends of the relation.",
   llm_grounding_unsupported: "The quote was not in the text, and asked again the model found no line that states it.",
   row_endpoint_unnamed:
-    "The evidence is one table row, and that row does not name both ends of the relation; only the document's subject may go unnamed.",
+    "The evidence is one delimited table row, and that row does not name both ends of the relation by name or alias; only the document's subject may go unnamed.",
   value_as_entity: "A value such as a limit or a result, which belongs on a relation rather than being an entity.",
   document_context_name_mismatch: "The document's subject was named differently from how its quote names it.",
   contextual_surface_as_entity: "A pointer such as 'this paper' rather than a name.",

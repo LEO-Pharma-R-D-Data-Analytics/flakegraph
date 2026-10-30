@@ -42,6 +42,7 @@ from kg_processor.application.extraction_grounding import (
     MAX_PIECED_QUOTE_CHARACTERS,
     GroundedSpan,
     contains_surface_groups,
+    delimited_row_span,
     find_quote,
     ground_evidence,
     ground_evidence_ocr_tolerant,
@@ -49,10 +50,10 @@ from kg_processor.application.extraction_grounding import (
     name_words_in_quote,
     ocr_tolerant_surface_occurs,
     ocr_tolerant_surface_spans,
+    row_names,
     sentence_spans,
     surface_occurs,
     surface_spans,
-    table_row_span,
 )
 from kg_processor.application.quantities import is_value_text, parse_quantity
 from kg_processor.application.rejected_records import (
@@ -1236,8 +1237,9 @@ def _grounded_observation(  # noqa: PLR0913 - one grounded candidate's full cont
 
     None when an endpoint cannot be named inside the evidence, except for
     evidence the verifier must confirm (llm_verified), whose unnamed ends are
-    identified by name. Evidence within one table row names both ends in that
-    row, whatever its method, unless the unnamed one is the document's subject.
+    identified by name. Evidence within one delimited row names both ends in
+    that row, whatever its method, unless the unnamed one is the document's
+    subject.
     String-grounded and LLM-located evidence pass the same surface, row, and cue
     checks, so the two paths cannot drift apart. Evidence found through the
     OCR-tolerant view is labelled ``ocr_tolerant`` whichever path found it.
@@ -1251,11 +1253,7 @@ def _grounded_observation(  # noqa: PLR0913 - one grounded candidate's full cont
     repaired_target_surface = _grounded_endpoint_surface(
         grounded.quote, target, target_surface, ocr_tolerant=grounded.ocr_tolerant
     )
-    if (
-        repaired_source_surface is None or repaired_target_surface is None
-    ) and _row_leaves_endpoint_unnamed(
-        chunk, grounded, ((source, source_surface), (target, target_surface))
-    ):
+    if _row_leaves_endpoint_unnamed(chunk, grounded, (source, target)):
         reasons["row_endpoint_unnamed"] += 1
         return None
     if repaired_source_surface is None and (
@@ -1326,26 +1324,25 @@ def _grounded_observation(  # noqa: PLR0913 - one grounded candidate's full cont
 def _row_leaves_endpoint_unnamed(
     chunk: Chunk,
     grounded: GroundedSpan,
-    ends: tuple[tuple[EntityMention, str], ...],
+    ends: tuple[EntityMention, EntityMention],
 ) -> bool:
-    """Whether the evidence lies in one table row that does not name an endpoint.
+    """Whether the evidence lies in one delimited row that does not name an endpoint.
 
-    A row states the facts of the things it names; the rows beside it hold
+    A row states the facts of the things it names, and the rows beside it hold
     near-identical things - another salt of a substance, another route or
-    form. An endpoint is named in the row as grounding names it, by name,
-    alias, or local surface, as written or as OCR printed it. The document's
-    subject alone may go unnamed: a certificate names it once, in its header,
-    and every row below is about it.
+    form. A local surface the model gave can match a shorter or neighbouring
+    cell, so only an endpoint's own name or alias names it in the row. The
+    document's subject alone may go unnamed: a certificate names it once, in
+    its header, and every row below is about it.
     """
 
-    row = table_row_span(chunk.content, grounded.start_offset, grounded.end_offset)
+    row = delimited_row_span(chunk.content, grounded.start_offset, grounded.end_offset)
     if row is None:
         return False
     text = chunk.content[row[0] : row[1]]
     return any(
-        not entity.is_document_subject
-        and _grounded_endpoint_surface(text, entity, surface, ocr_tolerant=True) is None
-        for entity, surface in ends
+        not entity.is_document_subject and not row_names(text, [entity.name, *entity.aliases])
+        for entity in ends
     )
 
 
