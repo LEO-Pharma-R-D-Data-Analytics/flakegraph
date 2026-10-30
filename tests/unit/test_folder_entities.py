@@ -35,7 +35,10 @@ from kg_processor.application.graph_quality import evaluate_graph_quality
 from kg_processor.application.llm_extractors import _relation_definition
 from kg_processor.application.ontology import load_ontology
 from kg_processor.application.pipeline import KgProcessorPipeline
-from kg_processor.application.two_pass_extraction import _relation_inventory_for_window
+from kg_processor.application.two_pass_extraction import (
+    _relation_inventory_for_window,
+    resolve_extraction_observations,
+)
 from kg_processor.config.settings import Settings
 from kg_processor.domain.documents import ParsedDocument, ParsedPage
 from kg_processor.domain.extraction import (
@@ -923,13 +926,12 @@ def test_a_local_run_leaves_excluded_folder_mentions_out_before_resolution(
         (corpus / location).parent.mkdir(parents=True, exist_ok=True)
         (corpus / location).write_text(text, encoding="utf-8")
     resolved: list[list[str]] = []
-    resolve = pipeline_module.resolve_extraction_observations
 
     def recording(observations: ExtractionObservations, *args: Any, **kwargs: Any) -> Any:
         resolved.append(
             [item.name for item in observations.entities if item.evidence_method == "folder"]
         )
-        return resolve(observations, *args, **kwargs)
+        return resolve_extraction_observations(observations, *args, **kwargs)
 
     monkeypatch.setattr(pipeline_module, "resolve_extraction_observations", recording)
     settings = Settings.load(

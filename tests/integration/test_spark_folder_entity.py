@@ -150,8 +150,8 @@ def test_spark_links_every_entity_to_its_folder_like_local_finalization(
             for edge in local.edges
         }
     # Only its folder link reaches Initech: an isolate the filter drops, link and all.
-    names = {node.name for node in local.nodes}
-    assert ("Initech" in names) is not graph.get("drop_isolated_entities", False)
+    node_names = {node.name for node in local.nodes}
+    assert ("Initech" in node_names) is not graph.get("drop_isolated_entities", False)
 
 
 def _observations(batch: GraphWriteBatch) -> list[tuple[Any, ...]]:
