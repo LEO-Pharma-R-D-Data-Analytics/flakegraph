@@ -4,10 +4,15 @@ export function hashApiSecret(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
 }
 
+/**
+ * The console API key a request presents, if any. A bearer credential counts
+ * only when it has a key's `fg_` shape: any other bearer is a token the
+ * sign-in gate verified, and the request is the person the gate names.
+ */
 export function presentedApiSecret(headers: Headers): string | null {
   const authorization = headers.get("authorization")?.trim();
   if (authorization) {
-    const match = /^(?:Bearer|Token)\s+(\S+)/i.exec(authorization);
+    const match = /^(?:Bearer|Token)\s+(fg_\S+)/i.exec(authorization);
     if (match?.[1]) {
       return match[1];
     }

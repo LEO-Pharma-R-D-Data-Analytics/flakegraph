@@ -1011,6 +1011,23 @@ ingress:
     # Prefer routing to a rule of its own over exempting a path here, the way
     # `machineApiPaths` does: routing knows which service it is talking about.
     skipAuthRoutes: []
+    # Programs acting for a person - another application calling on behalf of
+    # whoever is signed in to it - cannot follow a browser sign-in either, but
+    # unlike a key holder they are not machines: they carry that person's
+    # access token. With this on, the gate admits a request presenting
+    # `Authorization: Bearer <token>` for this gate's client (audience
+    # `oidc.clientId`, issued by `oidc.issuerUrl`), verified on signature,
+    # issuer, audience and expiry, and names the person exactly as a browser
+    # session would. Every host behind the gate then serves them with their own
+    # access, the console included: they list and ask only the graphs that
+    # person may read.
+    #
+    # The person's address is read from the same claim as at sign-in (`email`,
+    # or whatever `--oidc-email-claim` names), so the access token has to carry
+    # it. Further issuers or audiences go in extraArgs
+    # (`--extra-jwt-issuers=<issuer>=<audience>`).
+    bearerTokens:
+      enabled: false
     extraArgs: []
     resources:
       requests:
