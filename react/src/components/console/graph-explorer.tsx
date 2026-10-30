@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { GraphCanvas } from "@/components/console/graph-canvas";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -50,6 +51,7 @@ import {
   evidenceDocumentId,
   evidenceEntityId,
   evidenceRelationId,
+  isClaimed,
   quantityLine,
   statedTypes,
 } from "@/lib/evidence";
@@ -118,6 +120,7 @@ export function GraphExplorer({
   const [communityIds, setCommunityIds] = useState<string[]>([]);
   const [confidence, setConfidence] = useState(0);
   const [includeIsolates, setIncludeIsolates] = useState(true);
+  const [includeClaimed, setIncludeClaimed] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showNeighborhood, setShowNeighborhood] = useState(false);
   const [perspectiveId, setPerspectiveId] = useState<string>("");
@@ -165,12 +168,14 @@ export function GraphExplorer({
       communityIds,
       minimumConfidence: confidence,
       includeIsolates,
+      includeClaimed,
       // The whole match stays available for neighborhoods and exports; only
       // the canvas is capped below.
       limit: Number.POSITIVE_INFINITY,
     }),
-    [search, nodeTypes, relationTypes, communityIds, confidence, includeIsolates],
+    [search, nodeTypes, relationTypes, communityIds, confidence, includeIsolates, includeClaimed],
   );
+  const claimedCount = useMemo(() => dataset.edges.filter(isClaimed).length, [dataset.edges]);
   const filtered = useMemo(() => filterGraph(dataset, filters), [dataset, filters]);
   const selectedNode = dataset.nodes.find((node) => String(node.id) === selectedId);
   const selectedEdge = dataset.edges.find((edge) => String(edge.id) === selectedId);
@@ -225,6 +230,7 @@ export function GraphExplorer({
     communityIds,
     minimumConfidence: confidence,
     includeIsolates,
+    includeClaimed,
   });
   const filtersActive =
     search.trim().length > 0 ||
@@ -237,6 +243,7 @@ export function GraphExplorer({
     pathEndpoints.length > 0 ||
     focusDepth != null ||
     !includeIsolates ||
+    !includeClaimed ||
     Boolean(perspectiveId);
 
   useEffect(() => {
@@ -270,6 +277,7 @@ export function GraphExplorer({
     setCommunityIds([]);
     setConfidence(0);
     setIncludeIsolates(true);
+    setIncludeClaimed(true);
     setShowNeighborhood(false);
     setPerspectiveId("");
     setSelectedId(null);
@@ -300,7 +308,8 @@ export function GraphExplorer({
     (relationTypes.length > 0 ? 1 : 0) +
     (communityIds.length > 0 ? 1 : 0) +
     (confidence > 0 ? 1 : 0) +
-    (includeIsolates ? 0 : 1);
+    (includeIsolates ? 0 : 1) +
+    (includeClaimed ? 0 : 1);
   const scopeStat =
     focusedGraph.nodes.length > 0
       ? `${canvas.nodes.length.toLocaleString()} of ${canvas.totalNodes.toLocaleString()} entities · ${canvas.edges.length.toLocaleString()} ${
@@ -394,10 +403,20 @@ export function GraphExplorer({
                     onValueChange={(value) => setConfidence(value[0] ?? 0)}
                   />
                 </label>
-                <label className="flex items-center gap-2 self-end text-sm">
-                  <Switch checked={includeIsolates} onCheckedChange={setIncludeIsolates} aria-label="Include isolated entities" />
-                  Include isolated entities
-                </label>
+                <div className="grid content-start gap-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <Switch checked={includeIsolates} onCheckedChange={setIncludeIsolates} aria-label="Include isolated entities" />
+                    Include isolated entities
+                  </label>
+                  <label
+                    className="flex items-center gap-2 text-sm"
+                    title="Relations every source only claims, proposes or allows - a stated use, a hypothesis - rather than reports"
+                  >
+                    <Switch checked={includeClaimed} onCheckedChange={setIncludeClaimed} aria-label="Include claimed relations" />
+                    Include claimed relations
+                    <span className="text-muted-foreground" data-testid="claimed-count">({claimedCount.toLocaleString()})</span>
+                  </label>
+                </div>
               </div>
             </div>
             {analyst ? null : (
@@ -566,8 +585,8 @@ export function GraphExplorer({
           <span>{scopeStat}</span>
           <span
             role="img"
-            aria-label="Scroll to zoom, drag to pan, double-click an entity to fly in. Shift-click two entities to find a path."
-            title="Scroll to zoom, drag to pan, double-click an entity to fly in. Shift-click two entities to find a path."
+            aria-label="Scroll to zoom, drag to pan, double-click an entity to fly in. Shift-click two entities to find a path. A dashed relation is one its sources only claim."
+            title="Scroll to zoom, drag to pan, double-click an entity to fly in. Shift-click two entities to find a path. A dashed relation is one its sources only claim."
           >
             <HelpCircle className="size-3.5" aria-hidden="true" />
           </span>
@@ -684,13 +703,26 @@ export function GraphExplorer({
               </>
             ) : selectedEdge ? (
               <>
-                <p className="font-medium">{String(selectedEdge.relation_type ?? selectedEdge.relationType)}</p>
+                <p className="flex items-center gap-2 font-medium">
+                  {String(selectedEdge.relation_type ?? selectedEdge.relationType)}
+                  {isClaimed(selectedEdge) ? (
+                    <Badge variant="warning" data-testid="edge-claimed">
+                      Claimed
+                    </Badge>
+                  ) : null}
+                </p>
                 <p>
                   {String(selectedEdge.source_node_id ?? selectedEdge.source)} →{" "}
                   {String(selectedEdge.target_node_id ?? selectedEdge.target)}
                 </p>
                 {selectedEdge.description ? (
                   <p className="text-muted-foreground">{String(selectedEdge.description)}</p>
+                ) : null}
+                {isClaimed(selectedEdge) ? (
+                  <p className="text-muted-foreground">
+                    Every source only claims, proposes or allows this relation - a stated use or a hypothesis - and none
+                    reports it as a finding.
+                  </p>
                 ) : null}
                 {statedTypes(selectedEdge).length > 0 ? (
                   <p data-testid="edge-stated-types" className="text-muted-foreground">
@@ -758,7 +790,10 @@ export function GraphExplorer({
             </>
           ) : hoverEdge ? (
             <>
-              <p className="font-semibold">{String(hoverEdge.relation_type ?? hoverEdge.relationType ?? "")}</p>
+              <p className="font-semibold">
+                {String(hoverEdge.relation_type ?? hoverEdge.relationType ?? "")}
+                {isClaimed(hoverEdge) ? <span className="ml-1 font-normal text-muted-foreground">(claimed)</span> : null}
+              </p>
               <p className="text-muted-foreground">
                 {String(hoverEdge.source_node_id ?? hoverEdge.source)} → {String(hoverEdge.target_node_id ?? hoverEdge.target)}
               </p>

@@ -62,7 +62,14 @@ describe("graphFacetOptions", () => {
 });
 
 describe("filterSummary", () => {
-  const nothing = { nodeTypes: [], relationTypes: [], communityIds: [], minimumConfidence: 0, includeIsolates: true };
+  const nothing = {
+    nodeTypes: [],
+    relationTypes: [],
+    communityIds: [],
+    minimumConfidence: 0,
+    includeIsolates: true,
+    includeClaimed: true,
+  };
 
   it("is empty when nothing narrows the graph", () => {
     expect(filterSummary(nothing)).toBeNull();
@@ -75,8 +82,11 @@ describe("filterSummary", () => {
       communityIds: ["community_person"],
       minimumConfidence: 0.6,
       includeIsolates: false,
+      includeClaimed: false,
     };
-    expect(filterSummary(state)).toBe("2 entity types · 1 neighborhood · confidence ≥ 0.60 · connected only");
+    expect(filterSummary(state)).toBe(
+      "2 entity types · 1 neighborhood · confidence ≥ 0.60 · connected only · reported only",
+    );
   });
 
   it("names a lone relation type in the singular", () => {

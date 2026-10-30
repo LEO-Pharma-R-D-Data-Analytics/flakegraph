@@ -110,6 +110,7 @@ async function seedGoldDataset(options: {
   // The deep-learning graph carries a handful of extraction gaps - the case
   // where one reader wants to see exactly which pages were lost - and one
   // document no parser could read, recorded while the rest of the run went on.
+  // The martial-arts graph holds one relation its sources only claim.
   const dataset =
     options.graphId === "graph_deep_learning"
       ? {
@@ -117,7 +118,9 @@ async function seedGoldDataset(options: {
           discardedWindows: fewGaps(options.graphId, base),
           failedDocuments: [unreadableDocument(options.graphId, "file_broken", "s3://corpus/deep-learning/broken.pdf")],
         }
-      : base;
+      : options.graphId === "graph_martial_arts"
+        ? { ...base, edges: base.edges.map((edge) => (edge.id === "rel_004" ? { ...edge, assertion: "claimed" } : edge)) }
+        : base;
   await writeDataset(outputPath, { ...dataset, runReport: { ...dataset.runReport, job_id: options.runId } });
   const directory = path.join(options.stateRoot, "runs", options.runId);
   await writeRunRecord(directory, {

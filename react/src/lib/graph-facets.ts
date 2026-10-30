@@ -64,6 +64,7 @@ export interface FilterState {
   communityIds: readonly string[];
   minimumConfidence: number;
   includeIsolates: boolean;
+  includeClaimed: boolean;
 }
 
 /**
@@ -90,6 +91,9 @@ export function filterSummary(state: FilterState): string | null {
   }
   if (!state.includeIsolates) {
     parts.push("connected only");
+  }
+  if (!state.includeClaimed) {
+    parts.push("reported only");
   }
   return parts.length > 0 ? parts.join(" · ") : null;
 }

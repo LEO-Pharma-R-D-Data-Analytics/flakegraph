@@ -639,7 +639,16 @@ function paintGraph(
     context.fillStyle = context.strokeStyle;
     context.lineWidth = isPath ? 2.4 : faded ? 1 : 1.4;
     context.globalAlpha = faded ? 0.35 : 1;
-    drawArrow(context, from.x, from.y, to.x, to.y, source.size * (input.camera.scale / 2 + 0.5), target.size * (input.camera.scale / 2 + 0.5));
+    drawArrow(
+      context,
+      from.x,
+      from.y,
+      to.x,
+      to.y,
+      source.size * (input.camera.scale / 2 + 0.5),
+      target.size * (input.camera.scale / 2 + 0.5),
+      edge.claimed,
+    );
     if (!faded && input.camera.scale >= 1.05 && input.edges.length <= 80) {
       context.fillStyle = muted;
       context.font = "10px ui-sans-serif, system-ui, sans-serif";
@@ -692,6 +701,7 @@ function drawArrow(
   y2: number,
   sourceRadius: number,
   targetRadius: number,
+  dashed = false,
 ) {
   const angle = Math.atan2(y2 - y1, x2 - x1);
   const startX = x1 + Math.cos(angle) * sourceRadius;
@@ -701,7 +711,10 @@ function drawArrow(
   context.beginPath();
   context.moveTo(startX, startY);
   context.lineTo(endX, endY);
+  // A claimed relation is drawn dashed; its arrowhead stays solid.
+  context.setLineDash(dashed ? [5, 4] : []);
   context.stroke();
+  context.setLineDash([]);
   const head = 6;
   context.beginPath();
   context.moveTo(endX, endY);

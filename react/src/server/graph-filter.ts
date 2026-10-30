@@ -1,3 +1,4 @@
+import { isClaimed } from "@/lib/evidence";
 import type { GraphDataset } from "./protocol/schema";
 
 const MAX_CANVAS_NODES = 1_200;
@@ -9,6 +10,8 @@ export interface GraphFilters {
   communityIds?: string[];
   minimumConfidence?: number;
   includeIsolates?: boolean;
+  /** Keep relations every source only claims; off leaves the reported ones. */
+  includeClaimed?: boolean;
   /** How many entities the result may carry; the best-connected ones win. */
   limit?: number;
 }
@@ -43,6 +46,7 @@ export function filterGraph(dataset: GraphDataset, filters: GraphFilters = {}): 
   const membership = communityMembership(dataset.communities);
   const minimumConfidence = filters.minimumConfidence ?? 0;
   const includeIsolates = filters.includeIsolates ?? true;
+  const includeClaimed = filters.includeClaimed ?? true;
   const nodes = dataset.nodes.filter((raw) => {
     const nodeId = String(raw.id ?? "");
     const haystack = `${raw.name ?? ""} ${raw.description ?? ""} ${Array.isArray(raw.aliases) ? raw.aliases.join(" ") : ""}`.toLowerCase();
@@ -70,7 +74,8 @@ export function filterGraph(dataset: GraphDataset, filters: GraphFilters = {}): 
       visible.has(source) &&
       visible.has(target) &&
       (allowedRelations.size === 0 || allowedRelations.has(relation)) &&
-      confidence >= minimumConfidence
+      confidence >= minimumConfidence &&
+      (includeClaimed || !isClaimed(edge))
     );
   });
   if (!includeIsolates) {

@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { documentNameIndex, evidenceMethodLabel, entityDocumentIndex, evidenceDocumentId, evidenceEntityId, evidenceRelationId } from "./evidence";
+import {
+  documentNameIndex,
+  evidenceMethodLabel,
+  entityDocumentIndex,
+  evidenceDocumentId,
+  evidenceEntityId,
+  evidenceRelationId,
+  isClaimed,
+} from "./evidence";
+
+describe("isClaimed", () => {
+  it("is true only for a row its sources only claim", () => {
+    expect(isClaimed({ assertion: "claimed" })).toBe(true);
+    expect(isClaimed({ assertion: "reported" })).toBe(false);
+    expect(isClaimed({})).toBe(false);
+  });
+});
 
 describe("evidence rows", () => {
   it("reads the pipeline's subject columns and the gold format's explicit ones alike", () => {

@@ -140,6 +140,15 @@ export function statedTypes(edge: Record<string, unknown>): string[] {
   return Array.isArray(stated) ? stated.map(String).filter(Boolean) : [];
 }
 
+/**
+ * Whether every source only claims an edge - a stated use, a proposal, a
+ * hypothesis - rather than reporting it as a fact or finding. One reporting
+ * source makes the edge reported.
+ */
+export function isClaimed(row: Record<string, unknown>): boolean {
+  return row.assertion === "claimed";
+}
+
 const EVIDENCE_METHOD_LABELS: Record<string, string> = {
   llm: "Quoted by the model",
   llm_located: "Lines the model pointed at",
