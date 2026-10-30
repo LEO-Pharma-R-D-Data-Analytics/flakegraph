@@ -29,6 +29,7 @@ ocr:
   fallback_max_sparse_page_ratio: 0.2
   fallback_max_unbroken_text_ratio: 0.5
   fallback_max_fragmented_text_ratio: 0.15
+  fallback_max_unspaced_page_ratio: 0.25
   fallback_max_interleaved_column_page_ratio: 0.25
   mineru_method: ocr
   mineru_backend: pipeline

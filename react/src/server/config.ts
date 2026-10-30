@@ -399,7 +399,7 @@ function providerConfig(selection: ProviderSelection, kind: "ocr" | "llm" | "emb
     : kind === "embedding" ? ["batch_size"] : ["language", "page_range", "timeout_seconds"];
   const mineru = ["mineru_method", "mineru_backend", "mineru_effort", "mineru_formula", "mineru_table", "mineru_image_analysis"];
   const byProvider: Record<string, readonly string[]> = kind === "ocr" ? {
-    fallback: ["fallback_min_characters_per_page", "fallback_max_sparse_page_ratio", "fallback_max_unbroken_text_ratio", "fallback_max_fragmented_text_ratio", "fallback_max_interleaved_column_page_ratio", ...mineru, "tesseract_dpi"],
+    fallback: ["fallback_min_characters_per_page", "fallback_max_sparse_page_ratio", "fallback_max_unbroken_text_ratio", "fallback_max_fragmented_text_ratio", "fallback_max_unspaced_page_ratio", "fallback_max_interleaved_column_page_ratio", ...mineru, "tesseract_dpi"],
     mineru_internal: mineru,
     tesseract_internal: ["tesseract_dpi"],
     snowflake_cortex: ["snowflake_parse_mode", "snowflake_extract_images", "snowflake_page_split"],

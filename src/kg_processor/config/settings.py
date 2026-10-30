@@ -271,6 +271,9 @@ class OcrSettings(_SettingsModel):
     fallback_max_sparse_page_ratio: float = Field(default=0.2, ge=0.0, lt=1.0)
     fallback_max_unbroken_text_ratio: float = Field(default=0.5, ge=0.0, lt=1.0)
     fallback_max_fragmented_text_ratio: float = Field(default=0.15, ge=0.0, lt=1.0)
+    # Share of measured pages whose text layer lost most of its word spacing,
+    # leaving runs of words written together, before the secondary parser takes over.
+    fallback_max_unspaced_page_ratio: float = Field(default=0.25, ge=0.0, le=1.0)
     # Share of a PDF's pages whose text layer interleaves two columns line by
     # line before the secondary parser, which reads the layout, takes over.
     fallback_max_interleaved_column_page_ratio: float = Field(default=0.25, ge=0.0, le=1.0)

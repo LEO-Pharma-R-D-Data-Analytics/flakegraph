@@ -282,6 +282,115 @@ def test_fallback_ignores_latex_variables_when_measuring_fragmentation(tmp_path:
     assert result.provider_metadata["fallback_ocr"]["selected"] == "builtin_text"
 
 
+_SPACED_PROSE = (
+    "The filter cake was washed twice with cold water before drying under reduced "
+    "pressure. Each batch was sampled at three points so that the operators could "
+    "compare the moisture content across the trays and record the final yield.\n"
+)
+_UNSPACED_PROSE = (
+    "Thefiltercakewaswashedtwicewithcold water before\n"
+    "dryingunderreducedpressureovernight. The colour\n"
+    "changedfromgreentoyellowwithinanhour and the yield\n"
+    "wasrecordedafterweighingeachdriedbatch so that\n"
+    "theoperatorscouldcomparethetrays later.\n"
+)
+
+
+def test_fallback_routes_pages_whose_text_layer_lost_its_word_spacing(tmp_path: Path) -> None:
+    """Words written together hide short names that grounding cannot split out.
+
+    The runs are too short for the unbroken-token check, which therefore does not
+    fire; the unspaced pages alone route the document.
+    """
+
+    primary = _StubOcr(
+        _document(
+            _UNSPACED_PROSE * 3, _UNSPACED_PROSE * 3, _SPACED_PROSE * 3, provider="builtin_text"
+        )
+    )
+    secondary = _StubOcr(_document("recognized prose", provider="mineru_internal"))
+
+    result = _provider(primary, secondary, minimum=80).parse(_file(tmp_path), OcrOptions())
+
+    routing = result.provider_metadata["fallback_ocr"]
+    assert routing["selected"] == "mineru_internal"
+    assert routing["reason"] == "primary_text_malformed"
+    assert routing["unspaced_page_ratio"] == pytest.approx(2 / 3)
+    assert routing["unbroken_text_ratio"] == 0.0
+
+
+def test_fallback_ignores_a_page_too_short_to_measure_its_spacing(tmp_path: Path) -> None:
+    """One unspaced caption on an otherwise empty page says nothing about the layer."""
+
+    primary = _StubOcr(
+        _document(
+            "Thecolourchangedfromgreentoyellow quickly.", _SPACED_PROSE * 3, provider="builtin_text"
+        )
+    )
+    secondary = _StubOcr(_document("secondary", provider="mineru_internal"))
+
+    result = _provider(primary, secondary, minimum=10).parse(_file(tmp_path), OcrOptions())
+
+    assert secondary.calls == 0
+    assert result.provider_metadata["fallback_ocr"]["unspaced_page_ratio"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        pytest.param(_SPACED_PROSE * 4, id="prose"),
+        pytest.param(
+            "The ester of cyclopropanecarboxylic acid was hydrolysed overnight. "
+            "A sample of dimethylaminopropylmethacrylamide was stored in the dark. "
+            "The salt 2-(4-isobutylphenyl)propanoic acid and "
+            "N,N-dimethyl-4-aminopyridine were weighed into separate vials, and "
+            "hexamethylphosphoramide was handled under the fume hood as before.\n" * 3,
+            id="chemical-names",
+        ),
+        pytest.param(
+            "Die Zulassungsbehörde prüft jeden Antrag sorgfältig, bevor sie entscheidet. "
+            "Für die Arzneimittelzulassung werden die Unterlagen zur Herstellung, zur "
+            "Qualitätskontrolle und zur Stabilität bewertet, und die "
+            "Donaudampfschifffahrtsgesellschaft bleibt das bekannteste lange Wort. "
+            "Laboratoriet bestiller udstyr til sikkerhedsgennemgangen hver uge, og "
+            "fremstillingslaboratorierne følger de samme procedurer for rengøring.\n" * 3,
+            id="compound-words",
+        ),
+        pytest.param(
+            (
+                _SPACED_PROSE + "Read the guide at https://docs.example.org/administrationconsole/"
+                "gettingstartedwiththeplatform/index.html before installing, and send "
+                "questions to support@example.org. The archive "
+                "https://files.example.net/releases/latestinstallerpackage.tar.gz holds "
+                "every installer, and the changelog lists the fixes in each release.\n"
+            )
+            * 3,
+            id="urls",
+        ),
+        pytest.param(
+            _SPACED_PROSE * 3
+            + "acgtacgttgcatgcaacgtgtacgatcgatgcatgcaacgt\n"
+            + "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGD\n",
+            id="sequences",
+        ),
+    ],
+)
+def test_fallback_keeps_spaced_text_with_long_words_on_the_primary(
+    tmp_path: Path, page: str
+) -> None:
+    """Long chemical names, compounds, URLs and sequences are not lost spacing."""
+
+    primary = _StubOcr(_document(page, page, provider="builtin_text"))
+    secondary = _StubOcr(_document("secondary", provider="mineru_internal"))
+
+    result = _provider(primary, secondary, minimum=80).parse(_file(tmp_path), OcrOptions())
+
+    assert secondary.calls == 0
+    routing = result.provider_metadata["fallback_ocr"]
+    assert routing["selected"] == "builtin_text"
+    assert routing["unspaced_page_ratio"] == 0.0
+
+
 def test_fallback_keeps_primary_when_secondary_cannot_parse_file_type(tmp_path: Path) -> None:
     """Let mixed corpora retain sparse native text instead of invoking incompatible OCR."""
 
@@ -315,6 +424,7 @@ def _provider(
         max_sparse_page_ratio=0.2,
         max_unbroken_text_ratio=0.5,
         max_fragmented_text_ratio=0.15,
+        max_unspaced_page_ratio=0.25,
         secondary_supported_suffixes=secondary_supported_suffixes,
     )
 
@@ -366,6 +476,7 @@ def test_fallback_routes_a_pdf_whose_text_layer_interleaves_two_columns(tmp_path
         max_sparse_page_ratio=0.2,
         max_unbroken_text_ratio=0.5,
         max_fragmented_text_ratio=0.15,
+        max_unspaced_page_ratio=0.25,
         max_interleaved_column_page_ratio=0.25,
     )
 

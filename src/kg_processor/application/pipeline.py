@@ -1623,6 +1623,7 @@ class KgProcessorPipeline:
                 "max_sparse_page_ratio": self.settings.ocr.fallback_max_sparse_page_ratio,
                 "max_unbroken_text_ratio": (self.settings.ocr.fallback_max_unbroken_text_ratio),
                 "max_fragmented_text_ratio": (self.settings.ocr.fallback_max_fragmented_text_ratio),
+                "max_unspaced_page_ratio": self.settings.ocr.fallback_max_unspaced_page_ratio,
                 "max_interleaved_column_page_ratio": (
                     self.settings.ocr.fallback_max_interleaved_column_page_ratio
                 ),

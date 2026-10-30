@@ -483,7 +483,16 @@ subfolder) is related to the documents one level up.
 
 A PDF whose text layer interleaves two columns line by line is read by the
 fallback OCR provider's secondary parser, which reads the page layout
-(`ocr.fallback_max_interleaved_column_page_ratio`). When the secondary parser
+(`ocr.fallback_max_interleaved_column_page_ratio`). So is one whose text layer
+has lost the spaces between words on many of its pages
+(`ocr.fallback_max_unspaced_page_ratio`): grounding never finds a short name
+inside a longer word, so such a page loses its entities and relations. A page
+with enough text to measure counts as unspaced when a fifth of its letters sit
+in letter runs of 30 or more. Runs end at digits, hyphens, brackets and other
+punctuation, so systematic chemical names, URLs, identifiers and encoded data
+seldom form runs that long; the compound words and long names that do are a
+small share of a page. All-capital runs and runs over a nucleotide-sized
+alphabet are not prose and are not counted. When the secondary parser
 refuses or fails on a file the primary did read, the primary's text is kept and
 the document's OCR provenance records `secondary_error`; only a file neither
 parser reads is a failed document.

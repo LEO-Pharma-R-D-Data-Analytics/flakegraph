@@ -334,6 +334,7 @@ def build_ocr_provider(settings: Settings) -> OcrProvider:
             max_sparse_page_ratio=settings.ocr.fallback_max_sparse_page_ratio,
             max_unbroken_text_ratio=settings.ocr.fallback_max_unbroken_text_ratio,
             max_fragmented_text_ratio=settings.ocr.fallback_max_fragmented_text_ratio,
+            max_unspaced_page_ratio=settings.ocr.fallback_max_unspaced_page_ratio,
             max_interleaved_column_page_ratio=(
                 settings.ocr.fallback_max_interleaved_column_page_ratio
             ),

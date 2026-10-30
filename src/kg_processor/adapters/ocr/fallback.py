@@ -11,6 +11,11 @@ from kg_processor.domain.documents import InputFile, ParsedDocument
 from kg_processor.ports.ocr import NoTextReadError, OcrOptions, OcrProvider
 
 _UNBROKEN_LATIN_TOKEN_LENGTH = 40
+_LATIN_LETTER_RUN_RE = re.compile(r"[A-Za-z]+")
+_UNSPACED_RUN_LENGTH = 30
+_UNSPACED_RUN_MIN_DISTINCT_LETTERS = 8
+_UNSPACED_PAGE_LETTER_SHARE = 0.2
+_SPACING_MEASURED_PAGE_LETTERS = 400
 _MIN_FRAGMENT_LENGTH = 2
 _LATEX_MATH_RE = re.compile(r"\$\$.*?\$\$|\$[^$\n]*\$", flags=re.DOTALL)
 _LEGITIMATE_SINGLE_LETTER_WORDS = frozenset({"a", "i"})
@@ -36,6 +41,7 @@ class FallbackOcrProvider:
         max_sparse_page_ratio: float,
         max_unbroken_text_ratio: float,
         max_fragmented_text_ratio: float,
+        max_unspaced_page_ratio: float,
         max_interleaved_column_page_ratio: float = 1.0,
         secondary_supported_suffixes: frozenset[str] | None = None,
     ) -> None:
@@ -49,6 +55,7 @@ class FallbackOcrProvider:
         self.max_sparse_page_ratio = max_sparse_page_ratio
         self.max_unbroken_text_ratio = max_unbroken_text_ratio
         self.max_fragmented_text_ratio = max_fragmented_text_ratio
+        self.max_unspaced_page_ratio = max_unspaced_page_ratio
         self.max_interleaved_column_page_ratio = max_interleaved_column_page_ratio
         self.secondary_supported_suffixes = secondary_supported_suffixes
 
@@ -104,6 +111,7 @@ class FallbackOcrProvider:
         sparse_page_ratio = sparse_page_count / page_count
         unbroken_text_ratio = _unbroken_latin_text_ratio(primary)
         fragmented_text_ratio = _fragmented_latin_text_ratio(primary)
+        unspaced_page_ratio = _unspaced_latin_page_ratio(primary)
         # A parser that knows where its text sat on the page reports how much of
         # the document interleaves two columns; one that does not reports nothing.
         interleaved_column_page_ratio = float(
@@ -115,6 +123,7 @@ class FallbackOcrProvider:
         text_coherent = (
             unbroken_text_ratio <= self.max_unbroken_text_ratio
             and fragmented_text_ratio <= self.max_fragmented_text_ratio
+            and unspaced_page_ratio <= self.max_unspaced_page_ratio
             and interleaved_column_page_ratio <= self.max_interleaved_column_page_ratio
         )
         if density_sufficient and text_coherent:
@@ -128,6 +137,7 @@ class FallbackOcrProvider:
                 sparse_page_ratio=sparse_page_ratio,
                 unbroken_text_ratio=unbroken_text_ratio,
                 fragmented_text_ratio=fragmented_text_ratio,
+                unspaced_page_ratio=unspaced_page_ratio,
                 interleaved_column_page_ratio=interleaved_column_page_ratio,
             )
         if not self._secondary_supports(file.path):
@@ -141,6 +151,7 @@ class FallbackOcrProvider:
                 sparse_page_ratio=sparse_page_ratio,
                 unbroken_text_ratio=unbroken_text_ratio,
                 fragmented_text_ratio=fragmented_text_ratio,
+                unspaced_page_ratio=unspaced_page_ratio,
                 interleaved_column_page_ratio=interleaved_column_page_ratio,
             )
         details = {
@@ -150,6 +161,7 @@ class FallbackOcrProvider:
             "sparse_page_ratio": sparse_page_ratio,
             "unbroken_text_ratio": unbroken_text_ratio,
             "fragmented_text_ratio": fragmented_text_ratio,
+            "unspaced_page_ratio": unspaced_page_ratio,
             "interleaved_column_page_ratio": interleaved_column_page_ratio,
         }
         try:
@@ -295,3 +307,44 @@ def _fragmented_latin_text_ratio(parsed: ParsedDocument) -> float:
         # label must not itself inflate the malformed-text score.
         fragmented_character_count += len(fragment)
     return fragmented_character_count / latin_character_count
+
+
+def _unspaced_latin_page_ratio(parsed: ParsedDocument) -> float:
+    """Measure the share of pages whose text layer lost most of its word spacing.
+
+    Some PDF text layers drop the spaces inside many lines while keeping others,
+    producing runs such as ``theresultsweremeasuredtwiceinthelab`` that are too
+    short for the unbroken-token check yet hide every short name inside a longer
+    word. A page counts as unspaced when a fifth of its ASCII letters sit in
+    letter runs of at least 30 letters. Runs end at digits, hyphens, brackets,
+    and other punctuation, so systematic chemical names, identifiers, URLs, and
+    encoded data rarely form runs that long; the rare compound word or chemical
+    name that does is a small share of a page. All-capital runs (codes, peptide
+    sequences) and runs over a nucleotide-sized alphabet are not prose and are
+    ignored. Pages with too few letters to measure are left out of the ratio.
+    """
+
+    measured_page_count = 0
+    unspaced_page_count = 0
+    for page in parsed.pages:
+        runs = _LATIN_LETTER_RUN_RE.findall(page.raw_text)
+        letter_count = sum(len(run) for run in runs)
+        if letter_count < _SPACING_MEASURED_PAGE_LETTERS:
+            continue
+        measured_page_count += 1
+        unspaced_letter_count = sum(len(run) for run in runs if _is_unspaced_prose_run(run))
+        if unspaced_letter_count >= _UNSPACED_PAGE_LETTER_SHARE * letter_count:
+            unspaced_page_count += 1
+    if measured_page_count == 0:
+        return 0.0
+    return unspaced_page_count / measured_page_count
+
+
+def _is_unspaced_prose_run(run: str) -> bool:
+    """Tell a run of several words written without spaces from a long token."""
+
+    return (
+        len(run) >= _UNSPACED_RUN_LENGTH
+        and run != run.upper()
+        and len(set(run.casefold())) >= _UNSPACED_RUN_MIN_DISTINCT_LETTERS
+    )
