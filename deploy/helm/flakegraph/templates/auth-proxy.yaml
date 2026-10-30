@@ -122,6 +122,10 @@ spec:
             # ever. The gate only needs to know who the viewer is, not to carry
             # their tokens to the upstream.
             - --session-cookie-minimal=true
+            {{- if $proxy.bearerTokens.enabled }}
+            # A verified access token for this client is a session of its own.
+            - --skip-jwt-bearer-tokens=true
+            {{- end }}
             {{- range $proxy.skipAuthRoutes }}
             - --skip-auth-route={{ . }}
             {{- end }}

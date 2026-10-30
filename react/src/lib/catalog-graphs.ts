@@ -34,3 +34,12 @@ export function catalogGraphs(runs: readonly RunSnapshot[]): CatalogGraph[] {
     runIds: list.map((run) => run.runId),
   }));
 }
+
+/**
+ * The graphs a question can be put to: each graph's newest successful
+ * version, in the order of their newest run. A graph with no finished
+ * version is left out.
+ */
+export function askableGraphs(runs: readonly RunSnapshot[]): RunSnapshot[] {
+  return catalogGraphs(runs.filter((run) => isSuccessStatus(run.status))).map((graph) => graph.run);
+}

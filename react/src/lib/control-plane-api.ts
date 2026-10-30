@@ -1,6 +1,7 @@
 export const CONTROL_PLANE_API = {
   endpoint: "/api/trpc",
   askPath: "/api/ask",
+  graphsPath: "/api/graphs",
   docsPath: "/api/docs",
   humanGuidePath: "/?page=keys",
   healthPath: "/api/health",

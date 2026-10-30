@@ -62,6 +62,16 @@ describe("authorizeRequest", () => {
     await expect(authorizeRequest(new Headers())).rejects.toBeInstanceOf(RequestRefused);
   });
 
+  it("serves a caller the gate admitted on a bearer token as the person it names", async () => {
+    await console_({ FLAKEGRAPH_TRUST_IDENTITY_HEADERS: "1" });
+    const delegated = await authorizeRequest(
+      new Headers({ authorization: "Bearer eyJhbGciOiJSUzI1NiJ9.e30.sig", "x-auth-request-email": "alice@example.test" }),
+    );
+    expect(delegated.viewer.userName).toBe("ALICE@EXAMPLE.TEST");
+    expect(delegated.mode).toBe("gate");
+    expect(delegated.machine).toBeNull();
+  });
+
   it("serves read-only queries to an anonymous caller only where the deployment opened them", async () => {
     await console_({ FLAKEGRAPH_APP_ANONYMOUS_READ: "1" });
     const open = await authorizeRequest(new Headers());

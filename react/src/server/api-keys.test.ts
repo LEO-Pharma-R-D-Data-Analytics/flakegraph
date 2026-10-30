@@ -16,6 +16,10 @@ describe("api keys", () => {
     expect(presentedApiSecret(new Headers())).toBeNull();
   });
 
+  it("leaves a bearer token that is not a key to the gate", () => {
+    expect(presentedApiSecret(new Headers({ authorization: "Bearer eyJhbGciOiJSUzI1NiJ9.e30.sig" }))).toBeNull();
+  });
+
   it("strips secret hashes from public key records", () => {
     const publicKeys = publicApiKeys([{ id: "key_1", name: "ci", preview: "fg_abc…1234", createdAt: "", note: "", secretHash: "deadbeef" }]);
     expect(publicKeys[0]).not.toHaveProperty("secretHash");

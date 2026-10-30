@@ -832,6 +832,23 @@ a person: the console refuses a key it does not hold, and with
 nor someone the gate signed in. Browser traffic carries no such header and
 meets the gate as before.
 
+An application acting for a person is neither: it cannot follow a browser
+sign-in, but it should be served as that person, with their access, not as a
+machine. `ingress.authProxy.bearerTokens.enabled` lets the gate admit a request
+that presents the person's access token for the gate's own client
+(`Authorization: Bearer <token>`, audience `oidc.clientId`). The gate verifies
+the token and names the person from the same claim as at sign-in (`email`, or
+the one `--oidc-email-claim` names), exactly as it does for a browser session, so the console lists and answers only what that person may
+read. On the console such a caller needs two paths: `GET /api/graphs`, the
+graphs it may ask, each with the `runId` of its newest finished version, and
+`POST /api/ask`, which streams the answer. With Microsoft Entra ID the gate's
+app registration exposes an API scope, issues version 2 access tokens
+(`accessTokenAcceptedVersion: 2`, so their audience is the client ID) and lists
+the calling application as authorized for that scope. Version 2 access tokens
+carry `preferred_username`; `email` is an optional claim the registration has
+to add if the gate reads that one; the caller then obtains the token on behalf of
+its signed-in user.
+
 ```bash
 # A machine path answers its own key check rather than a sign-in redirect.
 curl -so /dev/null -w '%{http_code}\n' "https://llm.$DOMAIN/v1/models"

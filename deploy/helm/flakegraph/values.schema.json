@@ -1278,6 +1278,15 @@
                 "type": "string"
               }
             },
+            "bearerTokens": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
             "machineKeys": {
               "type": "object",
               "additionalProperties": false,

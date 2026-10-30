@@ -75,6 +75,7 @@ a caller:
 | Source | When | What it gives |
 | --- | --- | --- |
 | Sign-in gate headers | `FLAKEGRAPH_TRUST_IDENTITY_HEADERS=true` | `X-Auth-Request-Email` (or `-User`) is the viewer; `X-Auth-Request-Groups` are their roles. Nothing else is read: not `X-Forwarded-*`, not a preferred username. |
+| Bearer token through the gate | `ingress.authProxy.bearerTokens.enabled` | An application acting for a person presents that person's access token; the gate verifies it and sets the same headers as for a browser session. Any bearer that is not an `fg_` key is left to the gate. |
 | API key | Always | `Authorization: Bearer fg_…` or `x-flakegraph-api-key`. The request acts as the principal who minted the key. |
 | Demo identities | `FLAKEGRAPH_DEMO_IDENTITIES=1` | The principal assumed in the sidebar, or nobody. For laptops and rehearsals only. |
 | Snowflake context | `FLAKEGRAPH_SNOWFLAKE_HOSTED=1` | `Sf-Context-Current-User` headers, inside a Snowflake container. |
