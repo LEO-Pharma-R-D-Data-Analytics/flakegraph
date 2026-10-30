@@ -282,6 +282,54 @@ def test_fallback_ignores_latex_variables_when_measuring_fragmentation(tmp_path:
     assert result.provider_metadata["fallback_ocr"]["selected"] == "builtin_text"
 
 
+@pytest.mark.parametrize(
+    "prose",
+    [
+        pytest.param(
+            "Die Größe der Körner wurde nach dem Mahlen geprüft, und die Lösung blieb über "
+            "Nacht bei Raumtemperatur stehen, bevor die Prüfer die Messwerte übertrugen. ",
+            id="german",
+        ),
+        pytest.param(
+            "Prøven blev opløst i vand og rystet på bordet, før målingen af størrelsen blev "
+            "gentaget på hver æske fra lageret ved Ålborg og Ærø. ",
+            id="danish",
+        ),
+        pytest.param(
+            "Le mélange a été chauffé à soixante degrés, puis versé à froid dans les flacons "
+            "préparés à l'avance et étiquetés à la main. ",
+            id="french",
+        ),
+    ],
+)
+def test_fallback_keeps_prose_with_accented_letters(tmp_path: Path, prose: str) -> None:
+    """Read accented letters as part of their words, not as one-letter fragments."""
+
+    primary = _StubOcr(_document(prose * 12, provider="builtin_text"))
+    secondary = _StubOcr(_document("secondary", provider="mineru_internal"))
+
+    result = _provider(primary, secondary, minimum=80).parse(_file(tmp_path), OcrOptions())
+
+    routing = result.provider_metadata["fallback_ocr"]
+    assert secondary.calls == 0
+    assert routing["selected"] == "builtin_text"
+    assert routing["fragmented_text_ratio"] < 0.02
+
+
+def test_fallback_routes_fragmented_prose_with_accented_letters(tmp_path: Path) -> None:
+    """Measure fragments inside accented words like any other fragments."""
+
+    malformed = "Die Grö ß e der Kö r ner wur de geprü f t und ü bertra gen. " * 20
+    primary = _StubOcr(_document(malformed, provider="builtin_text"))
+    secondary = _StubOcr(_document("recognized prose", provider="mineru_internal"))
+
+    result = _provider(primary, secondary, minimum=80).parse(_file(tmp_path), OcrOptions())
+
+    routing = result.provider_metadata["fallback_ocr"]
+    assert routing["selected"] == "mineru_internal"
+    assert routing["fragmented_text_ratio"] > 0.15
+
+
 _SPACED_PROSE = (
     "The filter cake was washed twice with cold water before drying under reduced "
     "pressure. Each batch was sampled at three points so that the operators could "

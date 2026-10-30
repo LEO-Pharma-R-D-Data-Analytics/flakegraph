@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 
 from kg_processor.application.window_errors import is_systemic_provider_error
@@ -18,7 +19,12 @@ _UNSPACED_PAGE_LETTER_SHARE = 0.2
 _SPACING_MEASURED_PAGE_LETTERS = 400
 _MIN_FRAGMENT_LENGTH = 2
 _LATEX_MATH_RE = re.compile(r"\$\$.*?\$\$|\$[^$\n]*\$", flags=re.DOTALL)
-_LEGITIMATE_SINGLE_LETTER_WORDS = frozenset({"a", "i"})
+# A word is a run of letters, joined across an apostrophe ("l'eau", "don't").
+_WORD_RE = re.compile(r"[^\W\d_]+(?:['\u2019][^\W\d_]+)*")
+_APOSTROPHES = str.maketrans("", "", "'\u2019")
+# One-letter words of Latin-script languages: English "a" and "I", French "à",
+# Danish and Norwegian "å" and "ø", Portuguese "é".
+_LEGITIMATE_SINGLE_LETTER_WORDS = frozenset({"a", "i", "à", "å", "ø", "é"})
 
 
 class FallbackOcrProvider:
@@ -281,18 +287,26 @@ def _fragmented_latin_text_ratio(parsed: ParsedDocument) -> float:
     Some legacy PDF encodings preserve abundant characters while inserting spaces
     inside nearly every word, producing text such as ``multiplicativ e``. Character
     density and long-token checks both accept that output even though exact entity
-    and relation surfaces become unrecoverable. Inline and display LaTeX are removed
-    before measuring because isolated mathematical variables are legitimate. The
-    conservative default threshold tolerates occasional prose variables and OCR
-    slips while routing systematically fragmented text to the secondary provider.
+    and relation surfaces become unrecoverable. Words are Latin-script letter runs,
+    accented letters included, so German, Danish, or French prose reads as whole
+    words. Inline and display LaTeX are removed before measuring because isolated
+    mathematical variables are legitimate. The conservative default threshold
+    tolerates occasional prose variables and OCR slips while routing systematically
+    fragmented text to the secondary provider.
     """
 
     text = "\n".join(page.raw_text for page in parsed.pages)
     prose = _LATEX_MATH_RE.sub(" ", text)
-    latin_character_count = sum(character.isascii() and character.isalpha() for character in prose)
+    # An accented letter or an apostrophe stays inside its word: "Größe" and
+    # "l'eau" are one word each, not a fragment beside a lone letter.
+    words = [
+        letters
+        for letters in (word.translate(_APOSTROPHES) for word in _WORD_RE.findall(prose))
+        if all(map(_is_latin_letter, letters))
+    ]
+    latin_character_count = sum(len(word) for word in words)
     if latin_character_count == 0:
         return 0.0
-    words = re.findall(r"[A-Za-z]+", prose)
     fragmented_character_count = 0
     for left, right in zip(words, words[1:], strict=False):
         single, fragment = (left, right) if len(left) == 1 else (right, left)
@@ -348,3 +362,9 @@ def _is_unspaced_prose_run(run: str) -> bool:
         and run != run.upper()
         and len(set(run.casefold())) >= _UNSPACED_RUN_MIN_DISTINCT_LETTERS
     )
+
+
+def _is_latin_letter(character: str) -> bool:
+    """Whether a letter belongs to the Latin script, with or without accents."""
+
+    return character.isascii() or unicodedata.name(character, "").startswith("LATIN ")
