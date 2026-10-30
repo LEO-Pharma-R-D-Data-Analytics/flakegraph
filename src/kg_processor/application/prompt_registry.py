@@ -18,7 +18,7 @@ from typing import Any
 
 from kg_processor.ports.llm import CommunitySummaryRequest, DescriptionMergeRequest
 
-TWO_PASS_PROMPT_REVISION = "two-pass-extraction-v41"
+TWO_PASS_PROMPT_REVISION = "two-pass-extraction-v42"
 EXTRACTION_SYSTEM_PROMPTS = (
     "document_context_extraction",
     "entity_extraction",

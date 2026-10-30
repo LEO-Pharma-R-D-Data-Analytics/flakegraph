@@ -795,10 +795,10 @@ def test_a_stored_stated_relation_with_the_structural_label_is_kept_apart(
 
 
 def test_a_profile_without_a_folder_entity_keeps_its_checksum_and_prompts() -> None:
-    """Runs that do not tie documents to folders fingerprint and prompt as before.
+    """Runs that do not tie documents to folders fingerprint and prompt without them.
 
-    The values are those the profile and its relation prompts had before the
-    folder entity and structural relations existed.
+    The values pin the profile and its relation prompts with no folder entity:
+    folder wording or structural relations that leaked into them would move these.
     """
 
     ontology = load_ontology(Path("data/martial_arts/ontology.yaml"), [], None)
@@ -867,10 +867,10 @@ def test_a_profile_without_a_folder_entity_keeps_its_checksum_and_prompts() -> N
 
     assert "structural" not in extraction.user
     assert fingerprint(extraction) == (
-        "966726983ca07653a30c055941f8c2c31e661d505ec702bc30398c488d4c72d7"
+        "d316bf62bc12ace9e30e3428bab4f9d869a8738f6ca2be78515a57d2fe8cb1a0"
     )
     assert fingerprint(verification) == (
-        "aceaabebb9b0e35ac48ac8876b3fee3e614488b10721d03d1105aaa58d88aa5f"
+        "de7be9a858d8274092cc0a2e8b919f263e0df60a5239c14c9f3456130591a9f9"
     )
 
 

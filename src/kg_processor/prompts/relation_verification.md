@@ -36,6 +36,9 @@ Judge the exact relation type from relation_type_definitions: its description,
 its guidance, and its counter_examples, which name wording that does not state
 it. Wording that states a different relation between the same ends does not
 support this one. Use the reason none only for a supported relation.
+A relation whose assertion is claimed is one the text only claims, proposes, or
+allows - a stated use, a claim, a hypothesis. Support it when the quote makes
+that claim for these ends; a claim is never insufficient for being unproven.
 Also verify that source_surface and target_surface denote their assigned
 entities. A discourse placeholder such as 'we', 'this document', 'the method', or
 'the product' denotes an entity only when it is the grammatical actor of the

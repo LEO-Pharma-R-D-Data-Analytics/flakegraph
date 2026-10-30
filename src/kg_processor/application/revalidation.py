@@ -284,6 +284,7 @@ def stored_records(
                     }
                     for item in relation.quantities
                 ],
+                assertion=relation.assertion,
                 accepted=True,
                 source_id=relation.source_entity_id,
                 target_id=relation.target_entity_id,
@@ -332,6 +333,7 @@ def _add_rejected(
                 description=description,
                 confidence=float(confidence),
                 quantities=[dict(item) for item in quantities or [] if isinstance(item, Mapping)],
+                assertion="claimed" if detail.get("assertion") == "claimed" else "reported",
             )
         )
         return
@@ -1015,6 +1017,7 @@ def relation_payload(
             "quote": relation.quote,
             "confidence": relation.confidence,
             "quantities": relation.quantities,
+            "assertion": relation.assertion,
         }
         for relation in relations
     ]

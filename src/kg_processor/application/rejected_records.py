@@ -126,6 +126,7 @@ def observation_record(
             evidence_method=relation.evidence_method,
             # The type the model stated, when an ontology rule kept it under another.
             proposed_relation_type=relation.proposed_relation_type or "",
+            assertion=relation.assertion,
         ),
     }
 
