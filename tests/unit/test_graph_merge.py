@@ -8,14 +8,16 @@ from kg_processor.application.graph_filter import (
     filter_relations_with_decisions,
 )
 from kg_processor.application.graph_merge import (
+    GraphAssemblyResult,
     _best_description,
     assemble_graph,
     assemble_graph_with_decisions,
+    claimed_only,
     normalize_entity_name,
     normalize_relation_type,
     prune_isolated_entities,
 )
-from kg_processor.domain.graph import ExtractedEntity, ExtractedRelation
+from kg_processor.domain.graph import ExtractedEntity, ExtractedRelation, RelationAssertion
 
 
 def test_normalization_helpers() -> None:
@@ -734,6 +736,80 @@ def test_assemble_graph_aggregates_cross_file_assertions_into_one_edge() -> None
     assert result.edges[0].evidence_count == 2
     assert result.edges[0].weight == 2.0
     assert len(result.edge_observations) == 2
+
+
+def _claim_graph(
+    assertions: list[tuple[str, RelationAssertion]],
+) -> GraphAssemblyResult:
+    """Assemble one Widget-treats-Rust relation stated once per (chunk text, assertion)."""
+
+    passages = {
+        text: chunk(text, chunk_id=f"chunk_{index}", content_hash=f"hash-{index}")
+        for index, text in enumerate(dict.fromkeys(text for text, _ in assertions))
+    }
+    entities = [
+        ExtractedEntity(
+            name=name,
+            type=entity_type,
+            description=name,
+            source_chunk_id=passage.id,
+            **grounded(passage.content, name),
+        )
+        for passage in passages.values()
+        for name, entity_type in (("Widget", "PRODUCT"), ("Rust", "CONDITION"))
+    ]
+    relations = [
+        ExtractedRelation(
+            source_name="Widget",
+            target_name="Rust",
+            source_type="PRODUCT",
+            target_type="CONDITION",
+            relation_type="TREATS",
+            description=text,
+            source_chunk_id=passages[text].id,
+            assertion=assertion,
+            **grounded(text, "Widget"),
+        )
+        for text, assertion in assertions
+    ]
+    return assemble_graph_with_decisions(
+        "graph", list(passages.values()), entities, relations, relation_weight_max=10
+    )
+
+
+def test_an_edge_is_claimed_only_when_every_observation_claims_it() -> None:
+    """A claim stays visible as a claim until one source reports the relation."""
+
+    claim = "Widget may be used for removing Rust."
+    finding = "Widget removed Rust in every trial."
+
+    claimed = _claim_graph([(claim, "claimed"), ("Widget is useful against Rust.", "claimed")])
+    reported = _claim_graph([(claim, "claimed"), (finding, "reported")])
+
+    assert [edge.assertion for edge in claimed.edges] == ["claimed"]
+    assert {item.assertion for item in claimed.edge_observations} == {"claimed"}
+    assert [edge.assertion for edge in reported.edges] == ["reported"]
+    assert sorted(item.assertion for item in reported.edge_observations) == [
+        "claimed",
+        "reported",
+    ]
+
+
+def test_a_reported_repetition_in_one_chunk_makes_its_observation_reported() -> None:
+    """Two assertions of one edge in one chunk keep one observation, reported if either is."""
+
+    text = "Widget may be used for removing Rust, and removed Rust in trials."
+
+    result = _claim_graph([(text, "claimed"), (text, "reported")])
+
+    assert [edge.assertion for edge in result.edges] == ["reported"]
+    assert [item.assertion for item in result.edge_observations] == ["reported"]
+
+
+def test_claimed_only_needs_every_assertion_to_claim() -> None:
+    assert claimed_only(["claimed", "claimed"]) == "claimed"
+    assert claimed_only(["claimed", "reported"]) == "reported"
+    assert claimed_only([]) == "reported"
 
 
 def test_the_filter_trusts_an_observation_extraction_grounded_to_a_span() -> None:

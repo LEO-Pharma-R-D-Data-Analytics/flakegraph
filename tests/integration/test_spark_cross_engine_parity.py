@@ -24,13 +24,18 @@ from kg_processor.adapters.distributed.local_blob import LocalBlobStore
 from kg_processor.application.community_reports import structural_rating
 from kg_processor.application.entity_resolution import _has_numeric_mismatch
 from kg_processor.application.graph_dataset import GraphDatasetReader
-from kg_processor.application.graph_merge import normalize_entity_name, normalize_relation_type
+from kg_processor.application.graph_merge import (
+    claimed_only,
+    normalize_entity_name,
+    normalize_relation_type,
+)
 from kg_processor.application.spark_finalization import (
     _EMPTY_SCHEMAS,
     _EXTRACTED_STAGE_SCHEMA,
     _GRAPHFRAMES_COORDINATE,
     SparkFinalizationRequest,
     SparkGraphFinalizer,
+    _claimed_only,
     _normalized_name,
     _normalized_relation_type,
     _numeric_mismatch,
@@ -43,7 +48,7 @@ from kg_processor.domain.extraction import (
     ExtractionObservations,
     RelationObservation,
 )
-from kg_processor.domain.graph import Chunk, Quantity
+from kg_processor.domain.graph import Chunk, Quantity, RelationAssertion
 from kg_processor.domain.ids import sha256_hex, stable_id
 from kg_processor.domain.stages import ExtractedDocumentShard, PreparedDocumentShard
 
@@ -251,6 +256,43 @@ def test_spark_community_rating_matches_the_local_rule(spark_session: Any) -> No
         assert 0.0 <= row.structural_rating.rating <= 10.0
 
 
+def test_spark_assertion_aggregate_matches_the_local_rule(spark_session: Any) -> None:
+    """An edge or observation is claimed in both engines only when all its assertions are."""
+
+    from pyspark.sql import Window
+    from pyspark.sql import functions as F
+
+    groups: dict[str, list[RelationAssertion]] = {
+        "all-claimed": ["claimed", "claimed"],
+        "one-reported": ["claimed", "reported", "claimed"],
+        "all-reported": ["reported"],
+        "single-claimed": ["claimed"],
+    }
+    frame = spark_session.createDataFrame(
+        [(group, value) for group, values in groups.items() for value in values],
+        "group_id string, assertion string",
+    )
+    aggregated = {
+        row.group_id: row.assertion
+        for row in frame.groupBy("group_id")
+        .agg(_claimed_only(F.col("assertion")).alias("assertion"))
+        .collect()
+    }
+    windowed = {
+        row.group_id: row.assertion
+        for row in frame.select(
+            "group_id",
+            _claimed_only(F.col("assertion"), Window.partitionBy("group_id")).alias("assertion"),
+        ).collect()
+    }
+
+    expected = {group: claimed_only(values) for group, values in groups.items()}
+    assert aggregated == expected
+    assert windowed == expected
+    assert expected["one-reported"] == "reported"
+    assert expected["all-claimed"] == "claimed"
+
+
 def test_spark_edges_sum_observation_weight_and_reject_self_loops(
     spark_session: Any,
     tmp_path: Path,
@@ -327,7 +369,10 @@ def test_spark_edges_sum_observation_weight_and_reject_self_loops(
                     first_text,
                     confidence,
                 ).model_copy(
-                    update={"quantities": [Quantity(text="0.5 %", kind="limit", low=0.5, high=0.5)]}
+                    update={
+                        "quantities": [Quantity(text="0.5 %", kind="limit", low=0.5, high=0.5)],
+                        "assertion": "claimed",
+                    }
                 ),
                 _relation(
                     "relation-2",
@@ -414,6 +459,12 @@ def test_spark_edges_sum_observation_weight_and_reject_self_loops(
         [quantity.text for quantity in observation.quantities]
         for observation in sorted(batch.edge_observations, key=lambda item: item.chunk_id)
     ] == [["0.5 %"], []]
+    # One reported observation makes the edge reported; each observation keeps its own.
+    assert edge.assertion == "reported"
+    assert [
+        observation.assertion
+        for observation in sorted(batch.edge_observations, key=lambda item: item.chunk_id)
+    ] == ["claimed", "reported"]
     [document] = batch.documents
     assert (document["kind"], document["summary"]) == ("dataset", "A list of interacting things.")
 

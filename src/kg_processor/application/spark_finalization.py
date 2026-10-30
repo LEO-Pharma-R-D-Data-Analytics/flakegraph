@@ -81,7 +81,7 @@ from kg_processor.domain.finalization import (
 )
 
 if TYPE_CHECKING:
-    from pyspark.sql import Column, DataFrame, SparkSession
+    from pyspark.sql import Column, DataFrame, SparkSession, WindowSpec
 
     from kg_processor.domain.ontology import OntologyProfile
 
@@ -237,7 +237,8 @@ _EMPTY_SCHEMAS = {
         "start_offset int, end_offset int, source_surface string, target_surface string, "
         "evidence_method string, verification_required boolean, "
         "quantities array<struct<text:string, kind:string, comparator:string, unit:string, "
-        "low:double, high:double>>, proposed_relation_type string, rejected_record_key string"
+        "low:double, high:double>>, proposed_relation_type string, rejected_record_key string, "
+        "assertion string"
     ),
     "nodes": (
         "id string, graph_id string, normalized_name string, name string, "
@@ -248,13 +249,14 @@ _EMPTY_SCHEMAS = {
         "id string, graph_id string, source_node_id string, target_node_id string, "
         "relation_type string, description string, weight double, confidence double, "
         "source_file_id string, source_file_ids array<string>, "
-        "source_chunk_ids array<string>, evidence_count long, embedding array<double>"
+        "source_chunk_ids array<string>, evidence_count long, assertion string, "
+        "embedding array<double>"
     ),
     "edge_observations": (
         "id string, graph_id string, edge_id string, file_id string, chunk_id string, "
         "description string, weight double, confidence double, evidence_id string, "
         "quantities array<struct<text:string, kind:string, comparator:string, unit:string, "
-        "low:double, high:double>>, proposed_relation_type string"
+        "low:double, high:double>>, proposed_relation_type string, assertion string"
     ),
     "evidence": (
         "id string, graph_id string, subject_id string, subject_kind string, file_id string, "
@@ -1397,6 +1399,7 @@ class SparkGraphFinalizer:
                 # endpoint/chunk joins are one-to-one. A second exact-distinct
                 # set here only adds hot-key state for frequently repeated facts.
                 F.count("id").alias("evidence_count"),
+                _claimed_only(F.col("assertion")).alias("assertion"),
             )
             .join(edge_source_files, "edge_id")
             .join(edge_source_chunks, "edge_id")
@@ -1416,6 +1419,7 @@ class SparkGraphFinalizer:
                 "source_file_ids",
                 "source_chunk_ids",
                 "evidence_count",
+                "assertion",
                 "embedding",
             )
             .checkpoint(eager=True)
@@ -1515,6 +1519,9 @@ class SparkGraphFinalizer:
                     F.array().cast(_EDGE_OBSERVATION_QUANTITIES_TYPE),
                 ).alias("quantities"),
                 F.col("proposed_relation_type").cast("string").alias("proposed_relation_type"),
+                _claimed_only(F.col("assertion"), Window.partitionBy("edge_id", "chunk_id")).alias(
+                    "assertion"
+                ),
             )
             .dropDuplicates(["id"])
         )
@@ -2463,6 +2470,7 @@ class SparkGraphFinalizer:
                 F.array().cast(_EDGE_OBSERVATION_QUANTITIES_TYPE).alias("quantities"),
                 F.lit(None).cast("string").alias("proposed_relation_type"),
                 F.lit(None).cast("string").alias("rejected_record_key"),
+                F.lit("reported").alias("assertion"),
                 "source_node_id",
                 "target_node_id",
             )
@@ -3772,6 +3780,20 @@ def _normalized_relation_type(value: Column) -> Column:
     from pyspark.sql import functions as F
 
     return F.udf(_normalized_relation_type_value, "string", useArrow=True)(value)
+
+
+def _claimed_only(assertion: Column, window: WindowSpec | None = None) -> Column:
+    """Aggregate assertions as ``graph_merge.claimed_only``: claimed only when every one is.
+
+    Without ``window`` it is a group aggregate; with one, the same over each row's window.
+    """
+
+    from pyspark.sql import functions as F
+
+    all_claimed = F.min(assertion == F.lit("claimed"))
+    if window is not None:
+        all_claimed = all_claimed.over(window)
+    return F.when(all_claimed, F.lit("claimed")).otherwise(F.lit("reported"))
 
 
 def _observation_weight(confidence: Column) -> Column:
