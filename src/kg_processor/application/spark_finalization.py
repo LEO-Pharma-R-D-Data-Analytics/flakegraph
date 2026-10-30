@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 from kg_processor.application.community_reports import (
+    CLAIMED_RELATION_MARK,
     DEFAULT_MAX_RELATIONS_PER_COMMUNITY,
     MAX_EVIDENCE_QUOTES_PER_COMMUNITY,
     MAX_EVIDENCE_QUOTES_PER_RELATION,
@@ -81,7 +82,7 @@ from kg_processor.domain.finalization import (
 )
 
 if TYPE_CHECKING:
-    from pyspark.sql import Column, DataFrame, SparkSession
+    from pyspark.sql import Column, DataFrame, SparkSession, WindowSpec
 
     from kg_processor.domain.ontology import OntologyProfile
 
@@ -237,7 +238,8 @@ _EMPTY_SCHEMAS = {
         "start_offset int, end_offset int, source_surface string, target_surface string, "
         "evidence_method string, verification_required boolean, "
         "quantities array<struct<text:string, kind:string, comparator:string, unit:string, "
-        "low:double, high:double>>, proposed_relation_type string, rejected_record_key string"
+        "low:double, high:double>>, proposed_relation_type string, rejected_record_key string, "
+        "assertion string"
     ),
     "nodes": (
         "id string, graph_id string, normalized_name string, name string, "
@@ -248,13 +250,14 @@ _EMPTY_SCHEMAS = {
         "id string, graph_id string, source_node_id string, target_node_id string, "
         "relation_type string, description string, weight double, confidence double, "
         "source_file_id string, source_file_ids array<string>, "
-        "source_chunk_ids array<string>, evidence_count long, embedding array<double>"
+        "source_chunk_ids array<string>, evidence_count long, assertion string, "
+        "embedding array<double>"
     ),
     "edge_observations": (
         "id string, graph_id string, edge_id string, file_id string, chunk_id string, "
         "description string, weight double, confidence double, evidence_id string, "
         "quantities array<struct<text:string, kind:string, comparator:string, unit:string, "
-        "low:double, high:double>>, proposed_relation_type string"
+        "low:double, high:double>>, proposed_relation_type string, assertion string"
     ),
     "evidence": (
         "id string, graph_id string, subject_id string, subject_kind string, file_id string, "
@@ -1397,6 +1400,7 @@ class SparkGraphFinalizer:
                 # endpoint/chunk joins are one-to-one. A second exact-distinct
                 # set here only adds hot-key state for frequently repeated facts.
                 F.count("id").alias("evidence_count"),
+                _claimed_only(F.col("assertion")).alias("assertion"),
             )
             .join(edge_source_files, "edge_id")
             .join(edge_source_chunks, "edge_id")
@@ -1416,6 +1420,7 @@ class SparkGraphFinalizer:
                 "source_file_ids",
                 "source_chunk_ids",
                 "evidence_count",
+                "assertion",
                 "embedding",
             )
             .checkpoint(eager=True)
@@ -1515,6 +1520,9 @@ class SparkGraphFinalizer:
                     F.array().cast(_EDGE_OBSERVATION_QUANTITIES_TYPE),
                 ).alias("quantities"),
                 F.col("proposed_relation_type").cast("string").alias("proposed_relation_type"),
+                _claimed_only(F.col("assertion"), Window.partitionBy("edge_id", "chunk_id")).alias(
+                    "assertion"
+                ),
             )
             .dropDuplicates(["id"])
         )
@@ -2463,6 +2471,7 @@ class SparkGraphFinalizer:
                 F.array().cast(_EDGE_OBSERVATION_QUANTITIES_TYPE).alias("quantities"),
                 F.lit(None).cast("string").alias("proposed_relation_type"),
                 F.lit(None).cast("string").alias("rejected_record_key"),
+                F.lit("reported").alias("assertion"),
                 "source_node_id",
                 "target_node_id",
             )
@@ -3299,6 +3308,9 @@ class SparkGraphFinalizer:
         report_edges = (
             internal.withColumn("relation_rank", F.row_number().over(relation_window))
             .where(F.col("relation_rank") <= F.lit(DEFAULT_MAX_RELATIONS_PER_COMMUNITY))
+            .withColumn(
+                "relation_label", _relation_label(F.col("relation_type"), F.col("assertion"))
+            )
             .persist(StorageLevel.MEMORY_AND_DISK)
         )
         relation_context = report_edges.groupBy("community_id").agg(
@@ -3306,7 +3318,7 @@ class SparkGraphFinalizer:
                 F.concat(
                     F.col("source_name"),
                     F.lit(" --"),
-                    F.col("relation_type"),
+                    F.col("relation_label"),
                     F.lit("--> "),
                     F.col("target_name"),
                     F.lit(" weight="),
@@ -3320,7 +3332,7 @@ class SparkGraphFinalizer:
             "file_id", "page_number", "start_offset"
         )
         evidence_context = (
-            report_edges.select("community_id", F.col("id").alias("edge_id"), "relation_type")
+            report_edges.select("community_id", F.col("id").alias("edge_id"), "relation_label")
             .join(evidence, F.col("edge_id") == evidence.subject_id, "inner")
             .withColumn("evidence_rank", F.row_number().over(evidence_window))
             .where(F.col("evidence_rank") <= F.lit(MAX_EVIDENCE_QUOTES_PER_RELATION))
@@ -3329,7 +3341,7 @@ class SparkGraphFinalizer:
                 F.slice(
                     F.collect_list(
                         F.concat(
-                            F.col("relation_type"),
+                            F.col("relation_label"),
                             F.lit(": "),
                             F.substring(F.col("quote"), 1, 700),
                         )
@@ -3772,6 +3784,31 @@ def _normalized_relation_type(value: Column) -> Column:
     from pyspark.sql import functions as F
 
     return F.udf(_normalized_relation_type_value, "string", useArrow=True)(value)
+
+
+def _claimed_only(assertion: Column, window: WindowSpec | None = None) -> Column:
+    """Aggregate assertions as ``graph_merge.claimed_only``: claimed only when every one is.
+
+    Without ``window`` it is a group aggregate; with one, the same over each row's window.
+    """
+
+    from pyspark.sql import functions as F
+
+    all_claimed = F.min(assertion == F.lit("claimed"))
+    if window is not None:
+        all_claimed = all_claimed.over(window)
+    return F.when(all_claimed, F.lit("claimed")).otherwise(F.lit("reported"))
+
+
+def _relation_label(relation_type: Column, assertion: Column) -> Column:
+    """The relation type a report context names, as ``community_reports.relation_label``."""
+
+    from pyspark.sql import functions as F
+
+    return F.concat(
+        relation_type,
+        F.when(assertion == F.lit("claimed"), F.lit(CLAIMED_RELATION_MARK)).otherwise(F.lit("")),
+    )
 
 
 def _observation_weight(confidence: Column) -> Column:

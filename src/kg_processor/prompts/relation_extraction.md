@@ -149,4 +149,9 @@ such a relation, list every stated value, limit, range, or result in quantities,
 each with its text exactly as written, its unit, a comparator when one is stated,
 and its kind, such as limit, result, or target. A table row's specification and
 result columns are two quantities of one relation. A value is never an endpoint.
+Give every relation its assertion. reported: the text states it as a fact, a
+finding, a result, or an observation. claimed: the text only claims, proposes,
+or allows it - a stated use or purpose ('useful for', 'may be used to', 'intended
+for'), a claim, a proposal, or a hypothesis ('could inhibit'). A claimed relation
+is still stated by the text: emit it marked claimed rather than omitting it.
 When previous relations are supplied, return only additional missed relations.

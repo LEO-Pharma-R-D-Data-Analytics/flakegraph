@@ -31,6 +31,9 @@ DEFAULT_MAX_RELATIONS_PER_COMMUNITY = 25
 # every engine must apply the same budgets.
 MAX_EVIDENCE_QUOTES_PER_RELATION = 2
 MAX_EVIDENCE_QUOTES_PER_COMMUNITY = 50
+# Follows the relation type of an edge every source only claims, in its
+# relation line and evidence lines, so the report can say it is a claim.
+CLAIMED_RELATION_MARK = " (claimed)"
 CommunityProgressCallback = Callable[[int, int], None]
 
 
@@ -366,13 +369,19 @@ def _internal_edges(
     )
 
 
+def relation_label(edge: GraphEdge) -> str:
+    """The relation type a report context names, marked when its sources only claim it."""
+
+    return edge.relation_type + (CLAIMED_RELATION_MARK if edge.assertion == "claimed" else "")
+
+
 def _relation_line(edge: GraphEdge, node_by_id: dict[str, GraphNode]) -> str:
     source = node_by_id.get(edge.source_node_id)
     target = node_by_id.get(edge.target_node_id)
     source_name = source.name if source else edge.source_node_id
     target_name = target.name if target else edge.target_node_id
     return (
-        f"{source_name} --{edge.relation_type}--> {target_name}"
+        f"{source_name} --{relation_label(edge)}--> {target_name}"
         f" weight={edge.weight}: {edge.description[:500]}"
     )
 
@@ -389,7 +398,7 @@ def _evidence_lines(
             evidence_by_subject.get(edge.id, []),
             key=lambda item: (item.file_id, item.page_number, item.start_offset),
         )[:MAX_EVIDENCE_QUOTES_PER_RELATION]:
-            lines.append(f"{edge.relation_type}: {evidence.quote[:700]}")
+            lines.append(f"{relation_label(edge)}: {evidence.quote[:700]}")
     return lines[:MAX_EVIDENCE_QUOTES_PER_COMMUNITY]
 
 

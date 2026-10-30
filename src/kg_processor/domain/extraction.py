@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from kg_processor.domain.graph import Chunk, Quantity
+from kg_processor.domain.graph import Chunk, Quantity, RelationAssertion
 
 
 class ColumnRelation(BaseModel):
@@ -127,6 +127,9 @@ class RelationObservation(BaseModel):
     quantities: list[Quantity] = Field(default_factory=list)
     # The type the model stated when the ontology's fallback relation replaced it.
     proposed_relation_type: str | None = None
+    # Whether the text reports the relation as a fact or finding, or only
+    # claims, proposes, or allows it ("useful for", "may be used").
+    assertion: RelationAssertion = "reported"
     start_offset: int | None = Field(default=None, ge=0)
     end_offset: int | None = Field(default=None, ge=0)
     # A held relation's rejected record, by ``rejected_records.rejected_record_key``;

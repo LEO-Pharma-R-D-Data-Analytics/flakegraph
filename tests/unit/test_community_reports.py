@@ -6,7 +6,7 @@ import time
 from llm_fakes import RecordingCommunityLlm
 
 from kg_processor.application.community_reports import CommunitySeed, generate_community_reports
-from kg_processor.domain.graph import GraphEdge, GraphNode
+from kg_processor.domain.graph import Evidence, GraphEdge, GraphNode
 from kg_processor.ports.llm import (
     CommunitySummaryRequest,
     CommunitySummaryResult,
@@ -86,6 +86,56 @@ def test_generate_community_reports_uses_grounded_member_and_relation_context() 
                 "prompt_name": "community_report",
             },
         }
+    ]
+
+
+def test_a_claimed_relation_is_marked_in_the_report_context_and_a_reported_one_is_not() -> None:
+    """The report can tell a relation its sources only claim from one they report."""
+
+    nodes = [
+        _node("node_glaze", "Glaze-7", "PRODUCT", degree=2),
+        _node("node_hull", "Hull steel", "MATERIAL", degree=1),
+        _node("node_deck", "Deck plates", "MATERIAL", degree=1),
+    ]
+    reported = _edge(
+        "edge_reported", "node_glaze", "node_hull", "protects", "Glaze-7 protected hull steel.", 9.0
+    )
+    claimed = _edge(
+        "edge_claimed", "node_glaze", "node_deck", "protects", "Glaze-7 may protect decks.", 8.0
+    ).model_copy(update={"assertion": "claimed"})
+    evidence = [
+        Evidence(
+            id=f"evidence_{edge.id}",
+            graph_id="graph",
+            subject_id=edge.id,
+            subject_kind="edge",
+            file_id="file_1",
+            chunk_id="chunk_1",
+            page_number=1,
+            start_offset=0,
+            end_offset=len(edge.description),
+            quote=edge.description,
+        )
+        for edge in (reported, claimed)
+    ]
+    provider = RecordingCommunityLlm()
+
+    generate_community_reports(
+        "graph",
+        [CommunitySeed(member_ids={"node_glaze", "node_hull", "node_deck"})],
+        nodes,
+        [reported, claimed],
+        provider,
+        evidence=evidence,
+    )
+
+    assert provider.requests[0].relations == [
+        "Glaze-7 --protects--> Hull steel weight=9.0: Glaze-7 protected hull steel.",
+        "Glaze-7 --protects (claimed)--> Deck plates weight=8.0: Glaze-7 may protect decks.",
+    ]
+    assert provider.requests[0].evidence_quotes == [
+        "protects: Glaze-7 protected hull steel.",
+        "protects (claimed): Glaze-7 may protect decks.",
     ]
 
 

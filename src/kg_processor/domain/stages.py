@@ -19,7 +19,7 @@ from kg_processor.domain.extraction import (
     ExtractionWindow,
     RelationObservation,
 )
-from kg_processor.domain.graph import Chunk
+from kg_processor.domain.graph import Chunk, RelationAssertion
 
 
 class PreparedDocumentShard(BaseModel):
@@ -179,6 +179,7 @@ class StoredRelation(BaseModel):
     description: str = ""
     confidence: float = UNKNOWN_CONFIDENCE
     quantities: list[dict[str, Any]] = Field(default_factory=list)
+    assertion: RelationAssertion = "reported"
     accepted: bool = False
     source_id: str | None = None
     target_id: str | None = None

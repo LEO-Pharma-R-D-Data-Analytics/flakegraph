@@ -34,6 +34,7 @@ Rules:
 - If the user names a document, call listDocuments and pass that document's exact id in documentIds. Do not guess ids.
 - Cite only quotes returned by tools. If tools return GRAPH_EMPTY_RESULT, say you could not find it in this graph.
 - Name entities exactly as returned. Keep answers concise.
+- A relation marked claimed is one its source claims or proposes, not an established finding; say so when your answer uses it.
 - ${preferred}`,
     tools,
     stopWhen: isStepCount(AGENT_MAX_STEPS),

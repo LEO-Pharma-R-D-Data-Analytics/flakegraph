@@ -178,6 +178,40 @@ def test_stored_records_rebuild_every_pass_candidates_accepted_first() -> None:
     )
 
 
+def test_a_claimed_relation_is_replayed_as_a_claim() -> None:
+    """Accepted or rejected, a stored claim comes back to extraction still claimed."""
+
+    source = chunk(CONTENT, chunk_id="c1")
+    alice = _mention("m-alice", "Alice Smith", "Person")
+    acme = _mention("m-acme", "Acme Labs", "Organization")
+    accepted = _relation("r1", alice, acme, "WORKS_AT", "Alice Smith works at Acme Labs.")
+    accepted = accepted.model_copy(update={"assertion": "claimed"})
+    rejected = accepted.model_copy(update={"id": "r2", "relation_type": "EMPLOYS"})
+    trace: list[dict[str, Any]] = [
+        {
+            "stage": "relation_verification",
+            "rejected_records": [
+                observation_record(rejected, {"m-alice": alice, "m-acme": acme}, "x")
+            ],
+        }
+    ]
+
+    records = stored_records(
+        ExtractionObservations(
+            entities=[alice, acme],
+            relations=[accepted],
+            trace=trace,
+            chunk_count=1,
+            window_count=1,
+        ),
+        [source],
+    )
+    payload, _ = relation_payload(records.relations, [alice, acme], {})
+
+    assert [item.assertion for item in records.relations] == ["claimed", "claimed"]
+    assert [item["assertion"] for item in payload["relations"]] == ["claimed", "claimed"]
+
+
 def test_endpoints_resolve_by_name_alias_or_context_surface_within_type() -> None:
     """An endpoint name finds the identity it names; an ambiguous untyped one finds none."""
 

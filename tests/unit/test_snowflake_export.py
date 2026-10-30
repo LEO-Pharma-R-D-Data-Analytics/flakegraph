@@ -37,6 +37,7 @@ _ROWS: dict[str, list[object]] = {
             None,
             None,
             1,
+            "reported",
             None,
         ),
     ],

@@ -129,6 +129,17 @@ describe("graph filters", () => {
     expect(connected.totalNodes).toBe(connected.nodes.length);
   });
 
+  it("hides the relations every source only claims when asked, and keeps them by default", () => {
+    const claimed = {
+      ...dataset,
+      edges: dataset.edges.map((edge) => (edge.id === "r2" ? { ...edge, assertion: "claimed" } : { ...edge, assertion: "reported" })),
+    };
+    expect(filterGraph(claimed).edges.map((edge) => edge.id)).toEqual(["r1", "r2"]);
+    const reported = filterGraph(claimed, { includeClaimed: false, includeIsolates: false });
+    expect(reported.edges.map((edge) => edge.id)).toEqual(["r1"]);
+    expect(reported.nodes.map((node) => node.id).sort()).toEqual(["judo", "kano"]);
+  });
+
   it("reads community members from the pipeline's parquet column", () => {
     const exported = {
       ...dataset,

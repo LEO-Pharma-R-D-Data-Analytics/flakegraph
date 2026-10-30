@@ -50,6 +50,18 @@ describe("graph-geometry", () => {
     expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeLessThan(spread);
   });
 
+  it("marks the edges its sources only claim, to draw them dashed", () => {
+    const nodes = [{ id: "a" }, { id: "b" }];
+    const edges = [
+      { id: "e1", source_node_id: "a", target_node_id: "b", relation_type: "TREATS", assertion: "claimed" },
+      { id: "e2", source_node_id: "b", target_node_id: "a", relation_type: "TREATS", assertion: "reported" },
+    ];
+    expect(normalizeGraph(nodes, edges).edges.map((edge) => [edge.id, edge.claimed])).toEqual([
+      ["e1", true],
+      ["e2", false],
+    ]);
+  });
+
   it("fits a camera around laid-out nodes", () => {
     const camera = fitCamera(
       [

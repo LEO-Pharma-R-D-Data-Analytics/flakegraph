@@ -178,6 +178,8 @@ function restrictToDocuments(dataset: GraphDataset, documentIds: string[]): Grap
     source_chunk_ids: scopedChunks(edge, "edge"),
     // Numeric ranking signals carry no text from other documents.
     ...pick(edge, ["weight", "confidence"]),
+    // Whether the sources only claim the relation, which an answer must say.
+    ...pick(edge, ["assertion"]),
   }));
   const names = new Map(nodes.map((node) => [String(node.id), node.name]));
   const communities = dataset.communities.flatMap((community) => {

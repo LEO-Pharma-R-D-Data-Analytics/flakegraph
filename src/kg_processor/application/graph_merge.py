@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -24,7 +24,7 @@ from kg_processor.domain.graph import (
     ExtractedRelation,
     GraphEdge,
     GraphNode,
-    Quantity,
+    RelationAssertion,
 )
 from kg_processor.domain.ids import stable_id
 from kg_processor.domain.ontology import OntologyProfile, normalize_ontology_label
@@ -242,6 +242,17 @@ def structural_relation_types(ontology: OntologyProfile | None) -> frozenset[str
     return frozenset(
         normalize_relation_type(label) for label in ontology.structural_relation_labels()
     )
+
+
+def claimed_only(assertions: Iterable[RelationAssertion]) -> RelationAssertion:
+    """The assertion of an edge, or of one chunk's observation, from its sources' assertions.
+
+    Claimed only when every assertion only claims it: one source that reports
+    the relation as a fact or finding makes it reported.
+    """
+
+    stated = list(assertions)
+    return "claimed" if stated and all(item == "claimed" for item in stated) else "reported"
 
 
 def normalize_relation_type(relation_type: str) -> str:
@@ -774,6 +785,7 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
                 source_file_ids=[chunk.file_id],
                 source_chunk_ids=[chunk.id],
                 evidence_count=1,
+                assertion=relation.assertion,
             )
             edges_by_key[key] = edge
             edge_chunk_ids[edge.id] = {chunk.id}
@@ -816,10 +828,11 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
             prior_weight = prior.weight
             new_chunk = chunk.id not in edge_chunk_ids[prior.id]
             if not new_chunk:
-                _merge_quantities(
+                _merge_repeated_observation(
                     edge_observations,
+                    prior,
                     stable_id("edge_observation", graph_id, prior.id, chunk.id),
-                    relation.quantities,
+                    relation,
                 )
                 decisions.append(
                     _dropped_relation_decision(
@@ -837,6 +850,7 @@ def _assemble_relations(  # noqa: PLR0915 - each branch records a distinct audit
             prior.evidence_count += 1
             prior.weight = min(prior.weight + weight, relation_weight_max)
             prior.confidence = max(prior.confidence, relation.confidence)
+            prior.assertion = claimed_only((prior.assertion, relation.assertion))
             if (len(relation.description), relation.description) > (
                 len(prior.description),
                 prior.description,
@@ -912,20 +926,25 @@ def _relation_endpoint_node(
     return nodes.get((normalize_entity_name(name), entity_type))
 
 
-def _merge_quantities(
+def _merge_repeated_observation(
     observations: list[EdgeObservation],
+    edge: GraphEdge,
     observation_id: str,
-    quantities: list[Quantity],
+    relation: ExtractedRelation,
 ) -> None:
-    """Add a repeated assertion's values to the observation already kept for its chunk."""
+    """Fold a repeated assertion into the observation already kept for its chunk.
 
-    if not quantities:
-        return
+    Its values are added, and a reported repetition makes the observation and
+    its edge reported.
+    """
+
     observation = next((item for item in reversed(observations) if item.id == observation_id), None)
     if observation is None:
         return
+    observation.assertion = claimed_only((observation.assertion, relation.assertion))
+    edge.assertion = claimed_only((edge.assertion, relation.assertion))
     known = {quantity.text for quantity in observation.quantities}
-    observation.quantities.extend(item for item in quantities if item.text not in known)
+    observation.quantities.extend(item for item in relation.quantities if item.text not in known)
 
 
 def _edge_observation(
@@ -954,6 +973,7 @@ def _edge_observation(
         evidence_id=evidence_id,
         quantities=relation.quantities,
         proposed_relation_type=relation.proposed_relation_type,
+        assertion=relation.assertion,
     )
 
 

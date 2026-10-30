@@ -23,7 +23,7 @@ from kg_processor.domain.extraction import (
     RelationObservation,
     ResolutionCandidate,
 )
-from kg_processor.domain.graph import Chunk
+from kg_processor.domain.graph import Chunk, RelationAssertion
 from kg_processor.domain.ids import sha256_hex
 from kg_processor.domain.ontology import EntityTypeDefinition, OntologyProfile
 from kg_processor.ports.llm import StructuredCompletionRequest
@@ -271,6 +271,13 @@ class RelationCandidate(BaseModel):
     )
     source_chunk_id: str
     quote: str
+    assertion: RelationAssertion = Field(
+        default="reported",
+        description=(
+            "reported when the text states the relation as a fact, finding, or "
+            "observation; claimed when it only claims, proposes, or allows it."
+        ),
+    )
     confidence: float = Field(ge=0.0, le=1.0)
     quantities: list[QuantityCandidate] = Field(
         default_factory=list,

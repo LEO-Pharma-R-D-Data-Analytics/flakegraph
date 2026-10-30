@@ -13,6 +13,7 @@ import {
   evidenceEntityId,
   evidenceRelationId,
   evidenceMethodLabel,
+  isClaimed,
   quantityLine,
   statedTypes,
 } from "@/lib/evidence";
@@ -126,6 +127,12 @@ export function GraphDataTables({
         value: (row) => statedTypes(row).join(", "),
       },
       { key: "quantities", label: "Values", kind: "long", value: (row) => quantityLine(row) },
+      {
+        key: "assertion",
+        label: "Assertion",
+        kind: "type",
+        value: (row) => (isClaimed(row) ? "claimed" : "reported"),
+      },
       { key: "confidence", kind: "number" },
       { key: "id", kind: "id" },
     ];

@@ -21,6 +21,7 @@ import { resetAskModel } from "./model";
 import { rerankEntities } from "./rerank";
 import { createAskTools } from "./tools";
 import { structuredObservation } from "./observations";
+import type { GraphSearchResult } from "./types";
 
 const dataset = goldToDataset(
   {
@@ -57,6 +58,16 @@ const dataset = goldToDataset(
   "graph_martial_arts",
 );
 
+const emptySearch: GraphSearchResult = {
+  mode: "local",
+  entities: [],
+  contributingEntities: [],
+  relations: [],
+  communities: [],
+  evidence: [],
+  plan: { mode: "local", highLevelKeywords: [], lowLevelKeywords: [] },
+};
+
 describe("ask retrieval", () => {
   it("ranks the named entity for a local question", () => {
     const hits = searchEntities(dataset, "Who is Jigoro Kano?", 5);
@@ -71,6 +82,41 @@ describe("ask retrieval", () => {
   it("finds the developed_by relation", () => {
     const hits = searchRelations(dataset, "judo developed kano", 5);
     expect(hits.some((hit) => hit.id === "rel_judo_developed_by")).toBe(true);
+  });
+
+  it("marks a claimed relation in the answer context and leaves a reported one unchanged", () => {
+    const claimed = {
+      ...dataset,
+      edges: dataset.edges.map((edge) => (edge.id === "rel_karate_origin" ? { ...edge, assertion: "claimed" } : edge)),
+    };
+    const relations = [
+      ...searchRelations(claimed, "judo developed kano", 5),
+      ...searchRelations(claimed, "karate distinct", 5),
+    ].filter((hit, index, hits) => hits.findIndex((other) => other.id === hit.id) === index);
+    const text = formatGraphSearch({ ...emptySearch, relations }).text;
+    expect(relations.find((hit) => hit.id === "rel_karate_origin")?.claimed).toBe(true);
+    expect(relations.find((hit) => hit.id === "rel_judo_developed_by")).not.toHaveProperty("claimed");
+    expect(text).toContain("- Karate -> Judo (DISTINCT_FROM, claimed): ");
+    expect(text).toContain("- Judo -> Jigoro Kano (DEVELOPED_BY): ");
+    expect(neighborhood(claimed, "karate", 1).relations.map((hit) => hit.claimed)).toEqual([true]);
+    const scoped = scopeDataset(claimed, { documentIds: ["doc_karate"] });
+    expect(scoped.edges.find((edge) => edge.id === "rel_karate_origin")?.assertion).toBe("claimed");
+  });
+
+  it("tells the agent's relation tools which relations are claimed", async () => {
+    const claimed = {
+      ...dataset,
+      edges: dataset.edges.map((edge) => (edge.id === "rel_karate_origin" ? { ...edge, assertion: "claimed" } : edge)),
+    };
+    const tools = createAskTools({ dataset: claimed });
+    const result = (await tools.getNeighborhood.execute!({ entityId: "judo" }, {
+      toolCallId: "t3",
+      messages: [],
+      abortSignal: new AbortController().signal,
+    } as never)) as { relations: Array<Record<string, unknown>> };
+    const byId = new Map(result.relations.map((relation) => [relation.id, relation]));
+    expect(byId.get("rel_karate_origin")?.claimed).toBe(true);
+    expect(byId.get("rel_judo_developed_by")).not.toHaveProperty("claimed");
   });
 
   it("groups martial art communities", () => {

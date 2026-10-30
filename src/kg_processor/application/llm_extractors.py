@@ -1303,6 +1303,7 @@ def _grounded_observation(  # noqa: PLR0913 - one grounded candidate's full cont
         end_offset=grounded.end_offset,
         quantities=quantities,
         proposed_relation_type=proposed_relation_type,
+        assertion=candidate.assertion,
     )
 
 
@@ -1906,6 +1907,7 @@ def _relation_record(
             source_surface=candidate.source_surface,
             target_surface=candidate.target_surface,
             quantities=[item.model_dump(mode="json") for item in candidate.quantities],
+            assertion=candidate.assertion,
         ),
     }
 

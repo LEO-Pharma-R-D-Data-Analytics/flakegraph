@@ -61,6 +61,12 @@ class ExtractedEntity(BaseModel):
     evidence_method: str = "llm"
 
 
+# How a source states a relation: as a fact, finding, or observation
+# (reported), or only as a claim, proposal, possible use, or hypothesis
+# (claimed). A canonical edge is claimed only when every observation is.
+RelationAssertion = Literal["reported", "claimed"]
+
+
 class Quantity(BaseModel):
     """A value a relation states - a limit, a range, a result - as written.
 
@@ -106,6 +112,7 @@ class ExtractedRelation(BaseModel):
     quantities: list[Quantity] = Field(default_factory=list)
     proposed_relation_type: str | None = None
     evidence_method: str = "llm"
+    assertion: RelationAssertion = "reported"
     # Set on a held relation; see ``RelationObservation.rejected_record_key``.
     rejected_record_key: str | None = None
 
@@ -166,6 +173,8 @@ class GraphEdge(BaseModel):
     source_file_ids: list[str] = Field(default_factory=list)
     source_chunk_ids: list[str]
     evidence_count: int = Field(default=0, ge=0)
+    # Claimed only when every observation of the edge is claimed.
+    assertion: RelationAssertion = "reported"
     embedding: list[float] | None = None
 
 
@@ -189,6 +198,8 @@ class EdgeObservation(BaseModel):
     # The type the model stated for this observation, when the ontology's
     # fallback relation kept it under the fallback's type instead.
     proposed_relation_type: str | None = None
+    # Claimed when every assertion of the edge in this chunk only claims it.
+    assertion: RelationAssertion = "reported"
 
 
 class Evidence(BaseModel):

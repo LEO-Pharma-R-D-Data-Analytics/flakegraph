@@ -15,6 +15,7 @@ from kg_processor.application.extraction_contracts import (
     document_context_extraction_request,
     entity_extraction_request,
     relation_extraction_request,
+    relation_verification_request,
 )
 from kg_processor.application.extraction_windows import window_skip_reason
 from kg_processor.application.llm_extractors import LlmEntityExtractor, LlmRelationExtractor
@@ -1838,6 +1839,132 @@ def test_a_relation_keeps_the_values_its_evidence_states() -> None:
         ("0.1 %", "result", 0.1),
     ]
     assert outcome.trace["record_actions"]["ungrounded_quantity"] == 1
+
+
+def _claim_profile() -> OntologyProfile:
+    return OntologyProfile.model_validate(
+        {
+            "name": "claims",
+            "description": "Coatings and the surfaces they protect",
+            "entity_types": [
+                {"name": "COATING", "description": "A coating"},
+                {"name": "SURFACE", "description": "A surface"},
+            ],
+            "relation_types": [
+                {
+                    "name": "PROTECTS",
+                    "description": "A coating protects a surface",
+                    "source_types": ["COATING"],
+                    "target_types": ["SURFACE"],
+                }
+            ],
+        }
+    )
+
+
+class _ClaimLlm(FakeLlmProvider):
+    """State one relation as a finding and another only as a possible use."""
+
+    def complete_structured(
+        self, request: StructuredCompletionRequest
+    ) -> StructuredCompletionResult:
+        payload = json.loads(request.user.split("INPUT_JSON:\n", 1)[1])
+        ids = {item["name"]: item["id"] for item in payload["entities"]}
+        found = _relation(
+            ids["Glaze-7"],
+            ids["hull steel"],
+            "Glaze-7",
+            "hull steel",
+            "PROTECTS",
+            "Glaze-7 protected hull steel for a year",
+        ) | {"source_chunk_id": "reference-chunk"}
+        claimed = _relation(
+            ids["Glaze-7"],
+            ids["deck plates"],
+            "Glaze-7",
+            "deck plates",
+            "PROTECTS",
+            "Glaze-7 may be used to protect deck plates",
+        ) | {"source_chunk_id": "reference-chunk", "assertion": "claimed"}
+        return StructuredCompletionResult(payload={"relations": [found, claimed]})
+
+
+def test_a_relation_the_text_only_claims_is_kept_and_marked_claimed() -> None:
+    """A stated use is a relation the text states, kept apart from a reported finding."""
+
+    text = "Glaze-7 protected hull steel for a year. Glaze-7 may be used to protect deck plates."
+    mentions = [
+        EntityMention(
+            id=name,
+            name=name,
+            type=kind,
+            description="",
+            source_chunk_id="reference-chunk",
+            quote=name,
+        )
+        for name, kind in (
+            ("Glaze-7", "COATING"),
+            ("hull steel", "SURFACE"),
+            ("deck plates", "SURFACE"),
+        )
+    ]
+    outcome = LlmRelationExtractor(_ClaimLlm()).extract(
+        _window(text),
+        mentions,
+        _claim_profile(),
+        model="fake",
+        timeout_seconds=30,
+        max_relations=10,
+    )
+
+    assert {item.target_entity_id: item.assertion for item in outcome.relations} == {
+        "hull steel": "reported",
+        "deck plates": "claimed",
+    }
+
+
+def test_the_relation_contract_asks_for_every_relation_assertion() -> None:
+    request = relation_extraction_request(
+        _window("Glaze-7 may be used to protect deck plates."),
+        [],
+        _claim_profile(),
+        model="fake",
+        timeout_seconds=30,
+        max_relations=10,
+        seed=7,
+        previous_relations=None,
+    )
+
+    item = request.json_schema["properties"]["relations"]["items"]
+    if "$ref" in item:
+        item = request.json_schema["$defs"][item["$ref"].rsplit("/", 1)[1]]
+    assert item["properties"]["assertion"]["enum"] == ["reported", "claimed"]
+    assert "assertion" in item["required"]
+    assert "claimed" in request.system
+
+
+def test_the_verifier_sees_a_claim_as_a_claim_and_may_support_it() -> None:
+    """A claimed relation is judged on whether the text makes the claim, not on proof."""
+
+    text = "Glaze-7 may be used to protect deck plates."
+    claim = RelationObservation(
+        id="r-claim",
+        source_entity_id="glaze",
+        target_entity_id="deck",
+        relation_type="PROTECTS",
+        description="Glaze-7 may protect deck plates.",
+        source_chunk_id="reference-chunk",
+        quote=text,
+        assertion="claimed",
+    )
+
+    request = relation_verification_request(
+        _window(text), [], [claim], _claim_profile(), model="fake", timeout_seconds=30, seed=7
+    )
+
+    payload = json.loads(request.user.split("INPUT_JSON:\n", 1)[1])
+    assert [item["assertion"] for item in payload["relations"]] == ["claimed"]
+    assert "a claim is never insufficient for being unproven" in " ".join(request.system.split())
 
 
 def test_values_become_entities_only_under_identifier_types_once_relations_carry_them() -> None:

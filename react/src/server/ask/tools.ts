@@ -226,6 +226,7 @@ If the user names a document, pass its exact document id from listDocuments. Omi
             target: hit.targetName,
             type: hit.relationType,
             description: hit.description,
+            ...(hit.claimed ? { claimed: true } : {}),
           })),
         };
       },
@@ -283,6 +284,7 @@ If the user names a document, pass its exact document id from listDocuments. Omi
             target: relation.targetName,
             type: relation.relationType,
             description: relation.description,
+            ...(relation.claimed ? { claimed: true } : {}),
           })),
         };
       },

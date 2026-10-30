@@ -1966,6 +1966,7 @@ def _extracted_relations(
                 quantities=relation.quantities,
                 proposed_relation_type=relation.proposed_relation_type,
                 evidence_method=relation.evidence_method,
+                assertion=relation.assertion,
                 rejected_record_key=relation.rejected_record_key,
             )
         )

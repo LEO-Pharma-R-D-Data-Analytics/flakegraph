@@ -228,6 +228,14 @@ test.describe("local martial arts graph", () => {
     await expect(summary).toHaveText("Filters");
     await expect(scope).toContainText("119 of 119 entities · 148 relations");
     await expect(page.getByTestId("filters-count")).toHaveCount(0);
+    // Claimed relations show by default; switched off, only reported ones stay.
+    await openFilters(page);
+    await expect(filters.getByTestId("claimed-count")).toHaveText("(1)");
+    await filters.getByRole("switch", { name: "Include claimed relations" }).click();
+    await expect(scope).toContainText("119 of 119 entities · 147 relations");
+    await expect(summary).toContainText("reported only");
+    await summary.getByRole("button", { name: "Clear filters" }).click();
+    await expect(scope).toContainText("119 of 119 entities · 148 relations");
   });
 
   test("searches the sidebar catalog across datasets", async ({ page }) => {

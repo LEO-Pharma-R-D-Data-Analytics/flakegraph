@@ -305,6 +305,9 @@ def test_edge_reconciliation_rebuilds_canonical_rows_from_observations() -> None
     assert "FROM KG_EDGE_OBSERVATION" in aggregate_sql
     assert "ARRAY_AGG(DISTINCT FILE_ID)" in aggregate_sql
     assert "COUNT(*) AS EVIDENCE_COUNT" in aggregate_sql
+    # Claimed only when every remaining observation is, as finalization decides.
+    assert "IFF(BOOLAND_AGG(ASSERTION = 'claimed'), 'claimed', 'reported')" in aggregate_sql
+    assert "ASSERTION = source.ASSERTION" in aggregate_sql
     assert aggregate_params == [10.0, "graph"]
     assert "NOT EXISTS" in statements[1][0]
 

@@ -1,3 +1,5 @@
+import { isClaimed } from "@/lib/evidence";
+
 export type ColorMode = "type" | "community" | "degree";
 export type LayoutMode = "force" | "clustered";
 export type FocusDepth = 1 | 2 | 3 | null;
@@ -40,6 +42,8 @@ export interface LayoutEdge {
   weight: number;
   description: string;
   confidence: number;
+  /** Only claimed by its sources; drawn dashed. */
+  claimed: boolean;
 }
 
 export const MIN_SCALE = 0.12;
@@ -231,6 +235,7 @@ export function normalizeGraph(
       weight: asFinite(edge.weight ?? edge.confidence, 1),
       description: String(edge.description ?? ""),
       confidence: asFinite(edge.confidence),
+      claimed: isClaimed(edge),
     });
   }
   const layoutNodes = nodes.map((node, index) => {

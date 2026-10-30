@@ -1,5 +1,5 @@
 import { nHopNodeIds } from "@/lib/graph-geometry";
-import { documentDisplayName, evidenceDocumentId, evidenceEntityId, evidenceRelationId } from "@/lib/evidence";
+import { documentDisplayName, evidenceDocumentId, evidenceEntityId, evidenceRelationId, isClaimed } from "@/lib/evidence";
 import { communityMemberIds } from "../graph-filter";
 import type { GraphDataset } from "../protocol/schema";
 import {
@@ -121,6 +121,11 @@ export function blendedCommunityScore(hit: { distance: number; rating: number | 
   return COMMUNITY_BLEND_DISTANCE_WEIGHT * hit.distance + COMMUNITY_BLEND_RATING_WEIGHT * ratingPenalty;
 }
 
+/** Marks a hit whose edge every source only claims, leaving a reported one as it was. */
+function claimedMark(edge: Record<string, unknown>): Pick<RelationHit, "claimed"> {
+  return isClaimed(edge) ? { claimed: true } : {};
+}
+
 export function searchRelations(
   dataset: GraphDataset,
   query: string,
@@ -152,6 +157,7 @@ export function searchRelations(
         weight,
         score,
         distance: distanceFromScore(score),
+        ...claimedMark(edge),
       };
     })
     .filter((hit) => hit.id && hit.score > 0)
@@ -225,6 +231,7 @@ export function incidentRelations(dataset: GraphDataset, entityIds: string[]): R
         weight,
         score: weight,
         distance: distanceFromScore(weight),
+        ...claimedMark(edge),
       } satisfies RelationHit;
     })
     .filter((hit): hit is RelationHit => Boolean(hit?.id))
@@ -424,6 +431,7 @@ export function neighborhood(
         weight: asNumber(edge.weight ?? edge.confidence, 1),
         score: 1,
         distance: 0.5,
+        ...claimedMark(edge),
       } satisfies RelationHit;
     })
     .filter((hit): hit is RelationHit => Boolean(hit?.id));

@@ -144,6 +144,7 @@ TABLE_COLUMNS: dict[str, tuple[ColumnSpec, ...]] = {
         ColumnSpec("SOURCE_FILE_IDS", "array"),
         ColumnSpec("SOURCE_CHUNK_IDS", "array"),
         ColumnSpec("EVIDENCE_COUNT"),
+        ColumnSpec("ASSERTION"),
         ColumnSpec("EMBEDDING", "vector"),
     ),
     "KG_EDGE_OBSERVATION": (
@@ -158,6 +159,7 @@ TABLE_COLUMNS: dict[str, tuple[ColumnSpec, ...]] = {
         ColumnSpec("EVIDENCE_ID"),
         ColumnSpec("QUANTITIES", "variant"),
         ColumnSpec("PROPOSED_RELATION_TYPE"),
+        ColumnSpec("ASSERTION"),
     ),
     "KG_EVIDENCE": (
         ColumnSpec("ID"),
@@ -490,14 +492,16 @@ def build_edge_reconciliation_statements(
         "MAX(CONFIDENCE) AS CONFIDENCE, MIN(FILE_ID) AS SOURCE_FILE_ID, "
         "ARRAY_AGG(DISTINCT FILE_ID) WITHIN GROUP (ORDER BY FILE_ID) AS SOURCE_FILE_IDS, "
         "ARRAY_AGG(DISTINCT CHUNK_ID) WITHIN GROUP (ORDER BY CHUNK_ID) AS SOURCE_CHUNK_IDS, "
-        "COUNT(*) AS EVIDENCE_COUNT, MAX_BY(DESCRIPTION, LENGTH(DESCRIPTION)) AS DESCRIPTION "
+        "COUNT(*) AS EVIDENCE_COUNT, MAX_BY(DESCRIPTION, LENGTH(DESCRIPTION)) AS DESCRIPTION, "
+        # Claimed only when every observation is, as finalization aggregates it.
+        "IFF(BOOLAND_AGG(ASSERTION = 'claimed'), 'claimed', 'reported') AS ASSERTION "
         "FROM KG_EDGE_OBSERVATION WHERE GRAPH_ID = ? GROUP BY EDGE_ID"
         ") source ON target.ID = source.EDGE_ID "
         "WHEN MATCHED THEN UPDATE SET WEIGHT = source.WEIGHT, "
         "CONFIDENCE = source.CONFIDENCE, SOURCE_FILE_ID = source.SOURCE_FILE_ID, "
         "SOURCE_FILE_IDS = source.SOURCE_FILE_IDS, SOURCE_CHUNK_IDS = source.SOURCE_CHUNK_IDS, "
         "EVIDENCE_COUNT = source.EVIDENCE_COUNT, DESCRIPTION = source.DESCRIPTION, "
-        "UPDATED_AT = CURRENT_TIMESTAMP()"
+        "ASSERTION = source.ASSERTION, UPDATED_AT = CURRENT_TIMESTAMP()"
     )
     orphan_delete_sql = (
         "DELETE FROM KG_EDGE target WHERE GRAPH_ID = ? AND NOT EXISTS ("

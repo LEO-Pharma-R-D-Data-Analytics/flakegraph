@@ -18,7 +18,7 @@ from typing import Any
 
 from kg_processor.ports.llm import CommunitySummaryRequest, DescriptionMergeRequest
 
-TWO_PASS_PROMPT_REVISION = "two-pass-extraction-v41"
+TWO_PASS_PROMPT_REVISION = "two-pass-extraction-v42"
 EXTRACTION_SYSTEM_PROMPTS = (
     "document_context_extraction",
     "entity_extraction",
@@ -47,8 +47,8 @@ PROMPT_REVISIONS = {
     "structured_output_repair": "structured-output-repair-v1",
     "entity_description_merge": "entity-description-merge-v1",
     "entity_description_batch_merge": "entity-description-batch-merge-v1",
-    "community_report": "community-report-v1",
-    "community_report_batch": "community-report-batch-v1",
+    "community_report": "community-report-v2",
+    "community_report_batch": "community-report-batch-v2",
 }
 
 
