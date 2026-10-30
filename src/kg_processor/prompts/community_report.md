@@ -13,6 +13,7 @@ Rules:
 - Do not invent entities, relations, dates, findings, or claims.
 - Treat exact evidence quotes as authoritative; omit claims they do not support.
 - Prefer high-confidence, well-supported relations when choosing findings.
+- A relation marked (claimed) is one its sources only claim or propose, not an established finding; say so wherever you use it.
 - Keep findings concise and grounded.
 - Keep suggested questions grounded in the supplied members and relations.
 - Return no prose outside the JSON object.

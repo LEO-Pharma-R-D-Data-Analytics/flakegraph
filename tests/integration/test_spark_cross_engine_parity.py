@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from kg_processor.adapters.distributed.local_blob import LocalBlobStore
-from kg_processor.application.community_reports import structural_rating
+from kg_processor.application.community_reports import relation_label, structural_rating
 from kg_processor.application.entity_resolution import _has_numeric_mismatch
 from kg_processor.application.graph_dataset import GraphDatasetReader
 from kg_processor.application.graph_merge import (
@@ -39,6 +39,7 @@ from kg_processor.application.spark_finalization import (
     _normalized_name,
     _normalized_relation_type,
     _numeric_mismatch,
+    _relation_label,
     _stable_id,
     _structural_rating_column,
 )
@@ -48,7 +49,7 @@ from kg_processor.domain.extraction import (
     ExtractionObservations,
     RelationObservation,
 )
-from kg_processor.domain.graph import Chunk, Quantity, RelationAssertion
+from kg_processor.domain.graph import Chunk, GraphEdge, Quantity, RelationAssertion
 from kg_processor.domain.ids import sha256_hex, stable_id
 from kg_processor.domain.stages import ExtractedDocumentShard, PreparedDocumentShard
 
@@ -291,6 +292,41 @@ def test_spark_assertion_aggregate_matches_the_local_rule(spark_session: Any) ->
     assert windowed == expected
     assert expected["one-reported"] == "reported"
     assert expected["all-claimed"] == "claimed"
+
+
+def test_spark_report_relation_label_matches_the_local_rule(spark_session: Any) -> None:
+    """Both engines mark a claimed relation alike in a community report's context."""
+
+    from pyspark.sql import functions as F
+
+    cases: list[tuple[str, RelationAssertion]] = [
+        ("protects", "claimed"),
+        ("protects", "reported"),
+    ]
+    rows = (
+        spark_session.createDataFrame(cases, "relation_type string, assertion string")
+        .select(_relation_label(F.col("relation_type"), F.col("assertion")).alias("label"))
+        .collect()
+    )
+
+    expected = [
+        relation_label(
+            GraphEdge(
+                id="edge",
+                graph_id=_GRAPH_ID,
+                source_node_id="a",
+                target_node_id="b",
+                relation_type=relation_type,
+                description="",
+                weight=1.0,
+                source_file_id="file",
+                source_chunk_ids=[],
+                assertion=assertion,
+            )
+        )
+        for relation_type, assertion in cases
+    ]
+    assert [row.label for row in rows] == expected == ["protects (claimed)", "protects"]
 
 
 def test_spark_edges_sum_observation_weight_and_reject_self_loops(

@@ -68,6 +68,8 @@ export interface RelationHit {
   weight: number;
   score: number;
   distance: number;
+  /** Set when every source only claims the relation; absent for a reported one. */
+  claimed?: true;
 }
 
 export interface CommunityHit {

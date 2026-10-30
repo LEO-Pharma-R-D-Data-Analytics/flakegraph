@@ -47,8 +47,8 @@ PROMPT_REVISIONS = {
     "structured_output_repair": "structured-output-repair-v1",
     "entity_description_merge": "entity-description-merge-v1",
     "entity_description_batch_merge": "entity-description-batch-merge-v1",
-    "community_report": "community-report-v1",
-    "community_report_batch": "community-report-batch-v1",
+    "community_report": "community-report-v2",
+    "community_report_batch": "community-report-batch-v2",
 }
 
 

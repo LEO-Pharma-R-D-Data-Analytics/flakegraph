@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 from kg_processor.application.community_reports import (
+    CLAIMED_RELATION_MARK,
     DEFAULT_MAX_RELATIONS_PER_COMMUNITY,
     MAX_EVIDENCE_QUOTES_PER_COMMUNITY,
     MAX_EVIDENCE_QUOTES_PER_RELATION,
@@ -3307,6 +3308,9 @@ class SparkGraphFinalizer:
         report_edges = (
             internal.withColumn("relation_rank", F.row_number().over(relation_window))
             .where(F.col("relation_rank") <= F.lit(DEFAULT_MAX_RELATIONS_PER_COMMUNITY))
+            .withColumn(
+                "relation_label", _relation_label(F.col("relation_type"), F.col("assertion"))
+            )
             .persist(StorageLevel.MEMORY_AND_DISK)
         )
         relation_context = report_edges.groupBy("community_id").agg(
@@ -3314,7 +3318,7 @@ class SparkGraphFinalizer:
                 F.concat(
                     F.col("source_name"),
                     F.lit(" --"),
-                    F.col("relation_type"),
+                    F.col("relation_label"),
                     F.lit("--> "),
                     F.col("target_name"),
                     F.lit(" weight="),
@@ -3328,7 +3332,7 @@ class SparkGraphFinalizer:
             "file_id", "page_number", "start_offset"
         )
         evidence_context = (
-            report_edges.select("community_id", F.col("id").alias("edge_id"), "relation_type")
+            report_edges.select("community_id", F.col("id").alias("edge_id"), "relation_label")
             .join(evidence, F.col("edge_id") == evidence.subject_id, "inner")
             .withColumn("evidence_rank", F.row_number().over(evidence_window))
             .where(F.col("evidence_rank") <= F.lit(MAX_EVIDENCE_QUOTES_PER_RELATION))
@@ -3337,7 +3341,7 @@ class SparkGraphFinalizer:
                 F.slice(
                     F.collect_list(
                         F.concat(
-                            F.col("relation_type"),
+                            F.col("relation_label"),
                             F.lit(": "),
                             F.substring(F.col("quote"), 1, 700),
                         )
@@ -3794,6 +3798,17 @@ def _claimed_only(assertion: Column, window: WindowSpec | None = None) -> Column
     if window is not None:
         all_claimed = all_claimed.over(window)
     return F.when(all_claimed, F.lit("claimed")).otherwise(F.lit("reported"))
+
+
+def _relation_label(relation_type: Column, assertion: Column) -> Column:
+    """The relation type a report context names, as ``community_reports.relation_label``."""
+
+    from pyspark.sql import functions as F
+
+    return F.concat(
+        relation_type,
+        F.when(assertion == F.lit("claimed"), F.lit(CLAIMED_RELATION_MARK)).otherwise(F.lit("")),
+    )
 
 
 def _observation_weight(confidence: Column) -> Column:

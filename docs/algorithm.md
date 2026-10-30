@@ -327,7 +327,10 @@ a claim is not rejected for being unproven.
 An edge is `claimed` only when every observation of it is: one source that
 reports the relation makes the edge `reported`. Edge observations keep their
 own assertion, so a reader sees which sources claim and which report. The
-console marks claimed edges and can hide them in Explore.
+console marks claimed edges and can hide them in Explore. Where relations reach
+a model as context - a community report's relation and evidence lines, the
+console's Ask retrieval - a claimed one is marked, and the prompt says it is a
+claim, not an established finding, for the report or answer to say so.
 
 ## Folders And File Names
 
