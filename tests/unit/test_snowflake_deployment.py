@@ -239,7 +239,9 @@ def test_render_snowflake_setup_sql_contains_objects_grants_and_schema() -> None
     assert "USE SCHEMA GRAPH" in sql
     assert "CREATE TABLE IF NOT EXISTS KG_NODE" in sql
     assert "VECTOR(FLOAT, 1024)" in sql
-    assert "ALTER TABLE KG_EDGE ADD COLUMN" not in sql
+    # The assertion column is the one an edge table created before it gains.
+    assert sql.count("ALTER TABLE KG_EDGE ADD COLUMN") == 1
+    assert "ALTER TABLE KG_EDGE ADD COLUMN IF NOT EXISTS ASSERTION STRING;" in sql
     assert "ALTER TABLE KG_COMMUNITY ADD COLUMN" not in sql
     assert sql.index("USE DATABASE KG_DB") < sql.index("CREATE TABLE IF NOT EXISTS KG_JOB")
     assert sql.index("USE SCHEMA GRAPH") < sql.index("CREATE TABLE IF NOT EXISTS KG_JOB")

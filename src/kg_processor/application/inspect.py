@@ -67,6 +67,7 @@ _REQUIRED_COLUMNS = {
         "confidence",
         "source_file_ids",
         "evidence_count",
+        "assertion",
         "embedding",
     },
     "edge_observations": {
@@ -77,6 +78,7 @@ _REQUIRED_COLUMNS = {
         "weight",
         "confidence",
         "evidence_id",
+        "assertion",
     },
     "evidence": {"id", "subject_id", "subject_kind", "file_id", "chunk_id", "quote"},
     "entity_sources": {"id", "node_id", "file_id", "mention_count"},
